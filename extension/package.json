@@ -11,11 +11,11 @@
   },
   "dependencies": {
     "@bro/shared": "file:../packages/shared",
-    "vite": "^7.3.1"
+    "vite": "^8.0.13"
   },
   "devDependencies": {
-    "@types/chrome": "^0.0.300",
-    "typescript": "*",
-    "vitest": "^2.0.0"
+    "@types/chrome": "^0.1.42",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.6"
   }
 }

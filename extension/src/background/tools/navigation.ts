@@ -88,7 +88,7 @@ function waitForTabComplete(tabId: number): Promise<string> {
 
     const listener = (
       updatedTabId: number,
-      changeInfo: chrome.tabs.TabChangeInfo,
+      changeInfo: chrome.tabs.OnUpdatedInfo,
       tab: chrome.tabs.Tab,
     ) => {
       if (updatedTabId !== tabId) return

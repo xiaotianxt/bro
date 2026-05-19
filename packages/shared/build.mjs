@@ -27,7 +27,7 @@ const cjsTsconfig = {
     outDir: './dist-cjs-temp',
     rootDir: './src',
     module: 'CommonJS',
-    moduleResolution: 'Node',
+    moduleResolution: 'Bundler',
     declaration: false,
     declarationMap: false,
     sourceMap: false,

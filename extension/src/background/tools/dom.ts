@@ -174,7 +174,7 @@ async function waitForTabLoadComplete(
     }
     const listener = (
       updatedTabId: number,
-      changeInfo: chrome.tabs.TabChangeInfo,
+      changeInfo: chrome.tabs.OnUpdatedInfo,
     ): void => {
       if (updatedTabId === tabId && changeInfo.status === 'complete') finish()
     }

@@ -139,14 +139,19 @@ export class CDPSession {
     params?: object,
   ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      chrome.debugger.sendCommand({ tabId }, method, params ?? {}, (result) => {
-        const err = chrome.runtime.lastError
-        if (err) {
-          reject(new Error(`CDP command "${method}" failed for tab ${tabId}: ${err.message ?? ''}`))
-        } else {
-          resolve(result as T)
-        }
-      })
+      chrome.debugger.sendCommand(
+        { tabId },
+        method,
+        (params ?? {}) as Record<string, unknown>,
+        (result) => {
+          const err = chrome.runtime.lastError
+          if (err) {
+            reject(new Error(`CDP command "${method}" failed for tab ${tabId}: ${err.message ?? ''}`))
+          } else {
+            resolve(result as T)
+          }
+        },
+      )
     })
   }
 

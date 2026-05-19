@@ -7,11 +7,11 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "skipLibCheck": true,
-    "baseUrl": ".",
     "paths": {
       "@bro/shared": ["../packages/shared/src/index.ts"]
     },
     "outDir": "./dist",
+    "rootDir": "..",
     "lib": ["ES2022", "DOM"],
     "types": ["chrome"]
   },
