@@ -45,7 +45,7 @@ jobs:
           cp "target/${{ matrix.target }}/release/bro" "dist/bro"
           cp README.md LICENSE NOTICE dist/
           tar -C dist -czf "bro-${{ matrix.target }}.tar.gz" bro README.md LICENSE NOTICE
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bro-${{ matrix.target }}
           path: bro-${{ matrix.target }}.tar.gz
@@ -75,7 +75,7 @@ jobs:
           set -euo pipefail
           cd extension/dist
           zip -r ../../bro-extension.zip .
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bro-extension
           path: bro-extension.zip
