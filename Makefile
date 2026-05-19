@@ -1,4 +1,4 @@
-.PHONY: fmt clippy test extension live-test check release-build
+.PHONY: fmt clippy test extension live-test check release release-build
 
 fmt:
 	cargo fmt --all
@@ -24,6 +24,9 @@ check:
 	pnpm --filter @bro/shared build
 	pnpm --filter @bro/extension typecheck
 	pnpm --filter @bro/extension build
+
+release:
+	scripts/release.sh
 
 release-build:
 	cargo build --locked --release
