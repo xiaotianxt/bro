@@ -1,0 +1,72 @@
+# Architecture
+
+bro has one hard boundary: the MCP server is Rust; browser execution is a thin
+WebExtension adapter.
+
+```text
+MCP client
+  -> bro Rust server
+  -> authenticated WebSocket bridge
+  -> bro extension service worker
+  -> Chromium tab / CDP / content scripts
+```
+
+## Rust Core
+
+The Rust core owns product policy:
+
+- bind only to localhost by default
+- authenticate browser bridge connections with the token in `~/.bro/settings.json`
+- expose MCP Streamable HTTP at `/mcp`
+- maintain connected browser registry and default browser selection
+- route raw browser tools to the extension
+- compose higher-level tools such as `browser.batch.extract` and
+  `browser.flow.*`
+- bound concurrency, cleanup, and response sizes
+
+The core deliberately avoids site-specific workflows. Reddit, LinkedIn, X,
+Threads, and similar sites are covered only by live regression tests for generic
+browser extraction behavior.
+
+The bridge shape and initial extension adapter are derived from the
+Apache-2.0 OpenBrowserMCP project. bro keeps that attribution in the README and
+NOTICE while using `bro` for project and package names.
+
+## Extension Adapter
+
+The extension owns mechanisms that cannot be implemented directly in Rust:
+
+- `chrome.tabs`
+- `chrome.debugger`
+- Manifest V3 service worker lifecycle
+- content scripts
+- page-side JavaScript execution
+
+It should stay small and primitive. Any policy that affects MCP users should
+move into Rust unless the browser API forces it to live in the extension.
+
+## Local State
+
+```text
+~/.bro/settings.json
+```
+
+The settings file contains the local bridge token. It is created with private
+permissions on Unix systems.
+
+## Failure Behavior
+
+- No browser connected: MCP tools return `isError=true` with an actionable
+  message.
+- Unknown `browserId`: the request fails instead of falling back silently.
+- Tool timeout: Rust stops scheduling more work and makes a best-effort tab
+  cleanup when it owns the tab.
+- Partial page readiness: extraction returns `partial` with diagnostics rather
+  than pretending the page is fully ready.
+
+## Non-Goals
+
+- Cloud relay or hosted browser service.
+- Site-specific research agents.
+- Claiming that Chromium extension code can be made 100% Rust.
+- Persisting browsing traces by default.

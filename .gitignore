@@ -1,0 +1,9 @@
+/target
+node_modules/
+extension/dist/
+packages/shared/dist/
+packages/shared/dist-cjs-temp/
+packages/shared/tsconfig.cjs.temp.json
+.DS_Store
+.env
+*.log

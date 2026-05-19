@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>bro Settings</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 480px;
+      margin: 40px auto;
+      padding: 0 20px;
+      color: #333;
+    }
+    h1 {
+      font-size: 1.4rem;
+      margin-bottom: 24px;
+    }
+    label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    input[type="text"],
+    input[type="password"] {
+      width: 100%;
+      padding: 8px 12px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 0.95rem;
+      box-sizing: border-box;
+    }
+    .actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    button {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.95rem;
+    }
+    #save-btn {
+      background: #1a73e8;
+      color: #fff;
+    }
+    #test-btn {
+      background: #f1f3f4;
+      color: #333;
+    }
+    #status {
+      margin-top: 16px;
+      font-size: 0.9rem;
+    }
+    #status .dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-right: 6px;
+    }
+    #status.connected .dot { background: #34a853; }
+    #status.disconnected .dot { background: #ea4335; }
+    #status.connecting .dot {
+      background: #fbbc04;
+      animation: status-blink 0.9s ease-in-out infinite;
+    }
+    @keyframes status-blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+  </style>
+</head>
+<body>
+  <h1>bro Settings</h1>
+
+  <label for="server-url">WebSocket Server URL</label>
+  <input
+    type="text"
+    id="server-url"
+    placeholder="ws://localhost:3500/ws"
+  />
+
+  <label for="token" style="margin-top: 16px;">Authentication Token</label>
+  <input
+    type="password"
+    id="token"
+    placeholder="Paste token from settings.json"
+  />
+
+  <div class="actions">
+    <button id="save-btn">Save</button>
+    <button id="test-btn">Test Connection</button>
+  </div>
+
+  <div id="status" class="disconnected">
+    <span class="dot"></span>
+    <span id="status-text">Disconnected</span>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

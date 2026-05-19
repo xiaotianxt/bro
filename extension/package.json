@@ -1,0 +1,21 @@
+{
+  "name": "@bro/extension",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite build --watch",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@bro/shared": "file:../packages/shared",
+    "vite": "^7.3.1"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.300",
+    "typescript": "*",
+    "vitest": "^2.0.0"
+  }
+}

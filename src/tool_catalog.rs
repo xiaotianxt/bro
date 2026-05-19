@@ -1,0 +1,723 @@
+use std::sync::Arc;
+
+use rmcp::model::{JsonObject, Tool};
+use serde_json::{json, Map, Value};
+
+const ENVELOPE_TAB_TOOLS: &[&str] = &[
+    "computer",
+    "navigate",
+    "resize_window",
+    "read_page",
+    "find",
+    "javascript_tool",
+    "form_input",
+    "get_page_text",
+    "click_element",
+    "scroll_element",
+    "fill_element",
+    "get_element_info",
+    "wait_for_element",
+    "read_console_messages",
+    "read_network_requests",
+    "get_response_body",
+    "file_upload",
+    "upload_image",
+    "gif_creator",
+    "shortcuts_list",
+    "shortcuts_execute",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolRoute {
+    BrowsersContext,
+    BatchRun,
+    Extract,
+    BatchExtract,
+    FlowStart,
+    FlowObserve,
+    FlowAct,
+    FlowFinish,
+    AgentDone,
+    Forward { tab_id_envelope: bool },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ToolSpec {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub route: ToolRoute,
+    pub schema: &'static str,
+}
+
+pub fn all_tools() -> Vec<Tool> {
+    specs().iter().copied().map(ToolSpec::to_tool).collect()
+}
+
+pub fn find_tool(name: &str) -> Option<Tool> {
+    specs()
+        .iter()
+        .find(|spec| spec.name == name)
+        .copied()
+        .map(ToolSpec::to_tool)
+}
+
+pub fn route_for(name: &str) -> Option<ToolRoute> {
+    specs()
+        .iter()
+        .find(|spec| spec.name == name)
+        .map(|spec| spec.route)
+}
+
+pub fn prepare_forward_args(
+    tool_name: &str,
+    mut args: JsonObject,
+) -> (Map<String, Value>, Option<i64>, Option<String>) {
+    let browser_id = take_string(&mut args, "browserId");
+    let tab_id = if ENVELOPE_TAB_TOOLS.contains(&tool_name) {
+        take_i64(&mut args, "tabId")
+    } else {
+        None
+    };
+    (args, tab_id, browser_id)
+}
+
+pub fn take_agent_done_args(mut args: JsonObject) -> Result<(Vec<i64>, Option<String>), String> {
+    let browser_id = take_string(&mut args, "browserId");
+    let tab_ids = match args.remove("tabIds") {
+        Some(Value::Array(values)) => {
+            let mut ids = Vec::with_capacity(values.len());
+            for value in values {
+                let Some(id) = value.as_i64() else {
+                    return Err("agent_done.tabIds must contain integer tab IDs".to_string());
+                };
+                ids.push(id);
+            }
+            ids
+        }
+        _ => return Err("agent_done requires tabIds".to_string()),
+    };
+    if tab_ids.is_empty() {
+        return Err("agent_done.tabIds must not be empty".to_string());
+    }
+    Ok((tab_ids, browser_id))
+}
+
+impl ToolSpec {
+    fn to_tool(self) -> Tool {
+        Tool::new(self.name, self.description, Arc::new(schema(self.schema)))
+    }
+}
+
+static SPECS: &[ToolSpec] = &[
+    ToolSpec {
+        name: "browsers_context",
+        description: "List connected browser instances and their browserIds.",
+        route: ToolRoute::BrowsersContext,
+        schema: "empty",
+    },
+    ToolSpec {
+        name: "agent_done",
+        description: "Signal that browser automation is finished for the supplied tab IDs.",
+        route: ToolRoute::AgentDone,
+        schema: "agent_done",
+    },
+    ToolSpec {
+        name: "browser.batch.run",
+        description: "Open URLs in background tabs by default, read page text after short quality readiness, and clean up owned tabs. Defaults: concurrency 6, timeoutMs 12000, cleanup true, active false.",
+        route: ToolRoute::BatchRun,
+        schema: "browser_batch_run",
+    },
+    ToolSpec {
+        name: "browser.extract",
+        description: "Open one URL, use browser-side DOM quiet readiness, then return text, links, and extraction diagnostics. Defaults: cleanup true, active false.",
+        route: ToolRoute::Extract,
+        schema: "browser_extract",
+    },
+    ToolSpec {
+        name: "browser.batch.extract",
+        description: "Extract multiple URLs in parallel using browser-side DOM quiet readiness. Defaults: concurrency 6, cleanup true, active false.",
+        route: ToolRoute::BatchExtract,
+        schema: "browser_batch_extract",
+    },
+    ToolSpec {
+        name: "browser.flow.start",
+        description: "Start a default background browser flow for one URL and keep its tab in server memory. Defaults: active false, cleanup true.",
+        route: ToolRoute::FlowStart,
+        schema: "browser_flow_start",
+    },
+    ToolSpec {
+        name: "browser.flow.observe",
+        description: "Observe a browser flow session as text by default, or as an accessibility tree with mode a11y.",
+        route: ToolRoute::FlowObserve,
+        schema: "browser_flow_observe",
+    },
+    ToolSpec {
+        name: "browser.flow.act",
+        description: "Run explicit flow steps on the owned tab: goto, eval, click, fill, wait, or read_text. Stops at the first failed step.",
+        route: ToolRoute::FlowAct,
+        schema: "browser_flow_act",
+    },
+    ToolSpec {
+        name: "browser.flow.finish",
+        description: "Finish a browser flow session, removing server state and cleaning up the owned tab by default.",
+        route: ToolRoute::FlowFinish,
+        schema: "browser_flow_finish",
+    },
+    ToolSpec {
+        name: "tabs_context",
+        description: "Get the context of open browser tabs and tab groups.",
+        route: ToolRoute::Forward {
+            tab_id_envelope: false,
+        },
+        schema: "tabs_context",
+    },
+    ToolSpec {
+        name: "tabs_create",
+        description: "Create a new browser tab, optionally navigating to a URL.",
+        route: ToolRoute::Forward {
+            tab_id_envelope: false,
+        },
+        schema: "tabs_create",
+    },
+    ToolSpec {
+        name: "tabs_context_mcp",
+        description: "Get tab context for MCP sessions.",
+        route: ToolRoute::Forward {
+            tab_id_envelope: false,
+        },
+        schema: "tabs_context_mcp",
+    },
+    ToolSpec {
+        name: "tabs_create_mcp",
+        description: "Create a new background tab in an MCP session tab group.",
+        route: ToolRoute::Forward {
+            tab_id_envelope: false,
+        },
+        schema: "tabs_create_mcp",
+    },
+    ToolSpec {
+        name: "tabs_activate",
+        description: "Activate a browser tab by its numeric tab ID.",
+        route: ToolRoute::Forward {
+            tab_id_envelope: false,
+        },
+        schema: "tabs_tab_id",
+    },
+    ToolSpec {
+        name: "tabs_close",
+        description: "Close a browser tab by its numeric tab ID.",
+        route: ToolRoute::Forward {
+            tab_id_envelope: false,
+        },
+        schema: "tabs_tab_id",
+    },
+    forward(
+        "computer",
+        "Interact with the browser by screenshot, click, type, scroll, drag, or key input.",
+        "computer",
+    ),
+    forward(
+        "navigate",
+        "Navigate a tab to a URL or through browser history.",
+        "navigate",
+    ),
+    forward(
+        "resize_window",
+        "Resize the browser window containing the tab.",
+        "resize_window",
+    ),
+    forward(
+        "read_page",
+        "Generate an accessibility tree for the current page.",
+        "read_page",
+    ),
+    forward(
+        "find",
+        "Find a page element by natural language description.",
+        "find",
+    ),
+    forward(
+        "javascript_tool",
+        "Execute JavaScript in the page context.",
+        "javascript_tool",
+    ),
+    forward(
+        "form_input",
+        "Set the value of a form element identified by refId.",
+        "form_input",
+    ),
+    forward(
+        "get_page_text",
+        "Extract plain text content from the current page.",
+        "tab_only",
+    ),
+    forward(
+        "extract_page",
+        "Extract visible text and links after browser-side DOM quiet readiness.",
+        "extract_page",
+    ),
+    forward("click_element", "Click a page element by refId.", "ref_id"),
+    forward(
+        "scroll_element",
+        "Scroll within a page element by refId.",
+        "scroll_element",
+    ),
+    forward(
+        "fill_element",
+        "Clear and type text into an input or textarea by refId.",
+        "fill_element",
+    ),
+    forward(
+        "get_element_info",
+        "Inspect runtime details for a page element by refId.",
+        "ref_id",
+    ),
+    forward(
+        "wait_for_element",
+        "Wait until an element appears by refId or description.",
+        "wait_for_element",
+    ),
+    forward(
+        "read_console_messages",
+        "Read console logs and exceptions from the browser.",
+        "read_console_messages",
+    ),
+    forward(
+        "read_network_requests",
+        "Read network request and response records from the browser.",
+        "read_network_requests",
+    ),
+    forward(
+        "get_response_body",
+        "Retrieve a network response body by request ID.",
+        "get_response_body",
+    ),
+    forward(
+        "file_upload",
+        "Inject a file into a file input identified by refId.",
+        "file_upload",
+    ),
+    forward(
+        "upload_image",
+        "Upload screenshot or image data through a file input.",
+        "upload_image",
+    ),
+    forward(
+        "gif_creator",
+        "Record browser automation operations as a GIF.",
+        "gif_creator",
+    ),
+    forward(
+        "shortcuts_list",
+        "List keyboard shortcuts available for a browser tab.",
+        "tab_only",
+    ),
+    forward(
+        "shortcuts_execute",
+        "Execute a keyboard shortcut in a browser tab.",
+        "shortcuts_execute",
+    ),
+];
+
+fn specs() -> &'static [ToolSpec] {
+    SPECS
+}
+
+const fn forward(name: &'static str, description: &'static str, schema: &'static str) -> ToolSpec {
+    ToolSpec {
+        name,
+        description,
+        route: ToolRoute::Forward {
+            tab_id_envelope: true,
+        },
+        schema,
+    }
+}
+
+fn schema(kind: &str) -> JsonObject {
+    let properties = match kind {
+        "empty" => Map::new(),
+        "agent_done" => props(&[
+            (
+                "tabIds",
+                json!({"type":"array","items":{"type":"integer"},"minItems":1,"description":"Tab IDs the agent has finished operating on."}),
+            ),
+            ("browserId", browser_id_schema()),
+        ]),
+        "browser_batch_run" => props(&[
+            (
+                "urls",
+                json!({"type":"array","items":{"type":"string","format":"uri"},"minItems":1,"description":"Minimal input: URLs to open, read as text, and close by default."}),
+            ),
+            (
+                "inputs",
+                json!({"type":"array","minItems":1,"items":{"type":"object","required":["url"],"additionalProperties":false,"properties":{"id":{"type":"string","minLength":1,"description":"Optional caller-supplied result id. Defaults to input-<n>."},"url":{"type":"string","format":"uri"}}}}),
+            ),
+            (
+                "concurrency",
+                json!({"type":"integer","minimum":1,"maximum":16,"default":6}),
+            ),
+            (
+                "timeoutMs",
+                json!({"type":"integer","minimum":1,"maximum":60000,"default":12000}),
+            ),
+            ("cleanup", json!({"type":"boolean","default":true})),
+            ("active", json!({"type":"boolean","default":false})),
+            ("browserId", browser_id_schema()),
+        ]),
+        "browser_extract" => props(&[
+            ("url", json!({"type":"string","format":"uri"})),
+            (
+                "id",
+                json!({"type":"string","minLength":1,"description":"Optional caller-supplied result id. Defaults to url-1."}),
+            ),
+            (
+                "minChars",
+                json!({"type":"integer","minimum":1,"maximum":10000,"default":120,"description":"Minimum content size for ready quality; not a sleep duration."}),
+            ),
+            (
+                "maxChars",
+                json!({"type":"integer","minimum":1,"maximum":60000,"default":12000}),
+            ),
+            (
+                "maxLinks",
+                json!({"type":"integer","minimum":0,"maximum":200,"default":80}),
+            ),
+            (
+                "includeA11y",
+                json!({"type":"boolean","default":false,"description":"When true, read the accessibility tree as a fallback if browser-side DOM extraction is not ready."}),
+            ),
+            ("includeLinks", json!({"type":"boolean","default":true})),
+            ("cleanup", json!({"type":"boolean","default":true})),
+            ("active", json!({"type":"boolean","default":false})),
+            ("browserId", browser_id_schema()),
+        ]),
+        "browser_batch_extract" => props(&[
+            (
+                "urls",
+                json!({"type":"array","items":{"type":"string","format":"uri"},"minItems":1,"description":"URLs to extract using browser-side readiness."}),
+            ),
+            (
+                "inputs",
+                json!({"type":"array","minItems":1,"items":{"type":"object","required":["url"],"additionalProperties":false,"properties":{"id":{"type":"string","minLength":1,"description":"Optional caller-supplied result id. Defaults to input-<n>."},"url":{"type":"string","format":"uri"}}}}),
+            ),
+            (
+                "concurrency",
+                json!({"type":"integer","minimum":1,"maximum":16,"default":6}),
+            ),
+            (
+                "minChars",
+                json!({"type":"integer","minimum":1,"maximum":10000,"default":120,"description":"Minimum content size for ready quality; not a sleep duration."}),
+            ),
+            (
+                "maxChars",
+                json!({"type":"integer","minimum":1,"maximum":60000,"default":12000}),
+            ),
+            (
+                "maxLinks",
+                json!({"type":"integer","minimum":0,"maximum":200,"default":80}),
+            ),
+            (
+                "includeA11y",
+                json!({"type":"boolean","default":false,"description":"When true, read the accessibility tree as a fallback if browser-side DOM extraction is not ready."}),
+            ),
+            ("includeLinks", json!({"type":"boolean","default":true})),
+            ("cleanup", json!({"type":"boolean","default":true})),
+            ("active", json!({"type":"boolean","default":false})),
+            ("browserId", browser_id_schema()),
+        ]),
+        "browser_flow_start" => props(&[
+            ("url", json!({"type":"string","format":"uri"})),
+            ("browserId", browser_id_schema()),
+            ("active", json!({"type":"boolean","default":false})),
+            ("cleanup", json!({"type":"boolean","default":true})),
+        ]),
+        "browser_flow_observe" => props(&[
+            ("sessionId", json!({"type":"string","minLength":1})),
+            (
+                "mode",
+                json!({"type":"string","enum":["text","a11y"],"default":"text"}),
+            ),
+        ]),
+        "browser_flow_act" => props(&[
+            ("sessionId", json!({"type":"string","minLength":1})),
+            (
+                "steps",
+                json!({"type":"array","minItems":1,"items":{"type":"object","required":["type"],"properties":{"type":{"type":"string","enum":["goto","eval","click","fill","wait","read_text"]},"url":{"type":"string","format":"uri"},"code":{"type":"string"},"css":{"type":"string"},"value":{"type":"string"},"ms":{"type":"integer","minimum":0,"maximum":30000}},"additionalProperties":false}}),
+            ),
+        ]),
+        "browser_flow_finish" => props(&[
+            ("sessionId", json!({"type":"string","minLength":1})),
+            ("cleanup", json!({"type":"boolean"})),
+        ]),
+        "tabs_context" => props(&[
+            ("sessionId", json!({"type":"string"})),
+            ("all", json!({"type":"boolean"})),
+            ("tabId", tab_id_schema("Anchor tab ID.")),
+            ("browserId", browser_id_schema()),
+        ]),
+        "tabs_create" => props(&[
+            ("url", json!({"type":"string","format":"uri"})),
+            ("sessionId", json!({"type":"string"})),
+            ("active", json!({"type":"boolean","default":false})),
+            ("windowId", json!({"type":"integer"})),
+            ("browserId", browser_id_schema()),
+        ]),
+        "tabs_context_mcp" => props(&[
+            ("sessionId", json!({"type":"string"})),
+            ("tabId", tab_id_schema("Anchor tab ID.")),
+            ("browserId", browser_id_schema()),
+        ]),
+        "tabs_create_mcp" => props(&[
+            ("url", json!({"type":"string","format":"uri"})),
+            ("sessionId", json!({"type":"string"})),
+            ("tabId", tab_id_schema("Opener or anchor tab ID.")),
+            ("active", json!({"type":"boolean","default":false})),
+            ("browserId", browser_id_schema()),
+        ]),
+        "tabs_tab_id" | "tab_only" => props(&[
+            ("tabId", tab_id_schema("Numeric tab ID.")),
+            ("browserId", browser_id_schema()),
+        ]),
+        "computer" => props(&[
+            (
+                "action",
+                json!({"type":"string","enum":["screenshot","zoom","left_click","right_click","middle_click","double_click","triple_click","hover","scroll","left_click_drag","type","key"]}),
+            ),
+            (
+                "coordinate",
+                json!({"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2}),
+            ),
+            (
+                "start_coordinate",
+                json!({"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2}),
+            ),
+            ("text", json!({"type":"string"})),
+            (
+                "direction",
+                json!({"type":"string","enum":["up","down","left","right"]}),
+            ),
+            ("amount", json!({"type":"number"})),
+            (
+                "region",
+                json!({"type":"array","items":{"type":"number"},"minItems":4,"maxItems":4}),
+            ),
+            ("tabId", tab_id_schema("Numeric tab ID to operate on.")),
+            ("browserId", browser_id_schema()),
+        ]),
+        "navigate" => props(&[
+            ("url", json!({"type":"string","format":"uri"})),
+            (
+                "direction",
+                json!({"type":"string","enum":["back","forward"]}),
+            ),
+            ("tabId", tab_id_schema("Numeric tab ID to navigate.")),
+            ("browserId", browser_id_schema()),
+        ]),
+        "resize_window" => props(&[
+            ("width", json!({"type":"integer","minimum":1})),
+            ("height", json!({"type":"integer","minimum":1})),
+            (
+                "tabId",
+                tab_id_schema("Numeric tab ID whose window should be resized."),
+            ),
+            ("browserId", browser_id_schema()),
+        ]),
+        "read_page" => props(&[
+            (
+                "filter",
+                json!({"type":"string","enum":["all","interactive"],"default":"all"}),
+            ),
+            ("depth", json!({"type":"integer","minimum":1})),
+            ("maxChars", json!({"type":"integer","minimum":1})),
+            ("refId", json!({"type":"string"})),
+            ("compact", json!({"type":"boolean"})),
+            ("tabId", tab_id_schema("Numeric tab ID to read.")),
+            ("browserId", browser_id_schema()),
+        ]),
+        "find" => props(&[
+            ("description", json!({"type":"string","minLength":1})),
+            ("refId", json!({"type":"string"})),
+            ("tabId", tab_id_schema("Numeric tab ID to search.")),
+            ("browserId", browser_id_schema()),
+        ]),
+        "javascript_tool" => props(&[
+            ("code", json!({"type":"string","minLength":1})),
+            ("tabId", tab_id_schema("Numeric tab ID to run code in.")),
+            ("browserId", browser_id_schema()),
+        ]),
+        "form_input" => props(&[
+            ("refId", json!({"type":"string","minLength":1})),
+            ("value", json!({"type":"string"})),
+            ("tabId", tab_id_schema("Numeric tab ID.")),
+            ("browserId", browser_id_schema()),
+        ]),
+        "ref_id" => props(&[
+            ("refId", json!({"type":"string","minLength":1})),
+            ("tabId", tab_id_schema("Numeric tab ID.")),
+            ("browserId", browser_id_schema()),
+        ]),
+        "scroll_element" => props(&[
+            ("refId", json!({"type":"string","minLength":1})),
+            (
+                "direction",
+                json!({"type":"string","enum":["up","down","left","right"],"default":"down"}),
+            ),
+            ("amount", json!({"type":"integer","minimum":1})),
+            ("tabId", tab_id_schema("Numeric tab ID.")),
+            ("browserId", browser_id_schema()),
+        ]),
+        "fill_element" => props(&[
+            ("refId", json!({"type":"string","minLength":1})),
+            ("text", json!({"type":"string"})),
+            ("tabId", tab_id_schema("Numeric tab ID.")),
+            ("browserId", browser_id_schema()),
+        ]),
+        "wait_for_element" => props(&[
+            ("refId", json!({"type":"string"})),
+            ("description", json!({"type":"string"})),
+            ("timeout", json!({"type":"integer","minimum":1})),
+            ("tabId", tab_id_schema("Numeric tab ID.")),
+            ("browserId", browser_id_schema()),
+        ]),
+        "read_console_messages" => props(&[
+            ("clear", json!({"type":"boolean","default":false})),
+            ("tabId", tab_id_schema("Numeric tab ID.")),
+            ("browserId", browser_id_schema()),
+        ]),
+        "read_network_requests" => props(&[
+            ("clear", json!({"type":"boolean","default":false})),
+            (
+                "filter",
+                json!({"type":"string","enum":["all","failed"],"default":"all"}),
+            ),
+            (
+                "timeoutMs",
+                json!({"type":"integer","minimum":0,"maximum":600000,"default":30000}),
+            ),
+            ("tabId", tab_id_schema("Numeric tab ID.")),
+            ("browserId", browser_id_schema()),
+        ]),
+        "get_response_body" => props(&[
+            ("requestId", json!({"type":"string","minLength":1})),
+            ("tabId", tab_id_schema("Numeric tab ID.")),
+            ("browserId", browser_id_schema()),
+        ]),
+        "extract_page" => props(&[
+            (
+                "minChars",
+                json!({"type":"integer","minimum":1,"maximum":10000,"default":120}),
+            ),
+            (
+                "quietMs",
+                json!({"type":"integer","minimum":50,"maximum":1000,"default":250}),
+            ),
+            (
+                "guardMs",
+                json!({"type":"integer","minimum":500,"maximum":8000,"default":8000}),
+            ),
+            (
+                "maxChars",
+                json!({"type":"integer","minimum":1,"maximum":60000,"default":12000}),
+            ),
+            (
+                "maxLinks",
+                json!({"type":"integer","minimum":0,"maximum":200,"default":80}),
+            ),
+            ("tabId", tab_id_schema("Numeric tab ID.")),
+            ("browserId", browser_id_schema()),
+        ]),
+        "file_upload" => props(&[
+            ("refId", json!({"type":"string","minLength":1})),
+            ("fileName", json!({"type":"string","minLength":1})),
+            ("mimeType", json!({"type":"string","minLength":1})),
+            ("data", json!({"type":"string","minLength":1})),
+            ("tabId", tab_id_schema("Numeric tab ID.")),
+            ("browserId", browser_id_schema()),
+        ]),
+        "upload_image" => props(&[
+            ("refId", json!({"type":"string","minLength":1})),
+            ("screenshotData", json!({"type":"string"})),
+            ("tabId", tab_id_schema("Numeric tab ID.")),
+            ("browserId", browser_id_schema()),
+        ]),
+        "gif_creator" => props(&[
+            (
+                "action",
+                json!({"type":"string","enum":["start","stop","export"]}),
+            ),
+            (
+                "fps",
+                json!({"type":"integer","minimum":1,"maximum":30,"default":2}),
+            ),
+            ("tabId", tab_id_schema("Numeric tab ID.")),
+            ("browserId", browser_id_schema()),
+        ]),
+        "shortcuts_execute" => props(&[
+            ("shortcut", json!({"type":"string","minLength":1})),
+            ("tabId", tab_id_schema("Numeric tab ID.")),
+            ("browserId", browser_id_schema()),
+        ]),
+        _ => Map::new(),
+    };
+
+    let mut object = Map::new();
+    object.insert("type".to_string(), Value::String("object".to_string()));
+    object.insert("properties".to_string(), Value::Object(properties));
+    object.insert("additionalProperties".to_string(), Value::Bool(false));
+    if let Some(required) = required_fields(kind) {
+        object.insert(
+            "required".to_string(),
+            Value::Array(
+                required
+                    .iter()
+                    .map(|field| Value::String((*field).to_string()))
+                    .collect(),
+            ),
+        );
+    }
+    if kind == "browser_batch_run" || kind == "browser_batch_extract" {
+        object.insert(
+            "oneOf".to_string(),
+            json!([{"required":["urls"]}, {"required":["inputs"]}]),
+        );
+    }
+    object
+}
+
+fn required_fields(kind: &str) -> Option<&'static [&'static str]> {
+    match kind {
+        "agent_done" => Some(&["tabIds"]),
+        "browser_extract" => Some(&["url"]),
+        "browser_flow_start" => Some(&["url"]),
+        "browser_flow_observe" | "browser_flow_finish" => Some(&["sessionId"]),
+        "browser_flow_act" => Some(&["sessionId", "steps"]),
+        _ => None,
+    }
+}
+
+fn props(entries: &[(&str, Value)]) -> Map<String, Value> {
+    entries
+        .iter()
+        .map(|(name, value)| ((*name).to_string(), value.clone()))
+        .collect()
+}
+
+fn tab_id_schema(description: &str) -> Value {
+    json!({"type":"integer","description":description})
+}
+
+fn browser_id_schema() -> Value {
+    json!({"type":"string","description":"Target browser instanceId. Omit to use the default browser."})
+}
+
+fn take_string(args: &mut JsonObject, key: &str) -> Option<String> {
+    args.remove(key).and_then(|value| match value {
+        Value::String(s) if !s.is_empty() => Some(s),
+        _ => None,
+    })
+}
+
+fn take_i64(args: &mut JsonObject, key: &str) -> Option<i64> {
+    args.remove(key).and_then(|value| value.as_i64())
+}
