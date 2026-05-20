@@ -51,6 +51,18 @@ The extension owns:
 
 ## Quick Start
 
+Install with Homebrew:
+
+```bash
+brew install xiaotianxt/tap/bro
+brew services start bro
+```
+
+The service runs `bro serve` locally and exposes MCP at
+`http://127.0.0.1:3500/mcp`. Use `brew services restart bro` after upgrading.
+
+For source development:
+
 ```bash
 git clone https://github.com/xiaotianxt/bro.git
 cd bro
@@ -80,18 +92,27 @@ open the extension options, and paste the token from `~/.bro/settings.json`.
 
 ## MCP Configuration
 
-Point your MCP client at:
+Run bro as a local service, then point your MCP client at the HTTP endpoint and
+send the local bearer token from `~/.bro/settings.json`.
 
-```json
-{
-  "mcpServers": {
-    "bro": {
-      "type": "http",
-      "url": "http://127.0.0.1:3500/mcp"
-    }
-  }
-}
+For Codex, add this to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.bro]
+url = "http://127.0.0.1:3500/mcp"
+bearer_token_env_var = "BRO_MCP_TOKEN"
 ```
+
+Start Codex with the token in the environment:
+
+```bash
+export BRO_MCP_TOKEN="$(jq -r .token ~/.bro/settings.json)"
+```
+
+The MCP client should connect to this endpoint. It should not spawn the server
+per request; keep `bro serve` running through Homebrew services or another
+local process supervisor. Other MCP clients should send the same token as an
+`Authorization: Bearer ...` header. Do not hard-code or commit the token.
 
 ## Main Tools
 
@@ -129,6 +150,20 @@ make live-test
 
 The live test opens Reddit, LinkedIn, X, and Threads search pages in background
 tabs and checks that expected text/links still extract correctly.
+
+## Releases
+
+Tagged releases build GitHub-hosted binaries for:
+
+- `x86_64-unknown-linux-gnu`
+- `aarch64-unknown-linux-gnu`
+- `x86_64-apple-darwin`
+- `aarch64-apple-darwin`
+- `x86_64-pc-windows-msvc`
+- `aarch64-pc-windows-msvc`
+
+The Homebrew formula in `xiaotianxt/tap` installs the GitHub release binary for
+the current macOS or Linux architecture and exposes `brew services start bro`.
 
 ## Security Notes
 

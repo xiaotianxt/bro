@@ -10,6 +10,7 @@ const DEFAULT_PORT: u16 = 3500;
 #[derive(Debug, Parser)]
 #[command(name = "bro")]
 #[command(about = "Rust-native local MCP core for browser automation")]
+#[command(version)]
 pub struct Args {
     #[command(subcommand)]
     command: Option<Command>,

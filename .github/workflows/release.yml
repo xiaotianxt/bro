@@ -21,37 +21,59 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            archive: tar.gz
-          - os: macos-14
+            package: tar
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            package: tar
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            package: tar
+          - os: macos-15
             target: aarch64-apple-darwin
-            archive: tar.gz
+            package: tar
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            package: zip
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            package: zip
     steps:
       - uses: actions/checkout@v6.0.2
         with:
           ref: ${{ inputs.tag || github.ref }}
       - name: Resolve release tag
         id: release
+        shell: bash
         run: echo "tag=${{ inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2.9.1
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
       - name: Build
-        run: cargo build --locked --release --target ${{ matrix.target }}
-      - name: Package
+        run: cargo +stable build --locked --release --target ${{ matrix.target }}
+      - name: Package Unix
+        if: matrix.package == 'tar'
         shell: bash
         run: |
           set -euo pipefail
+          archive="bro-${{ steps.release.outputs.tag }}-${{ matrix.target }}.tar.gz"
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/bro" "dist/bro"
           cp README.md LICENSE NOTICE dist/
-          tar -C dist -czf "bro-${{ steps.release.outputs.tag }}-${{ matrix.target }}.tar.gz" bro README.md LICENSE NOTICE
+          tar -C dist -czf "$archive" bro README.md LICENSE NOTICE
+      - name: Package Windows
+        if: matrix.package == 'zip'
+        shell: pwsh
+        run: |
+          $Archive = "bro-${{ steps.release.outputs.tag }}-${{ matrix.target }}.zip"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/bro.exe" "dist/bro.exe"
+          Copy-Item README.md, LICENSE, NOTICE dist/
+          Compress-Archive -Path dist/* -DestinationPath $Archive -Force
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: bro-${{ steps.release.outputs.tag }}-${{ matrix.target }}
-          path: bro-${{ steps.release.outputs.tag }}-${{ matrix.target }}.tar.gz
+          path: bro-${{ steps.release.outputs.tag }}-${{ matrix.target }}.*
 
   extension:
     name: Build extension
@@ -62,6 +84,7 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
       - name: Resolve release tag
         id: release
+        shell: bash
         run: echo "tag=${{ inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
       - uses: pnpm/action-setup@v6.0.8
         with:

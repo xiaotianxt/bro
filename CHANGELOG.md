@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0
+
+- Add cross-platform GitHub release builds for macOS, Linux, and Windows on x86_64 and arm64.
+- Add Homebrew release automation for `xiaotianxt/tap/bro` using GitHub-built binaries.
+- Add Homebrew service support for running the local bro MCP server.
+- Add `bro --version` for release and install verification.
+
 ## 0.1.0
 
 - Initial bro repository.

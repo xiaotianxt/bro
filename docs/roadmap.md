@@ -21,7 +21,6 @@
 
 ## Later
 
-- Homebrew formula once the release path is exercised.
-- Optional native installer for LaunchAgent setup on macOS.
+- Optional native installer for non-Homebrew setup on macOS.
 - Recipe/skill layer for user-owned browsing workflows built on top of the
   generic browser facade.
