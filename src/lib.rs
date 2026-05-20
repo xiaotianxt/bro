@@ -7,4 +7,5 @@ pub mod mcp;
 pub mod output;
 pub mod protocol;
 pub mod settings;
+pub mod setup;
 pub mod tool_catalog;

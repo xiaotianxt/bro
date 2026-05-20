@@ -1,6 +1,6 @@
 [package]
 name = "bro"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "Rust-native MCP server for controlling a local browser through a minimal WebExtension bridge"
 authors = ["Yupei Tian"]
@@ -22,6 +22,7 @@ thiserror = "2"
 time = { version = "0.3", features = ["formatting", "macros"] }
 tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = "0.7"
+toml_edit = "0.25.11"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }

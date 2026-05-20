@@ -14,16 +14,21 @@ logic, no cloud relay, and no final-answer generation.
 ## Build
 
 ```bash
-npm --prefix packages/shared install
-npm --prefix packages/shared run build
-npm --prefix extension install
-npm --prefix extension run typecheck
-npm --prefix extension run build
+pnpm install
+pnpm --filter @bro/shared build
+pnpm --filter @bro/extension typecheck
+pnpm --filter @bro/extension build
 ```
 
-Load `extension/dist/` as an unpacked extension in a Chromium-family browser.
-Open the extension options page and paste the token from
-`~/.bro/settings.json`.
+For Homebrew installs, `bro setup browser` reveals the installed extension
+directory and copies the token to the clipboard. For source checkouts, run:
+
+```bash
+cargo run -- setup browser --extension-dir extension/dist
+```
+
+Load that directory as an unpacked extension in a Chromium-family browser. Open
+the extension options page and paste the token.
 
 ## Attribution
 

@@ -56,10 +56,21 @@ Install with Homebrew:
 ```bash
 brew install xiaotianxt/tap/bro
 brew services start bro
+bro setup codex
+bro setup browser
 ```
 
 The service runs `bro serve` locally and exposes MCP at
-`http://127.0.0.1:3500/mcp`. Use `brew services restart bro` after upgrading.
+`http://127.0.0.1:3500/mcp`. `bro setup codex` updates
+`~/.codex/config.toml` to connect Codex to that local MCP endpoint with the
+bearer token from `~/.bro/settings.json`. Restart Codex after running it.
+
+`bro setup browser` copies the token to your clipboard, opens the browser
+extension page, and reveals the unpacked extension directory. In the browser,
+enable Developer mode, choose Load unpacked, select the shown directory, then
+open bro Options and paste the token.
+
+Use `brew services restart bro` after upgrading.
 
 For source development:
 
@@ -80,39 +91,83 @@ The first run creates `~/.bro/settings.json`:
 Build the extension:
 
 ```bash
-npm --prefix packages/shared install
-npm --prefix packages/shared run build
-npm --prefix extension install
-npm --prefix extension run typecheck
-npm --prefix extension run build
+pnpm install
+pnpm --filter @bro/shared build
+pnpm --filter @bro/extension typecheck
+pnpm --filter @bro/extension build
 ```
 
-Load `extension/dist/` as an unpacked extension in a Chromium-family browser,
-open the extension options, and paste the token from `~/.bro/settings.json`.
+For source checkouts, pass the local extension directory explicitly:
+
+```bash
+cargo run -- setup browser --extension-dir extension/dist
+```
 
 ## MCP Configuration
 
-Run bro as a local service, then point your MCP client at the HTTP endpoint and
-send the local bearer token from `~/.bro/settings.json`.
+Run bro as a local service, then point your MCP client at the HTTP endpoint with
+the local bearer token from `~/.bro/settings.json`.
 
-For Codex, add this to `~/.codex/config.toml`:
+For Codex, prefer the setup command:
+
+```bash
+bro setup codex
+```
+
+It writes a `bro` MCP server entry like this:
 
 ```toml
 [mcp_servers.bro]
 url = "http://127.0.0.1:3500/mcp"
-bearer_token_env_var = "BRO_MCP_TOKEN"
+[mcp_servers.bro.http_headers]
+Authorization = "Bearer <token from ~/.bro/settings.json>"
 ```
 
-Start Codex with the token in the environment:
+The setup command does not print the token. If you configure another MCP client
+manually, send the same token as an `Authorization: Bearer ...` header.
 
-```bash
-export BRO_MCP_TOKEN="$(jq -r .token ~/.bro/settings.json)"
-```
+Codex also supports `bearer_token_env_var`, but `bro setup codex` uses a static
+local header so the configuration does not depend on a particular shell startup
+file.
 
 The MCP client should connect to this endpoint. It should not spawn the server
 per request; keep `bro serve` running through Homebrew services or another
-local process supervisor. Other MCP clients should send the same token as an
-`Authorization: Bearer ...` header. Do not hard-code or commit the token.
+local process supervisor. Do not commit browser output, cookies, signed URLs, or
+tokens.
+
+## Browser Extension
+
+Homebrew installs the unpacked bro extension under `share/bro/extension`.
+
+```bash
+bro setup browser
+```
+
+The command:
+
+- finds the installed extension directory
+- copies the local bro token to the clipboard when the OS clipboard tool is
+  available
+- opens `chrome://extensions/` when possible
+- reveals the extension directory in the file manager when possible
+
+Chromium-family browsers still require a user gesture to load unpacked
+extensions. In the browser:
+
+1. Enable Developer mode.
+2. Choose Load unpacked.
+3. Select the extension directory printed by `bro setup browser`.
+4. Open bro Options.
+5. Paste the copied token and save.
+
+Verify the connection:
+
+```bash
+curl -fsS http://127.0.0.1:3500/status
+bro call browsers_context
+```
+
+`extensionCount` should be at least `1`.
 
 ## Main Tools
 
@@ -135,10 +190,9 @@ cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 
-npm --prefix packages/shared run typecheck
-npm --prefix packages/shared run build
-npm --prefix extension run typecheck
-npm --prefix extension run build
+pnpm --filter @bro/shared build
+pnpm --filter @bro/extension typecheck
+pnpm --filter @bro/extension build
 ```
 
 Run live dynamic-site regression tests when a local bro server and extension are
@@ -163,7 +217,8 @@ Tagged releases build GitHub-hosted binaries for:
 - `aarch64-pc-windows-msvc`
 
 The Homebrew formula in `xiaotianxt/tap` installs the GitHub release binary for
-the current macOS or Linux architecture and exposes `brew services start bro`.
+the current macOS or Linux architecture, installs the matching extension asset,
+and exposes `brew services start bro`.
 
 ## Security Notes
 

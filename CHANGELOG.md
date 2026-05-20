@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1
+
+- Add `bro setup codex` to configure Codex MCP without shell-specific token environment setup.
+- Add `bro setup browser` to open browser extension setup, reveal the extension directory, and copy the local token to the clipboard when available.
+- Install the browser extension asset through the Homebrew formula so Homebrew users do not need a source checkout.
+- Update README setup instructions around Homebrew, Codex MCP auth, and browser extension loading.
+
 ## 0.2.0
 
 - Add cross-platform GitHub release builds for macOS, Linux, and Windows on x86_64 and arm64.

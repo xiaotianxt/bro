@@ -249,10 +249,12 @@ DARWIN_ARM64_ASSET="bro-${TAG}-aarch64-apple-darwin.tar.gz"
 DARWIN_X86_64_ASSET="bro-${TAG}-x86_64-apple-darwin.tar.gz"
 LINUX_ARM64_ASSET="bro-${TAG}-aarch64-unknown-linux-gnu.tar.gz"
 LINUX_X86_64_ASSET="bro-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
+EXTENSION_ASSET="bro-extension-${TAG}.zip"
 DARWIN_ARM64_URL="https://github.com/${REPO_SLUG}/releases/download/${TAG}/${DARWIN_ARM64_ASSET}"
 DARWIN_X86_64_URL="https://github.com/${REPO_SLUG}/releases/download/${TAG}/${DARWIN_X86_64_ASSET}"
 LINUX_ARM64_URL="https://github.com/${REPO_SLUG}/releases/download/${TAG}/${LINUX_ARM64_ASSET}"
 LINUX_X86_64_URL="https://github.com/${REPO_SLUG}/releases/download/${TAG}/${LINUX_X86_64_ASSET}"
+EXTENSION_URL="https://github.com/${REPO_SLUG}/releases/download/${TAG}/${EXTENSION_ASSET}"
 
 log "preparing ${TAG}"
 
@@ -299,11 +301,13 @@ DARWIN_ARM64_SHA="$(release_asset_sha "$TAG" "$DARWIN_ARM64_ASSET")"
 DARWIN_X86_64_SHA="$(release_asset_sha "$TAG" "$DARWIN_X86_64_ASSET")"
 LINUX_ARM64_SHA="$(release_asset_sha "$TAG" "$LINUX_ARM64_ASSET")"
 LINUX_X86_64_SHA="$(release_asset_sha "$TAG" "$LINUX_X86_64_ASSET")"
+EXTENSION_SHA="$(release_asset_sha "$TAG" "$EXTENSION_ASSET")"
 
 log "asset sha256 ${DARWIN_ARM64_ASSET} ${DARWIN_ARM64_SHA}"
 log "asset sha256 ${DARWIN_X86_64_ASSET} ${DARWIN_X86_64_SHA}"
 log "asset sha256 ${LINUX_ARM64_ASSET} ${LINUX_ARM64_SHA}"
 log "asset sha256 ${LINUX_X86_64_ASSET} ${LINUX_X86_64_SHA}"
+log "asset sha256 ${EXTENSION_ASSET} ${EXTENSION_SHA}"
 
 if [[ "$UPDATE_TAP" -eq 1 ]]; then
   log "updating tap ${TAP_NAME}"
@@ -314,7 +318,8 @@ if [[ "$UPDATE_TAP" -eq 1 ]]; then
     "$DARWIN_ARM64_URL" "$DARWIN_ARM64_SHA" \
     "$DARWIN_X86_64_URL" "$DARWIN_X86_64_SHA" \
     "$LINUX_ARM64_URL" "$LINUX_ARM64_SHA" \
-    "$LINUX_X86_64_URL" "$LINUX_X86_64_SHA" <<'PY'
+    "$LINUX_X86_64_URL" "$LINUX_X86_64_SHA" \
+    "$EXTENSION_URL" "$EXTENSION_SHA" <<'PY'
 from pathlib import Path
 import sys
 
@@ -328,6 +333,8 @@ linux_arm64_url = sys.argv[7]
 linux_arm64_sha = sys.argv[8]
 linux_x86_64_url = sys.argv[9]
 linux_x86_64_sha = sys.argv[10]
+extension_url = sys.argv[11]
+extension_sha = sys.argv[12]
 
 path.write_text(f'''class Bro < Formula
   desc "Rust-native local MCP server for browser automation"
@@ -364,11 +371,20 @@ path.write_text(f'''class Bro < Formula
     depends_on "rust" => :build
   end
 
+  resource "extension" do
+    url "{extension_url}"
+    sha256 "{extension_sha}"
+  end
+
   def install
     if build.head?
       system "cargo", "install", "--locked", "--bin", "bro", "--root", prefix, "."
     else
       bin.install "bro"
+    end
+
+    resource("extension").stage do
+      (share/"bro/extension").install Dir["*"]
     end
   end
 
@@ -381,6 +397,7 @@ path.write_text(f'''class Bro < Formula
 
   test do
     assert_match version.to_s, shell_output("#{{bin}}/bro --version")
+    assert_predicate share/"bro/extension/manifest.json", :exist?
   end
 end
 ''')
