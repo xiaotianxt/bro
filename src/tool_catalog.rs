@@ -32,6 +32,7 @@ pub enum ToolRoute {
     BrowsersContext,
     BatchRun,
     Extract,
+    CurrentExtract,
     BatchExtract,
     FlowStart,
     FlowObserve,
@@ -129,13 +130,19 @@ static SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "browser.extract",
-        description: "Open one URL, use browser-side DOM quiet readiness, then return text, links, and extraction diagnostics. Defaults: cleanup true, active false.",
+        description: "Open one URL, use browser-side DOM quiet readiness, then return compact text and extraction diagnostics. Links and a11y fallback are opt-in. Defaults: cleanup true, active false.",
         route: ToolRoute::Extract,
         schema: "browser_extract",
     },
     ToolSpec {
+        name: "browser.current.extract",
+        description: "Extract the current/default active tab in one call. Use for pages the user already opened. Links and a11y fallback are opt-in.",
+        route: ToolRoute::CurrentExtract,
+        schema: "browser_current_extract",
+    },
+    ToolSpec {
         name: "browser.batch.extract",
-        description: "Extract multiple URLs in parallel using browser-side DOM quiet readiness. Defaults: concurrency 6, cleanup true, active false.",
+        description: "Extract multiple URLs in parallel using browser-side DOM quiet readiness. Returns compact text by default; links and a11y fallback are opt-in. Defaults: concurrency 6, cleanup true, active false.",
         route: ToolRoute::BatchExtract,
         schema: "browser_batch_extract",
     },
@@ -249,7 +256,7 @@ static SPECS: &[ToolSpec] = &[
     forward(
         "get_page_text",
         "Extract plain text content from the current page.",
-        "tab_only",
+        "get_page_text",
     ),
     forward(
         "extract_page",
@@ -377,19 +384,49 @@ fn schema(kind: &str) -> JsonObject {
             ),
             (
                 "maxChars",
-                json!({"type":"integer","minimum":1,"maximum":60000,"default":12000}),
+                json!({"type":"integer","minimum":1,"maximum":60000,"default":8000}),
             ),
             (
                 "maxLinks",
-                json!({"type":"integer","minimum":0,"maximum":200,"default":80}),
+                json!({"type":"integer","minimum":0,"maximum":200,"default":20}),
             ),
             (
                 "includeA11y",
                 json!({"type":"boolean","default":false,"description":"When true, read the accessibility tree as a fallback if browser-side DOM extraction is not ready."}),
             ),
-            ("includeLinks", json!({"type":"boolean","default":true})),
+            (
+                "includeLinks",
+                json!({"type":"boolean","default":false,"description":"When true, include extracted links. Keep false unless URLs are part of the answer."}),
+            ),
             ("cleanup", json!({"type":"boolean","default":true})),
             ("active", json!({"type":"boolean","default":false})),
+            ("browserId", browser_id_schema()),
+        ]),
+        "browser_current_extract" => props(&[
+            (
+                "id",
+                json!({"type":"string","minLength":1,"description":"Optional caller-supplied result id. Defaults to current."}),
+            ),
+            (
+                "minChars",
+                json!({"type":"integer","minimum":1,"maximum":10000,"default":120,"description":"Minimum content size for ready quality; not a sleep duration."}),
+            ),
+            (
+                "maxChars",
+                json!({"type":"integer","minimum":1,"maximum":60000,"default":8000}),
+            ),
+            (
+                "maxLinks",
+                json!({"type":"integer","minimum":0,"maximum":200,"default":20}),
+            ),
+            (
+                "includeA11y",
+                json!({"type":"boolean","default":false,"description":"When true, read the accessibility tree as a fallback if browser-side DOM extraction is not ready."}),
+            ),
+            (
+                "includeLinks",
+                json!({"type":"boolean","default":false,"description":"When true, include extracted links. Keep false unless URLs are part of the answer."}),
+            ),
             ("browserId", browser_id_schema()),
         ]),
         "browser_batch_extract" => props(&[
@@ -411,17 +448,20 @@ fn schema(kind: &str) -> JsonObject {
             ),
             (
                 "maxChars",
-                json!({"type":"integer","minimum":1,"maximum":60000,"default":12000}),
+                json!({"type":"integer","minimum":1,"maximum":60000,"default":8000}),
             ),
             (
                 "maxLinks",
-                json!({"type":"integer","minimum":0,"maximum":200,"default":80}),
+                json!({"type":"integer","minimum":0,"maximum":200,"default":20}),
             ),
             (
                 "includeA11y",
                 json!({"type":"boolean","default":false,"description":"When true, read the accessibility tree as a fallback if browser-side DOM extraction is not ready."}),
             ),
-            ("includeLinks", json!({"type":"boolean","default":true})),
+            (
+                "includeLinks",
+                json!({"type":"boolean","default":false,"description":"When true, include extracted links. Keep false unless URLs are part of the answer."}),
+            ),
             ("cleanup", json!({"type":"boolean","default":true})),
             ("active", json!({"type":"boolean","default":false})),
             ("browserId", browser_id_schema()),
@@ -479,6 +519,14 @@ fn schema(kind: &str) -> JsonObject {
             ("tabId", tab_id_schema("Numeric tab ID.")),
             ("browserId", browser_id_schema()),
         ]),
+        "get_page_text" => props(&[
+            (
+                "maxChars",
+                json!({"type":"integer","minimum":1,"maximum":60000,"default":12000,"description":"Maximum number of text characters to return."}),
+            ),
+            ("tabId", tab_id_schema("Numeric tab ID.")),
+            ("browserId", browser_id_schema()),
+        ]),
         "computer" => props(&[
             (
                 "action",
@@ -501,6 +549,10 @@ fn schema(kind: &str) -> JsonObject {
             (
                 "region",
                 json!({"type":"array","items":{"type":"number"},"minItems":4,"maxItems":4}),
+            ),
+            (
+                "quality",
+                json!({"type":"integer","minimum":10,"maximum":95,"default":55,"description":"JPEG quality for screenshot/zoom actions. Raise only when visual detail matters."}),
             ),
             ("tabId", tab_id_schema("Numeric tab ID to operate on.")),
             ("browserId", browser_id_schema()),
@@ -618,11 +670,11 @@ fn schema(kind: &str) -> JsonObject {
             ),
             (
                 "maxChars",
-                json!({"type":"integer","minimum":1,"maximum":60000,"default":12000}),
+                json!({"type":"integer","minimum":1,"maximum":60000,"default":8000}),
             ),
             (
                 "maxLinks",
-                json!({"type":"integer","minimum":0,"maximum":200,"default":80}),
+                json!({"type":"integer","minimum":0,"maximum":200,"default":20}),
             ),
             ("tabId", tab_id_schema("Numeric tab ID.")),
             ("browserId", browser_id_schema()),

@@ -14,6 +14,7 @@ interface AccessibilityTreeResult {
 }
 
 interface ExtractPageResult {
+  tabId?: number
   title: string
   url: string
   text: string
@@ -26,9 +27,9 @@ interface ExtractPageResult {
   }
 }
 
-const DEFAULT_EXTRACT_MAX_CHARS = 12000
+const DEFAULT_EXTRACT_MAX_CHARS = 8000
 const MAX_EXTRACT_MAX_CHARS = 60000
-const DEFAULT_EXTRACT_MAX_LINKS = 80
+const DEFAULT_EXTRACT_MAX_LINKS = 20
 const MAX_EXTRACT_MAX_LINKS = 200
 const DEFAULT_EXTRACT_MIN_CHARS = 120
 const MAX_EXTRACT_MIN_CHARS = 10000
@@ -760,14 +761,18 @@ async function executeFind(
 
 async function executeGetPageText(
   tabId: number,
-  _rawArgs: unknown,
+  rawArgs: unknown,
 ): Promise<ToolResult> {
-  const MAX_CHARS = 50000
+  const args =
+    typeof rawArgs === 'object' && rawArgs !== null
+      ? (rawArgs as Record<string, unknown>)
+      : {}
+  const maxChars = getClampedInteger(args, 'maxChars', 12000, 1, 60000)
 
   const text = await executeInPage(
     tabId,
     pageGetBodyText,
-    [MAX_CHARS],
+    [maxChars],
   ) as string
 
   return {
@@ -839,6 +844,7 @@ async function executeExtractPage(
         pageExtractStable,
         [{ maxChars, maxLinks, minChars, quietMs, guardMs }],
       ) as ExtractPageResult
+      result.tabId = tabId
       break
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)

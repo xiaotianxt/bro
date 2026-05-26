@@ -60,6 +60,18 @@ bro setup codex
 bro setup browser
 ```
 
+Install the optional Codex/agent skill for bro-specific browser workflows:
+
+```bash
+npx -y github:xiaotianxt/skills bro-browser
+```
+
+After the npm package is published, the equivalent command is:
+
+```bash
+npx -y @xiaotianxt/skills bro-browser
+```
+
 The service runs `bro serve` locally and exposes MCP at
 `http://127.0.0.1:3500/mcp`. `bro setup codex` updates
 `~/.codex/config.toml` to connect Codex to that local MCP endpoint with the
@@ -171,7 +183,8 @@ bro call browsers_context
 
 ## Main Tools
 
-- `browser.extract`: open one URL, extract visible text/links, close by default
+- `browser.extract`: open one URL, extract visible text, close by default
+- `browser.current.extract`: extract the current/default active tab in one call
 - `browser.batch.extract`: extract many URLs in parallel
 - `browser.batch.run`: open many URLs, read plain text, close by default
 - `browser.flow.start`: lease one tab for sequential work
@@ -180,8 +193,16 @@ bro call browsers_context
 - `browser.flow.finish`: release and optionally close the leased tab
 
 Raw browser primitives such as `tabs_create`, `tabs_close`, `read_page`,
-`javascript_tool`, `click_element`, and `fill_element` remain available for
-lower-level work.
+`javascript_tool`, `click_element`, `fill_element`, and `computer` remain
+available for lower-level work.
+
+Extraction defaults are intentionally compact for agent workflows:
+
+- text is capped at 8,000 characters by default
+- links are omitted unless `includeLinks:true`
+- accessibility-tree fallback is omitted unless `includeA11y:true`
+- screenshots default to lower JPEG quality; pass `quality` only when visual
+  detail matters
 
 ## Development
 

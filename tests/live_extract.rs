@@ -128,6 +128,7 @@ fn call_extract_batch(cases: &[LiveCase]) -> Value {
             "maxChars": 3000,
             "maxLinks": 20,
             "includeA11y": false,
+            "includeLinks": true,
             "cleanup": true
         }),
     )

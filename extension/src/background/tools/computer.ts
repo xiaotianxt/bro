@@ -49,12 +49,18 @@ interface ComputerArgs {
   direction?: ScrollDirection
   amount?: number
   region?: [number, number, number, number] // x, y, width, height
+  quality?: number
 }
 
 // CDP response types
 interface CaptureScreenshotResult {
   data: string // base64
 }
+
+const DEFAULT_SCREENSHOT_QUALITY = 55
+const DEFAULT_ZOOM_QUALITY = 70
+const MIN_SCREENSHOT_QUALITY = 10
+const MAX_SCREENSHOT_QUALITY = 95
 
 // ---------------------------------------------------------------------------
 // Input validation
@@ -141,6 +147,19 @@ function validateArgs(args: unknown): ComputerArgs {
       throw new Error('computer: "region" must be [x, y, width, height]')
     }
     validated.region = r as [number, number, number, number]
+  }
+
+  if (a['quality'] !== undefined) {
+    if (
+      typeof a['quality'] !== 'number' ||
+      !Number.isFinite(a['quality'])
+    ) {
+      throw new Error('computer: "quality" must be a finite number')
+    }
+    validated.quality = Math.min(
+      MAX_SCREENSHOT_QUALITY,
+      Math.max(MIN_SCREENSHOT_QUALITY, Math.round(a['quality'])),
+    )
   }
 
   return validated
@@ -308,13 +327,16 @@ function parseKeyCombo(combo: string): {
 // Action implementations
 // ---------------------------------------------------------------------------
 
-async function actionScreenshot(tabId: number): Promise<ToolResult> {
+async function actionScreenshot(
+  tabId: number,
+  quality = DEFAULT_SCREENSHOT_QUALITY,
+): Promise<ToolResult> {
   const result = await cdpSession.send<CaptureScreenshotResult>(
     tabId,
     'Page.captureScreenshot',
     {
       format: 'jpeg',
-      quality: 85,
+      quality,
       captureBeyondViewport: false,
     },
   )
@@ -333,39 +355,25 @@ async function actionScreenshot(tabId: number): Promise<ToolResult> {
 async function actionZoom(
   tabId: number,
   region: [number, number, number, number],
+  quality = DEFAULT_ZOOM_QUALITY,
 ): Promise<ToolResult> {
-  // Take a full screenshot first
-  const result = await cdpSession.send<CaptureScreenshotResult>(
-    tabId,
-    'Page.captureScreenshot',
-    {
-      format: 'jpeg',
-      quality: 85,
-      captureBeyondViewport: false,
-    },
-  )
-
-  // Use CDP to crop the region — use Page.captureScreenshot with clip parameter
   const [x, y, width, height] = region
   const clippedResult = await cdpSession.send<CaptureScreenshotResult>(
     tabId,
     'Page.captureScreenshot',
     {
       format: 'jpeg',
-      quality: 90,
+      quality,
       captureBeyondViewport: false,
       clip: { x, y, width, height, scale: 1 },
     },
   )
 
-  // Use the clipped result if successful, fall back to full screenshot
-  const data = clippedResult.data ?? result.data
-
   return {
     content: [
       {
         type: 'image',
-        data,
+        data: clippedResult.data,
         mimeType: 'image/jpeg',
       },
     ],
@@ -598,11 +606,11 @@ async function executeComputer(tabId: number, rawArgs: unknown): Promise<ToolRes
 
   switch (args.action) {
     case 'screenshot':
-      return actionScreenshot(tabId)
+      return actionScreenshot(tabId, args.quality)
 
     case 'zoom': {
       const region = args.region ?? [0, 0, 1280, 720]
-      return actionZoom(tabId, region)
+      return actionZoom(tabId, region, args.quality)
     }
 
     case 'left_click': {

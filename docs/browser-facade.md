@@ -8,7 +8,8 @@ not claim a 100% Rust browser runtime.
 ## Batch Extraction
 
 `browser.batch.extract` opens independent URLs in background tabs, extracts
-visible text and links, then closes tabs by default.
+visible text, then closes tabs by default. Links are opt-in so shopping/search
+pages do not flood the agent with navigation and ad URLs.
 
 Minimal input:
 
@@ -26,10 +27,12 @@ Useful options:
 - `inputs`: array of `{ "id": "...", "url": "..." }` when stable result IDs
   matter
 - `concurrency`: defaults to 6, clamped to 16
-- `maxChars`: defaults to 12000, clamped to 60000
-- `maxLinks`: defaults to 80, clamped to 200
+- `maxChars`: defaults to 8000, clamped to 60000
+- `maxLinks`: defaults to 20, clamped to 200
 - `includeA11y`: defaults to false; when true, accessibility tree is used as a
   fallback only when DOM extraction is not ready
+- `includeLinks`: defaults to false; enable it only when links are part of the
+  answer or follow-up crawl
 - `cleanup`: defaults to true
 
 `urls` and `inputs` are mutually exclusive.
@@ -44,7 +47,24 @@ Useful options:
 - `diagnostics`
 
 Diagnostics include the source used, readiness, elapsed time, and fallback
-attempts.
+attempts. Empty diagnostic fields are omitted from the JSON result.
+
+## Current Tab Extraction
+
+`browser.current.extract` reads the current/default active tab without first
+calling `browsers_context` or `tabs_context`. Use it when the user says a page
+is already open or when the task is to inspect the current logged-in page.
+
+```json
+{
+  "maxChars": 8000,
+  "includeLinks": false
+}
+```
+
+The extension includes the resolved `tabId` in the extraction payload when
+available, so the facade can still use fallback readers inside the same MCP
+tool call.
 
 ## Flow
 

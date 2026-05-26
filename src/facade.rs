@@ -20,9 +20,9 @@ const DEFAULT_TEXT_READY_TIMEOUT_MS: u64 = 4_000;
 const DEFAULT_TEXT_READY_MIN_CHARS: usize = 120;
 const MAX_TEXT_READY_MIN_CHARS: usize = 10_000;
 const EXTRACT_PAGE_GUARD_MS: u64 = 8_000;
-const DEFAULT_EXTRACT_MAX_CHARS: u64 = 12_000;
+const DEFAULT_EXTRACT_MAX_CHARS: u64 = 8_000;
 const MAX_EXTRACT_MAX_CHARS: u64 = 60_000;
-const DEFAULT_EXTRACT_MAX_LINKS: u64 = 80;
+const DEFAULT_EXTRACT_MAX_LINKS: u64 = 20;
 const MAX_EXTRACT_MAX_LINKS: u64 = 200;
 const TEXT_READY_POLL_MS: u64 = 250;
 const MAX_WAIT_MS: u64 = 30_000;
@@ -109,6 +109,12 @@ impl BrowserFacade {
     pub async fn extract(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
         let args = ExtractArgs::parse(args)?;
         let result = self.run_extract_item(args.input, args.options).await;
+        Ok(json!(result))
+    }
+
+    pub async fn current_extract(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
+        let args = CurrentExtractArgs::parse(args)?;
+        let result = self.extract_current_tab(args.id, args.options).await;
         Ok(json!(result))
     }
 
@@ -473,15 +479,60 @@ impl BrowserFacade {
         options: &ExtractOptions,
     ) -> ExtractItemResult {
         let start = time::Instant::now();
+        let initial = self
+            .read_extension_extract_page(Some(tab_id), options.browser_id.clone(), options)
+            .await;
+        let title = title.or_else(|| {
+            initial
+                .as_ref()
+                .ok()
+                .and_then(|snapshot| non_empty_string(snapshot.title.clone()))
+        });
+        self.finish_extract_from_initial(input, Some(tab_id), title, initial, options, start)
+            .await
+    }
+
+    async fn extract_current_tab(&self, id: String, options: ExtractOptions) -> ExtractItemResult {
+        let start = time::Instant::now();
+        let snapshot = match self
+            .read_extension_extract_page(None, options.browser_id.clone(), &options)
+            .await
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return ExtractItemResult::failed(
+                    BatchInput {
+                        id,
+                        url: "current".to_string(),
+                    },
+                    None,
+                    error.to_string(),
+                );
+            }
+        };
+        let tab_id = snapshot.tab_id;
+        let title = non_empty_string(snapshot.title.clone());
+        let url = non_empty_string(snapshot.url.clone()).unwrap_or_else(|| "current".to_string());
+        let input = BatchInput { id, url };
+        self.finish_extract_from_initial(input, tab_id, title, Ok(snapshot), &options, start)
+            .await
+    }
+
+    async fn finish_extract_from_initial(
+        &self,
+        input: BatchInput,
+        tab_id: Option<i64>,
+        title: Option<String>,
+        initial: Result<DomSnapshot, FacadeError>,
+        options: &ExtractOptions,
+        start: time::Instant,
+    ) -> ExtractItemResult {
         let mut diagnostics = ExtractDiagnostics::default();
         let mut best_text;
         let mut best_source = "extract_page";
         let mut links = Vec::new();
 
-        let mut best_quality = match self
-            .read_extension_extract_page(tab_id, options.browser_id.clone(), options)
-            .await
-        {
+        let mut best_quality = match initial {
             Ok(snapshot) => {
                 diagnostics.text_attempts = 1;
                 diagnostics.dom_chars = snapshot.text.chars().count();
@@ -500,58 +551,75 @@ impl BrowserFacade {
 
         if options.include_a11y && !best_quality.ready {
             diagnostics.a11y_attempted = true;
-            match self
-                .read_a11y_snapshot(tab_id, options.browser_id.clone(), options.max_chars)
-                .await
-            {
-                Ok(snapshot) => {
-                    diagnostics.a11y_chars = snapshot.chars().count();
-                    links.extend(parse_a11y_links(&snapshot));
-                    let quality = text_quality(&snapshot, options.min_chars);
-                    if !best_quality.ready && quality.score > best_quality.score {
-                        best_text = snapshot;
-                        best_quality = quality;
-                        best_source = "a11y";
+            if let Some(tab_id) = tab_id {
+                match self
+                    .read_a11y_snapshot(tab_id, options.browser_id.clone(), options.max_chars)
+                    .await
+                {
+                    Ok(snapshot) => {
+                        diagnostics.a11y_chars = snapshot.chars().count();
+                        links.extend(parse_a11y_links(&snapshot));
+                        let quality = text_quality(&snapshot, options.min_chars);
+                        if !best_quality.ready && quality.score > best_quality.score {
+                            best_text = snapshot;
+                            best_quality = quality;
+                            best_source = "a11y";
+                        }
                     }
+                    Err(error) => diagnostics.errors.push(format!("a11y: {error}")),
                 }
-                Err(error) => diagnostics.errors.push(format!("a11y: {error}")),
+            } else {
+                diagnostics
+                    .errors
+                    .push("a11y: current tab id unavailable".to_string());
             }
         }
 
         let needs_dom_fallback = !best_quality.ready;
         if needs_dom_fallback || (options.include_links && links.is_empty()) {
             diagnostics.dom_attempted = true;
-            match self
-                .read_dom_snapshot(tab_id, options.browser_id.clone())
-                .await
-            {
-                Ok(snapshot) => {
-                    diagnostics.dom_chars = snapshot.text.chars().count();
-                    links.extend(snapshot.links);
-                    let quality = text_quality(&snapshot.text, options.min_chars);
-                    if !best_quality.ready && quality.score > best_quality.score {
-                        best_text = snapshot.text;
-                        best_quality = quality;
-                        best_source = "dom";
+            if let Some(tab_id) = tab_id {
+                match self
+                    .read_dom_snapshot(tab_id, options.browser_id.clone())
+                    .await
+                {
+                    Ok(snapshot) => {
+                        diagnostics.dom_chars = snapshot.text.chars().count();
+                        links.extend(snapshot.links);
+                        let quality = text_quality(&snapshot.text, options.min_chars);
+                        if !best_quality.ready && quality.score > best_quality.score {
+                            best_text = snapshot.text;
+                            best_quality = quality;
+                            best_source = "dom";
+                        }
                     }
+                    Err(error) => diagnostics.errors.push(format!("dom: {error}")),
                 }
-                Err(error) => diagnostics.errors.push(format!("dom: {error}")),
+            } else {
+                diagnostics
+                    .errors
+                    .push("dom: current tab id unavailable".to_string());
             }
         }
 
         dedupe_links(&mut links);
+        let original_text_chars = best_text.chars().count();
+        let original_link_count = links.len();
         enforce_extract_limits(&mut best_text, &mut links, options);
         diagnostics.elapsed_ms = start.elapsed().as_millis() as u64;
         diagnostics.text_chars = best_text.chars().count();
         diagnostics.source = best_source.to_string();
         diagnostics.ready = best_quality.ready;
+        diagnostics.text_truncated = original_text_chars > options.max_chars as usize;
+        diagnostics.links_truncated =
+            options.include_links && original_link_count > options.max_links as usize;
 
         ExtractItemResult::ok(input, tab_id, title, best_text, links, diagnostics)
     }
 
     async fn read_extension_extract_page(
         &self,
-        tab_id: i64,
+        tab_id: Option<i64>,
         browser_id: Option<String>,
         options: &ExtractOptions,
     ) -> Result<DomSnapshot, FacadeError> {
@@ -566,7 +634,7 @@ impl BrowserFacade {
                     "maxChars": options.max_chars,
                     "maxLinks": if options.include_links { options.max_links } else { 0 }
                 }),
-                Some(tab_id),
+                tab_id,
                 browser_id,
             )
             .await?;
@@ -895,6 +963,23 @@ impl ExtractArgs {
 }
 
 #[derive(Debug, Clone)]
+struct CurrentExtractArgs {
+    id: String,
+    options: ExtractOptions,
+}
+
+impl CurrentExtractArgs {
+    fn parse(args: Map<String, Value>) -> Result<Self, FacadeError> {
+        let raw = parse_args::<RawCurrentExtractArgs>(args)?;
+        let options = raw.options();
+        Ok(Self {
+            id: raw.id.unwrap_or_else(|| "current".to_string()),
+            options,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
 struct BatchExtractArgs {
     inputs: Vec<BatchInput>,
     concurrency: usize,
@@ -941,9 +1026,36 @@ impl RawExtractArgs {
             max_chars: clamp_max_chars(self.max_chars),
             max_links: clamp_max_links(self.max_links),
             include_a11y: self.include_a11y.unwrap_or(false),
-            include_links: self.include_links.unwrap_or(true),
+            include_links: self.include_links.unwrap_or(false),
             cleanup: self.cleanup.unwrap_or(true),
             active: self.active.unwrap_or(false),
+            browser_id: self.browser_id.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawCurrentExtractArgs {
+    id: Option<String>,
+    min_chars: Option<usize>,
+    max_chars: Option<u64>,
+    max_links: Option<u64>,
+    include_a11y: Option<bool>,
+    include_links: Option<bool>,
+    browser_id: Option<String>,
+}
+
+impl RawCurrentExtractArgs {
+    fn options(&self) -> ExtractOptions {
+        ExtractOptions {
+            min_chars: clamp_min_chars(self.min_chars),
+            max_chars: clamp_max_chars(self.max_chars),
+            max_links: clamp_max_links(self.max_links),
+            include_a11y: self.include_a11y.unwrap_or(false),
+            include_links: self.include_links.unwrap_or(false),
+            cleanup: false,
+            active: false,
             browser_id: self.browser_id.clone(),
         }
     }
@@ -972,7 +1084,7 @@ impl RawBatchExtractArgs {
             max_chars: clamp_max_chars(self.max_chars),
             max_links: clamp_max_links(self.max_links),
             include_a11y: self.include_a11y.unwrap_or(false),
-            include_links: self.include_links.unwrap_or(true),
+            include_links: self.include_links.unwrap_or(false),
             cleanup: self.cleanup.unwrap_or(true),
             active: self.active.unwrap_or(false),
             browser_id: self.browser_id.clone(),
@@ -1073,7 +1185,7 @@ struct ExtractItemResult {
 impl ExtractItemResult {
     fn ok(
         input: BatchInput,
-        tab_id: i64,
+        tab_id: Option<i64>,
         title: Option<String>,
         text: String,
         links: Vec<ExtractLink>,
@@ -1088,7 +1200,7 @@ impl ExtractItemResult {
             id: input.id,
             url: input.url,
             status,
-            tab_id: Some(tab_id),
+            tab_id,
             title,
             text,
             links,
@@ -1128,11 +1240,21 @@ struct ExtractDiagnostics {
     text_chars: usize,
     ready: bool,
     source: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     extension_reason: String,
+    #[serde(skip_serializing_if = "is_false")]
     a11y_attempted: bool,
+    #[serde(skip_serializing_if = "is_zero_usize")]
     a11y_chars: usize,
+    #[serde(skip_serializing_if = "is_false")]
     dom_attempted: bool,
+    #[serde(skip_serializing_if = "is_zero_usize")]
     dom_chars: usize,
+    #[serde(skip_serializing_if = "is_false")]
+    text_truncated: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    links_truncated: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     errors: Vec<String>,
 }
 
@@ -1145,6 +1267,12 @@ struct TextQuality {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DomSnapshot {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    tab_id: Option<i64>,
     #[serde(default)]
     text: String,
     #[serde(default)]
@@ -1321,6 +1449,25 @@ fn parse_batch_inputs(
 
 fn default_true() -> bool {
     true
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn is_zero_usize(value: &usize) -> bool {
+    *value == 0
+}
+
+fn non_empty_string(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
 }
 
 fn clamp_min_chars(value: Option<usize>) -> usize {
@@ -1676,8 +1823,8 @@ mod tests {
 
     use super::{
         click_script, enforce_extract_limits, extract_tab_id, fill_script, has_page_text,
-        parse_dom_snapshot, BatchRunArgs, ExtractArgs, ExtractLink, ExtractOptions, FlowActArgs,
-        FlowStep,
+        parse_dom_snapshot, BatchRunArgs, CurrentExtractArgs, ExtractArgs, ExtractLink,
+        ExtractOptions, FlowActArgs, FlowStep,
     };
 
     #[test]
@@ -1789,9 +1936,22 @@ mod tests {
         .unwrap();
 
         assert!(!args.options.include_a11y);
-        assert!(args.options.include_links);
-        assert_eq!(args.options.max_chars, 12_000);
-        assert_eq!(args.options.max_links, 80);
+        assert!(!args.options.include_links);
+        assert_eq!(args.options.max_chars, 8_000);
+        assert_eq!(args.options.max_links, 20);
+    }
+
+    #[test]
+    fn current_extract_defaults_to_compact_current_page() {
+        let args = CurrentExtractArgs::parse(json!({}).as_object().unwrap().clone()).unwrap();
+
+        assert_eq!(args.id, "current");
+        assert!(!args.options.include_a11y);
+        assert!(!args.options.include_links);
+        assert_eq!(args.options.max_chars, 8_000);
+        assert_eq!(args.options.max_links, 20);
+        assert!(!args.options.cleanup);
+        assert!(!args.options.active);
     }
 
     #[test]
