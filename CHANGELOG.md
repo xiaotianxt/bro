@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2
+
+- Add `browser.batch.flow` for running the same ordered click/fill/wait/eval/read workflow across many URLs with bounded concurrency and cleanup.
+- Document when to use batch flow instead of many separate flow sessions.
+- Update the bro-browser Codex skill to prefer `browser.batch.flow` for repeated multi-page interactions.
+
 ## 0.2.1
 
 - Add `bro setup codex` to configure Codex MCP without shell-specific token environment setup.

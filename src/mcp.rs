@@ -82,6 +82,7 @@ impl ServerHandler for BrowserMcpServer {
         match route {
             ToolRoute::BrowsersContext => Ok(browsers_context(&self.bridge).await),
             ToolRoute::BatchRun => Ok(facade_result(self.facade.batch_run(args).await)),
+            ToolRoute::BatchFlow => Ok(facade_result(self.facade.batch_flow(args).await)),
             ToolRoute::Extract => Ok(facade_result(self.facade.extract(args).await)),
             ToolRoute::CurrentExtract => Ok(facade_result(self.facade.current_extract(args).await)),
             ToolRoute::BatchExtract => Ok(facade_result(self.facade.batch_extract(args).await)),

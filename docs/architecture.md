@@ -20,8 +20,8 @@ The Rust core owns product policy:
 - expose MCP Streamable HTTP at `/mcp`
 - maintain connected browser registry and default browser selection
 - route raw browser tools to the extension
-- compose higher-level tools such as `browser.batch.extract` and
-  `browser.flow.*`
+- compose higher-level tools such as `browser.batch.extract`,
+  `browser.batch.flow`, and `browser.flow.*`
 - bound concurrency, cleanup, and response sizes
 
 The core deliberately avoids site-specific workflows. Reddit, LinkedIn, X,

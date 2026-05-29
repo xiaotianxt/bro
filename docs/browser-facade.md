@@ -37,6 +37,39 @@ Useful options:
 
 `urls` and `inputs` are mutually exclusive.
 
+## Batch Flow
+
+`browser.batch.flow` opens independent URLs in owned tabs, runs the same ordered
+flow steps on each tab, and closes the tabs by default. Use it when every page
+needs the same interaction before data can be read, such as clicking a common
+reviews button, waiting for a modal, and returning a structured `eval` result.
+
+Minimal input:
+
+```json
+{
+  "inputs": [
+    { "id": "a", "url": "https://example.com/a" },
+    { "id": "b", "url": "https://example.com/b" }
+  ],
+  "steps": [
+    { "type": "wait", "ms": 1000 },
+    { "type": "eval", "code": "document.title" }
+  ]
+}
+```
+
+Useful options:
+
+- `concurrency`: defaults to 6, clamped to 16
+- `timeoutMs`: defaults to 12000 per URL, clamped to 60000
+- `cleanup`: defaults to true
+- `active`: defaults to false
+
+Each item returns the per-step result list, `stoppedAt` when a step fails, and
+the item error. The tool keeps browser mechanics generic; selectors and scripts
+remain task-local policy supplied by the caller.
+
 ## Single Extraction
 
 `browser.extract` is the one-URL version. It returns:

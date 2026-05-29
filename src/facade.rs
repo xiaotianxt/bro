@@ -106,6 +106,57 @@ impl BrowserFacade {
         }))
     }
 
+    pub async fn batch_flow(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
+        let args = BatchFlowArgs::parse(args)?;
+        let concurrency = args.concurrency;
+        let semaphore = Arc::new(Semaphore::new(concurrency));
+        let mut tasks = JoinSet::new();
+
+        for (index, input) in args.inputs.into_iter().enumerate() {
+            let facade = self.clone();
+            let steps = args.steps.clone();
+            let options = args.options.clone();
+            let semaphore = Arc::clone(&semaphore);
+            tasks.spawn(async move {
+                let Ok(permit) = semaphore.acquire_owned().await else {
+                    return (
+                        index,
+                        BatchFlowItemResult::failed(input, None, "batch flow scheduler closed"),
+                    );
+                };
+                let _permit = permit;
+                let result = facade.run_batch_flow_item(input, steps, options).await;
+                (index, result)
+            });
+        }
+
+        let mut results = Vec::new();
+        while let Some(joined) = tasks.join_next().await {
+            match joined {
+                Ok(result) => results.push(result),
+                Err(error) => results.push((
+                    usize::MAX,
+                    BatchFlowItemResult::failed(
+                        BatchInput {
+                            id: "unknown".to_string(),
+                            url: String::new(),
+                        },
+                        None,
+                        format!("batch flow task failed: {error}"),
+                    ),
+                )),
+            }
+        }
+        results.sort_by_key(|(index, _result)| *index);
+
+        Ok(json!({
+            "results": results
+                .into_iter()
+                .map(|(_index, result)| result)
+                .collect::<Vec<_>>()
+        }))
+    }
+
     pub async fn extract(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
         let args = ExtractArgs::parse(args)?;
         let result = self.run_extract_item(args.input, args.options).await;
@@ -402,6 +453,120 @@ impl BrowserFacade {
             } else {
                 *owned_tab.lock().await = None;
             }
+        }
+
+        result
+    }
+
+    async fn run_batch_flow_item(
+        &self,
+        input: BatchInput,
+        steps: Vec<FlowStep>,
+        options: BatchOptions,
+    ) -> BatchFlowItemResult {
+        let owned_tab = Arc::new(Mutex::new(None));
+        match time::timeout(
+            Duration::from_millis(options.timeout_ms),
+            self.run_batch_flow_item_inner(
+                input.clone(),
+                steps,
+                options.clone(),
+                Arc::clone(&owned_tab),
+            ),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_elapsed) => {
+                let cleanup_error = self.cleanup_owned_tab(owned_tab).await;
+                let mut result = BatchFlowItemResult::failed(input, None, "operation timed out");
+                if let Some(error) = cleanup_error {
+                    result.error = Some(format!("operation timed out; cleanup failed: {error}"));
+                }
+                result
+            }
+        }
+    }
+
+    async fn run_batch_flow_item_inner(
+        &self,
+        input: BatchInput,
+        steps: Vec<FlowStep>,
+        options: BatchOptions,
+        owned_tab: Arc<Mutex<Option<OwnedTab>>>,
+    ) -> BatchFlowItemResult {
+        let create = match self
+            .bridge
+            .dispatch(
+                "tabs_create",
+                json!({ "url": input.url, "active": options.active }),
+                None,
+                options.browser_id.clone(),
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => return BatchFlowItemResult::failed(input, None, error.to_string()),
+        };
+
+        if let Some(message) = tool_error_message(&create) {
+            return BatchFlowItemResult::failed(input, extract_tab_id(&create.result), message);
+        }
+
+        let tab_id = extract_tab_id(&create.result);
+        let title = extract_title(&create.result);
+        let Some(tab_id_value) = tab_id else {
+            return BatchFlowItemResult::failed(
+                input,
+                None,
+                "tabs_create response did not include tabId",
+            );
+        };
+        *owned_tab.lock().await = Some(OwnedTab {
+            tab_id: tab_id_value,
+            browser_id: options.browser_id.clone(),
+            cleanup: options.cleanup,
+        });
+
+        let session = FlowSession {
+            session_id: format!("batch-flow-{}", Uuid::new_v4()),
+            tab_id: tab_id_value,
+            browser_id: options.browser_id.clone(),
+            url: input.url.clone(),
+            cleanup: options.cleanup,
+        };
+
+        let mut result = BatchFlowItemResult::ok(input, tab_id, title);
+        for (index, step) in steps.into_iter().enumerate() {
+            let step_type = step.kind();
+            match self.run_flow_step(&session, step).await {
+                Ok(mut value) => {
+                    value.insert("index".to_string(), json!(index));
+                    value.insert("type".to_string(), json!(step_type));
+                    value.insert("status".to_string(), json!("ok"));
+                    result.results.push(Value::Object(value));
+                }
+                Err(error) => {
+                    result.status = BatchStatus::Failed;
+                    result.stopped_at = Some(index);
+                    result.error = Some(error.to_string());
+                    result.results.push(json!({
+                        "index": index,
+                        "type": step_type,
+                        "status": "failed",
+                        "error": error.to_string()
+                    }));
+                    break;
+                }
+            }
+        }
+
+        if let Some(error) = self.cleanup_owned_tab(owned_tab).await {
+            result.status = BatchStatus::Failed;
+            result.error = Some(match result.error {
+                Some(existing) => format!("{existing}; cleanup failed: {error}"),
+                None => format!("cleanup failed: {error}"),
+            });
         }
 
         result
@@ -909,6 +1074,59 @@ impl BatchRunArgs {
     }
 }
 
+#[derive(Debug, Clone)]
+struct BatchFlowArgs {
+    inputs: Vec<BatchInput>,
+    steps: Vec<FlowStep>,
+    concurrency: usize,
+    options: BatchOptions,
+}
+
+impl BatchFlowArgs {
+    fn parse(args: Map<String, Value>) -> Result<Self, FacadeError> {
+        let raw = parse_args::<RawBatchFlowArgs>(args)?;
+        let inputs = parse_batch_inputs(raw.urls, raw.inputs, "browser.batch.flow")?;
+        if raw.steps.is_empty() {
+            return Err(FacadeError::InvalidInput(
+                "browser.batch.flow requires at least one step".to_string(),
+            ));
+        }
+        let concurrency = raw
+            .concurrency
+            .unwrap_or(DEFAULT_BATCH_CONCURRENCY)
+            .clamp(1, MAX_BATCH_CONCURRENCY);
+        let timeout_ms = raw
+            .timeout_ms
+            .unwrap_or(DEFAULT_TIMEOUT_MS)
+            .clamp(1, MAX_TIMEOUT_MS);
+
+        Ok(Self {
+            inputs,
+            steps: raw.steps,
+            concurrency,
+            options: BatchOptions {
+                timeout_ms,
+                cleanup: raw.cleanup.unwrap_or(true),
+                active: raw.active.unwrap_or(false),
+                browser_id: raw.browser_id,
+            },
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawBatchFlowArgs {
+    urls: Option<Vec<String>>,
+    inputs: Option<Vec<BatchInput>>,
+    steps: Vec<FlowStep>,
+    concurrency: Option<usize>,
+    timeout_ms: Option<u64>,
+    cleanup: Option<bool>,
+    active: Option<bool>,
+    browser_id: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawBatchRunArgs {
@@ -1159,6 +1377,51 @@ impl BatchItemResult {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchFlowItemResult {
+    id: String,
+    url: String,
+    status: BatchStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tab_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    results: Vec<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stopped_at: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+impl BatchFlowItemResult {
+    fn ok(input: BatchInput, tab_id: Option<i64>, title: Option<String>) -> Self {
+        Self {
+            id: input.id,
+            url: input.url,
+            status: BatchStatus::Ok,
+            tab_id,
+            title,
+            results: Vec::new(),
+            stopped_at: None,
+            error: None,
+        }
+    }
+
+    fn failed(input: BatchInput, tab_id: Option<i64>, error: impl Into<String>) -> Self {
+        Self {
+            id: input.id,
+            url: input.url,
+            status: BatchStatus::Failed,
+            tab_id,
+            title: None,
+            results: Vec::new(),
+            stopped_at: None,
+            error: Some(error.into()),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum ExtractStatus {
     Ok,
@@ -1358,7 +1621,7 @@ struct FlowActArgs {
     steps: Vec<FlowStep>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum FlowStep {
     Goto { url: String },
@@ -1823,8 +2086,8 @@ mod tests {
 
     use super::{
         click_script, enforce_extract_limits, extract_tab_id, fill_script, has_page_text,
-        parse_dom_snapshot, BatchRunArgs, CurrentExtractArgs, ExtractArgs, ExtractLink,
-        ExtractOptions, FlowActArgs, FlowStep,
+        parse_dom_snapshot, BatchFlowArgs, BatchRunArgs, CurrentExtractArgs, ExtractArgs,
+        ExtractLink, ExtractOptions, FlowActArgs, FlowStep,
     };
 
     #[test]
@@ -1878,6 +2141,48 @@ mod tests {
         .unwrap();
 
         assert_eq!(args.inputs[0].id, "input-1");
+    }
+
+    #[test]
+    fn batch_flow_args_require_steps_and_clamp_limits() {
+        let args = BatchFlowArgs::parse(
+            json!({
+                "urls": ["https://example.test/a", "https://example.test/b"],
+                "steps": [
+                    {"type": "wait", "ms": 10},
+                    {"type": "eval", "code": "document.title"}
+                ],
+                "concurrency": 99,
+                "timeoutMs": 0
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )
+        .unwrap();
+
+        assert_eq!(args.inputs.len(), 2);
+        assert_eq!(args.steps.len(), 2);
+        assert_eq!(args.concurrency, 16);
+        assert_eq!(args.options.timeout_ms, 1);
+        assert!(args.options.cleanup);
+        assert!(!args.options.active);
+    }
+
+    #[test]
+    fn batch_flow_args_reject_empty_steps() {
+        let error = BatchFlowArgs::parse(
+            json!({
+                "urls": ["https://example.test"],
+                "steps": []
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("at least one step"));
     }
 
     #[test]

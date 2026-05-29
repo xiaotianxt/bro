@@ -31,6 +31,7 @@ const ENVELOPE_TAB_TOOLS: &[&str] = &[
 pub enum ToolRoute {
     BrowsersContext,
     BatchRun,
+    BatchFlow,
     Extract,
     CurrentExtract,
     BatchExtract,
@@ -127,6 +128,12 @@ static SPECS: &[ToolSpec] = &[
         description: "Open URLs in background tabs by default, read page text after short quality readiness, and clean up owned tabs. Defaults: concurrency 6, timeoutMs 12000, cleanup true, active false.",
         route: ToolRoute::BatchRun,
         schema: "browser_batch_run",
+    },
+    ToolSpec {
+        name: "browser.batch.flow",
+        description: "Open multiple URLs in parallel, run the same ordered flow steps on each owned tab, and clean up by default. Use for repeated click/wait/eval/read workflows. Defaults: concurrency 6, timeoutMs 12000 per URL, cleanup true, active false.",
+        route: ToolRoute::BatchFlow,
+        schema: "browser_batch_flow",
     },
     ToolSpec {
         name: "browser.extract",
@@ -466,6 +473,31 @@ fn schema(kind: &str) -> JsonObject {
             ("active", json!({"type":"boolean","default":false})),
             ("browserId", browser_id_schema()),
         ]),
+        "browser_batch_flow" => props(&[
+            (
+                "urls",
+                json!({"type":"array","items":{"type":"string","format":"uri"},"minItems":1,"description":"URLs to open in owned background tabs."}),
+            ),
+            (
+                "inputs",
+                json!({"type":"array","minItems":1,"items":{"type":"object","required":["url"],"additionalProperties":false,"properties":{"id":{"type":"string","minLength":1,"description":"Optional caller-supplied result id. Defaults to input-<n>."},"url":{"type":"string","format":"uri"}}}}),
+            ),
+            (
+                "steps",
+                json!({"type":"array","minItems":1,"items":{"type":"object","required":["type"],"properties":{"type":{"type":"string","enum":["goto","eval","click","fill","wait","read_text"]},"url":{"type":"string","format":"uri"},"code":{"type":"string"},"css":{"type":"string"},"value":{"type":"string"},"ms":{"type":"integer","minimum":0,"maximum":30000}},"additionalProperties":false},"description":"Ordered flow steps to run on every URL."}),
+            ),
+            (
+                "concurrency",
+                json!({"type":"integer","minimum":1,"maximum":16,"default":6}),
+            ),
+            (
+                "timeoutMs",
+                json!({"type":"integer","minimum":1,"maximum":60000,"default":12000,"description":"Per-URL timeout including page open, steps, and cleanup scheduling."}),
+            ),
+            ("cleanup", json!({"type":"boolean","default":true})),
+            ("active", json!({"type":"boolean","default":false})),
+            ("browserId", browser_id_schema()),
+        ]),
         "browser_flow_start" => props(&[
             ("url", json!({"type":"string","format":"uri"})),
             ("browserId", browser_id_schema()),
@@ -728,7 +760,10 @@ fn schema(kind: &str) -> JsonObject {
             ),
         );
     }
-    if kind == "browser_batch_run" || kind == "browser_batch_extract" {
+    if kind == "browser_batch_run"
+        || kind == "browser_batch_extract"
+        || kind == "browser_batch_flow"
+    {
         object.insert(
             "oneOf".to_string(),
             json!([{"required":["urls"]}, {"required":["inputs"]}]),
@@ -741,6 +776,7 @@ fn required_fields(kind: &str) -> Option<&'static [&'static str]> {
     match kind {
         "agent_done" => Some(&["tabIds"]),
         "browser_extract" => Some(&["url"]),
+        "browser_batch_flow" => Some(&["steps"]),
         "browser_flow_start" => Some(&["url"]),
         "browser_flow_observe" | "browser_flow_finish" => Some(&["sessionId"]),
         "browser_flow_act" => Some(&["sessionId", "steps"]),

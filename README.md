@@ -187,10 +187,18 @@ bro call browsers_context
 - `browser.current.extract`: extract the current/default active tab in one call
 - `browser.batch.extract`: extract many URLs in parallel
 - `browser.batch.run`: open many URLs, read plain text, close by default
+- `browser.batch.flow`: run the same ordered interaction on many URLs in
+  parallel, close by default
 - `browser.flow.start`: lease one tab for sequential work
 - `browser.flow.observe`: read leased-tab text or accessibility tree
 - `browser.flow.act`: run ordered generic steps such as `goto`, `click`, `fill`
 - `browser.flow.finish`: release and optionally close the leased tab
+
+Use `browser.batch.flow` when each page needs the same interaction before
+reading data, for example opening a reviews modal on every product page and
+then returning a structured `eval` result. It keeps the repeated workflow inside
+one MCP call with bounded per-URL timeouts and cleanup, instead of requiring the
+agent to start, act on, and finish many separate flow sessions.
 
 Raw browser primitives such as `tabs_create`, `tabs_close`, `read_page`,
 `javascript_tool`, `click_element`, `fill_element`, and `computer` remain
