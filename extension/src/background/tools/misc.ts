@@ -630,8 +630,8 @@ const BROWSER_SHORTCUTS = [
   'Ctrl+Shift+Tab — Switch to previous tab',
   'Ctrl+1..9 — Switch to tab by position',
   'Ctrl+L — Focus address bar',
-  'Ctrl+R or F5 — Reload page',
-  'Ctrl+Shift+R — Hard reload (bypass cache)',
+  'Cmd/Ctrl+R or F5 — Reload page',
+  'Cmd/Ctrl+Shift+R or Ctrl+F5 — Hard reload (bypass cache)',
   'Ctrl+F — Find in page',
   'Ctrl+G — Find next occurrence',
   'Ctrl+Shift+G — Find previous occurrence',
@@ -813,6 +813,81 @@ function parseShortcut(shortcut: string): {
   }
 }
 
+type BrowserShortcutAction = 'reload' | 'hardReload'
+
+function browserShortcutAction(
+  parsed: ReturnType<typeof parseShortcut>,
+): BrowserShortcutAction | null {
+  const key = parsed.key.toLowerCase()
+  const primaryModifier = parsed.ctrlKey || parsed.metaKey
+  const noAlt = !parsed.altKey
+
+  if (key === 'f5' && noAlt) {
+    return parsed.shiftKey || parsed.ctrlKey || parsed.metaKey
+      ? 'hardReload'
+      : 'reload'
+  }
+
+  if (key === 'r' && primaryModifier && noAlt) {
+    return parsed.shiftKey ? 'hardReload' : 'reload'
+  }
+
+  return null
+}
+
+/**
+ * Waits for a browser-level reload to complete. The listener is installed
+ * before chrome.tabs.reload to avoid missing fast reloads.
+ */
+function waitForReloadComplete(tabId: number): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const TIMEOUT_MS = 30_000
+
+    const timeout = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener)
+      reject(
+        new Error(
+          `shortcuts_execute: tab ${tabId} did not finish reloading within ${TIMEOUT_MS}ms`,
+        ),
+      )
+    }, TIMEOUT_MS)
+
+    const listener = (
+      updatedTabId: number,
+      changeInfo: chrome.tabs.OnUpdatedInfo,
+      tab: chrome.tabs.Tab,
+    ) => {
+      if (updatedTabId !== tabId) return
+      if (changeInfo.status === 'complete') {
+        clearTimeout(timeout)
+        chrome.tabs.onUpdated.removeListener(listener)
+        resolve(tab.url ?? '')
+      }
+    }
+
+    chrome.tabs.onUpdated.addListener(listener)
+  })
+}
+
+async function executeBrowserShortcut(
+  tabId: number,
+  action: BrowserShortcutAction,
+): Promise<ToolResult> {
+  const completionPromise = waitForReloadComplete(tabId)
+  await chrome.tabs.reload(tabId, { bypassCache: action === 'hardReload' })
+  const finalUrl = await completionPromise
+  const label = action === 'hardReload' ? 'Hard reloaded' : 'Reloaded'
+
+  return {
+    content: [
+      {
+        type: 'text',
+        text: `${label} tab ${tabId}${finalUrl ? `: ${finalUrl}` : ''}`,
+      },
+    ],
+  }
+}
+
 /**
  * Dispatches a key down + key up pair via CDP.
  */
@@ -875,11 +950,14 @@ async function executeShortcutsExecute(
   rawArgs: unknown,
 ): Promise<ToolResult> {
   const args = validateShortcutsExecuteArgs(rawArgs)
-
-  // Ensure CDP is attached
-  await cdpSession.ensure(tabId)
-
   const parsed = parseShortcut(args.shortcut)
+  const browserAction = browserShortcutAction(parsed)
+  if (browserAction) {
+    return executeBrowserShortcut(tabId, browserAction)
+  }
+
+  // Page-level shortcuts are delivered as keyboard events through CDP.
+  await cdpSession.ensure(tabId)
 
   await dispatchKeyEvent(
     tabId,
