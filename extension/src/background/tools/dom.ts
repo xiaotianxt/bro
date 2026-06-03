@@ -1027,14 +1027,74 @@ async function executeScrollElement(
 // ---------------------------------------------------------------------------
 
 type FillElementResult =
-  | { success: true; x: number; y: number; message: string }
+  | { success: true; message: string }
   | { success: false; error: string }
 
-function pageGetElementCenterForFill(refId: number): FillElementResult {
+function pagePrepareElementForFill(refId: number): FillElementResult {
   type WinWithRefId = Window &
     typeof globalThis & {
       __getElementByRefId?: (refId: number) => Element | null
     }
+
+  function isEditableElement(el: Element): el is
+    | HTMLInputElement
+    | HTMLTextAreaElement
+    | HTMLSelectElement
+    | HTMLElement {
+    const tag = el.tagName.toLowerCase()
+    return (
+      tag === 'input' ||
+      tag === 'textarea' ||
+      tag === 'select' ||
+      (el instanceof HTMLElement && el.isContentEditable)
+    )
+  }
+
+  function findEditableTarget(root: Element): Element | null {
+    if (isEditableElement(root)) return root
+
+    const selector = 'input, textarea, select, [contenteditable="true"]'
+    const shadowRoot = (root as Element & { shadowRoot?: ShadowRoot | null })
+      .shadowRoot
+    const shadowTarget = shadowRoot?.querySelector(selector)
+    if (shadowTarget) return shadowTarget
+
+    return root.querySelector(selector)
+  }
+
+  function setNativeValue(el: Element, value: string): void {
+    if (el instanceof HTMLInputElement) {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        'value',
+      )?.set
+      if (setter) setter.call(el, value)
+      else el.value = value
+      return
+    }
+    if (el instanceof HTMLTextAreaElement) {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        'value',
+      )?.set
+      if (setter) setter.call(el, value)
+      else el.value = value
+      return
+    }
+    if (el instanceof HTMLSelectElement) {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLSelectElement.prototype,
+        'value',
+      )?.set
+      if (setter) setter.call(el, value)
+      else el.value = value
+      return
+    }
+    if (el instanceof HTMLElement && el.isContentEditable) {
+      el.textContent = value
+    }
+  }
+
   const win = window as WinWithRefId
   if (typeof win.__getElementByRefId !== 'function') {
     return { success: false, error: 'fill_element: content script not loaded' }
@@ -1043,13 +1103,98 @@ function pageGetElementCenterForFill(refId: number): FillElementResult {
   if (!el) {
     return { success: false, error: `fill_element: element ref_${refId} not found` }
   }
-  const rect = el.getBoundingClientRect()
-  if (rect.width === 0 && rect.height === 0) {
+
+  const target = findEditableTarget(el)
+  if (!target) {
+    return { success: false, error: `fill_element: element ref_${refId} is not editable` }
+  }
+
+  el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' })
+  const hostRect = el.getBoundingClientRect()
+  const targetRect = target.getBoundingClientRect()
+  if (
+    hostRect.width === 0 &&
+    hostRect.height === 0 &&
+    targetRect.width === 0 &&
+    targetRect.height === 0
+  ) {
     return { success: false, error: `fill_element: element ref_${refId} has zero size (may be hidden)` }
   }
-  const x = Math.round(rect.left + rect.width / 2)
-  const y = Math.round(rect.top + rect.height / 2)
-  return { success: true, x, y, message: `Filling ref_${refId}` }
+
+  if (target instanceof HTMLElement) {
+    target.focus({ preventScroll: true })
+  }
+  if (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement
+  ) {
+    target.select()
+  }
+  setNativeValue(target, '')
+  target.dispatchEvent(
+    new InputEvent('input', {
+      bubbles: true,
+      composed: true,
+      inputType: 'deleteContentBackward',
+    }),
+  )
+  target.dispatchEvent(new Event('change', { bubbles: true, composed: true }))
+
+  return { success: true, message: `Prepared ref_${refId} for fill` }
+}
+
+function pageFinalizeElementFill(refId: number): FillElementResult {
+  type WinWithRefId = Window &
+    typeof globalThis & {
+      __getElementByRefId?: (refId: number) => Element | null
+    }
+
+  function isEditableElement(el: Element): boolean {
+    const tag = el.tagName.toLowerCase()
+    return (
+      tag === 'input' ||
+      tag === 'textarea' ||
+      tag === 'select' ||
+      (el instanceof HTMLElement && el.isContentEditable)
+    )
+  }
+
+  function findEditableTarget(root: Element): Element | null {
+    if (isEditableElement(root)) return root
+
+    const selector = 'input, textarea, select, [contenteditable="true"]'
+    const shadowRoot = (root as Element & { shadowRoot?: ShadowRoot | null })
+      .shadowRoot
+    const shadowTarget = shadowRoot?.querySelector(selector)
+    if (shadowTarget) return shadowTarget
+
+    return root.querySelector(selector)
+  }
+
+  const win = window as WinWithRefId
+  if (typeof win.__getElementByRefId !== 'function') {
+    return { success: false, error: 'fill_element: content script not loaded' }
+  }
+  const el = win.__getElementByRefId(refId)
+  if (!el) {
+    return { success: false, error: `fill_element: element ref_${refId} not found` }
+  }
+
+  const target = findEditableTarget(el)
+  if (!target) {
+    return { success: false, error: `fill_element: element ref_${refId} is not editable` }
+  }
+
+  target.dispatchEvent(
+    new InputEvent('input', {
+      bubbles: true,
+      composed: true,
+      inputType: 'insertText',
+    }),
+  )
+  target.dispatchEvent(new Event('change', { bubbles: true, composed: true }))
+
+  return { success: true, message: `Finalized ref_${refId} fill` }
 }
 
 async function executeFillElement(
@@ -1073,27 +1218,21 @@ async function executeFillElement(
 
   await ensureAccessibilityScript(tabId)
 
-  // Click to focus
-  const centerResult = await executeInPage(tabId, pageGetElementCenterForFill, [refIdNum]) as FillElementResult
-  if (!centerResult.success) {
-    return { content: [{ type: 'text', text: centerResult.error }], isError: true } as ToolResult & { isError: true }
+  const prepareResult = await executeInPage(tabId, pagePrepareElementForFill, [refIdNum]) as FillElementResult
+  if (!prepareResult.success) {
+    return { content: [{ type: 'text', text: prepareResult.error }], isError: true } as ToolResult & { isError: true }
   }
 
-  const { x, y } = centerResult
-
-  // Triple-click to select all existing text
-  await cdpSession.send(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y })
-  for (let i = 1; i <= 3; i++) {
-    await cdpSession.send(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: i })
-    await cdpSession.send(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: i })
-  }
-
-  // Insert new text (replaces selection)
   if (text.length > 0) {
     await cdpSession.send(tabId, 'Input.insertText', { text })
   }
 
-  return { content: [{ type: 'text', text: `Filled ref_${refIdStr} with: ${JSON.stringify(text)}` }] }
+  const finalizeResult = await executeInPage(tabId, pageFinalizeElementFill, [refIdNum]) as FillElementResult
+  if (!finalizeResult.success) {
+    return { content: [{ type: 'text', text: finalizeResult.error }], isError: true } as ToolResult & { isError: true }
+  }
+
+  return { content: [{ type: 'text', text: `Filled ${refIdStr}` }] }
 }
 
 // ---------------------------------------------------------------------------
@@ -1109,6 +1248,42 @@ function pageGetElementCenter(refId: number): ClickElementResult {
     typeof globalThis & {
       __getElementByRefId?: (refId: number) => Element | null
     }
+
+  function isVisible(el: Element): boolean {
+    const rect = el.getBoundingClientRect()
+    return rect.width > 0 || rect.height > 0
+  }
+
+  function isInteractive(el: Element): boolean {
+    const tag = el.tagName.toLowerCase()
+    const role = el.getAttribute('role')
+    return (
+      tag === 'button' ||
+      tag === 'a' ||
+      tag === 'input' ||
+      tag === 'select' ||
+      tag === 'textarea' ||
+      role === 'button' ||
+      role === 'link' ||
+      el.hasAttribute('tabindex')
+    )
+  }
+
+  function findClickableTarget(root: Element): Element {
+    if (isInteractive(root)) return root
+
+    const selector =
+      'button, a, input, select, textarea, [role="button"], [role="link"], [tabindex]'
+    const shadowRoot = (root as Element & { shadowRoot?: ShadowRoot | null })
+      .shadowRoot
+    const shadowTargets = shadowRoot
+      ? Array.from(shadowRoot.querySelectorAll(selector))
+      : []
+    const lightTargets = Array.from(root.querySelectorAll(selector))
+    const target = [...shadowTargets, ...lightTargets].find(isVisible)
+    return target ?? root
+  }
+
   const win = window as WinWithRefId
   if (typeof win.__getElementByRefId !== 'function') {
     return { success: false, error: 'click_element: content script not loaded' }
@@ -1117,7 +1292,10 @@ function pageGetElementCenter(refId: number): ClickElementResult {
   if (!el) {
     return { success: false, error: `click_element: element ref_${refId} not found` }
   }
-  const rect = el.getBoundingClientRect()
+
+  const target = findClickableTarget(el)
+  target.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' })
+  const rect = target.getBoundingClientRect()
   if (rect.width === 0 && rect.height === 0) {
     return { success: false, error: `click_element: element ref_${refId} has zero size (may be hidden)` }
   }
