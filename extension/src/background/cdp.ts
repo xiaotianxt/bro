@@ -1,6 +1,8 @@
 // CDP (Chrome DevTools Protocol) abstraction layer for the extension service worker.
 // Manages debugger attachment state and event subscriptions per tab.
 
+import { getDebuggerTargetBlockReason } from './debug-target.js'
+
 type EventCallback = (params: unknown) => void
 type DetachCallback = (tabId: number) => void
 
@@ -56,6 +58,13 @@ export class CDPSession {
    */
   async ensure(tabId: number): Promise<void> {
     if (this.attached.get(tabId)) return
+
+    const blockReason = await getDebuggerTargetBlockReason(tabId)
+    if (blockReason) {
+      throw new Error(
+        `CDP attach blocked for tab ${tabId}: ${blockReason}. Target a normal web page tab explicitly; Chrome does not allow debugger access to this URL type.`,
+      )
+    }
 
     await new Promise<void>((resolve, reject) => {
       chrome.debugger.attach({ tabId }, '1.3', () => {
