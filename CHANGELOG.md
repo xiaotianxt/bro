@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.4
+
+- Add browser session lifecycle parity tools: `session_name`, `tabs_claim`, and `tabs_finalize`.
+- Track session-owned and session-claimed tabs in the extension so owned tabs can be closed while claimed user tabs are released.
+- Document bro's Chrome connector parity matrix and the remaining Playwright-object-model gap.
+
 ## 0.2.2
 
 - Add `browser.batch.flow` for running the same ordered click/fill/wait/eval/read workflow across many URLs with bounded concurrency and cleanup.

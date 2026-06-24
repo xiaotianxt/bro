@@ -210,6 +210,30 @@ static SPECS: &[ToolSpec] = &[
         schema: "tabs_create_mcp",
     },
     ToolSpec {
+        name: "session_name",
+        description: "Name a browser automation session and update its tab group title when present.",
+        route: ToolRoute::Forward {
+            tab_id_envelope: false,
+        },
+        schema: "session_name",
+    },
+    ToolSpec {
+        name: "tabs_claim",
+        description: "Claim an existing browser tab for an automation session without making it agent-owned.",
+        route: ToolRoute::Forward {
+            tab_id_envelope: false,
+        },
+        schema: "tabs_claim",
+    },
+    ToolSpec {
+        name: "tabs_finalize",
+        description: "Finalize a browser automation session, closing owned tabs unless they are explicitly kept.",
+        route: ToolRoute::Forward {
+            tab_id_envelope: false,
+        },
+        schema: "tabs_finalize",
+    },
+    ToolSpec {
         name: "tabs_activate",
         description: "Activate a browser tab by its numeric tab ID.",
         route: ToolRoute::Forward {
@@ -547,6 +571,38 @@ fn schema(kind: &str) -> JsonObject {
             ("active", json!({"type":"boolean","default":false})),
             ("browserId", browser_id_schema()),
         ]),
+        "session_name" => props(&[
+            ("sessionId", json!({"type":"string","minLength":1})),
+            (
+                "name",
+                json!({"type":"string","minLength":1,"description":"Human-readable browser automation session name."}),
+            ),
+            ("browserId", browser_id_schema()),
+        ]),
+        "tabs_claim" => props(&[
+            ("sessionId", json!({"type":"string"})),
+            (
+                "tabId",
+                tab_id_schema("Existing numeric tab ID to claim for this automation session."),
+            ),
+            (
+                "active",
+                json!({"type":"boolean","default":false,"description":"When true, activate and focus the claimed tab."}),
+            ),
+            ("browserId", browser_id_schema()),
+        ]),
+        "tabs_finalize" => props(&[
+            ("sessionId", json!({"type":"string"})),
+            (
+                "closeTabIds",
+                json!({"type":"array","items":{"type":"integer"},"description":"Explicit tab IDs to close during finalization."}),
+            ),
+            (
+                "keep",
+                json!({"type":"array","items":{"type":"object","required":["tabId"],"additionalProperties":false,"properties":{"tabId":{"type":"integer"},"status":{"type":"string","enum":["deliverable","handoff","keep"]},"reason":{"type":"string"}}},"description":"Tabs to keep open after finalization."}),
+            ),
+            ("browserId", browser_id_schema()),
+        ]),
         "tabs_tab_id" | "tab_only" => props(&[
             ("tabId", tab_id_schema("Numeric tab ID.")),
             ("browserId", browser_id_schema()),
@@ -758,15 +814,6 @@ fn schema(kind: &str) -> JsonObject {
                     .map(|field| Value::String((*field).to_string()))
                     .collect(),
             ),
-        );
-    }
-    if kind == "browser_batch_run"
-        || kind == "browser_batch_extract"
-        || kind == "browser_batch_flow"
-    {
-        object.insert(
-            "oneOf".to_string(),
-            json!([{"required":["urls"]}, {"required":["inputs"]}]),
         );
     }
     object

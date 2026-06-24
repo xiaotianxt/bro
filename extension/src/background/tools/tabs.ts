@@ -9,6 +9,7 @@ import { registerTool } from '../tool-registry.js'
 
 interface TabsCreateArgs {
   active?: boolean
+  sessionId?: string
   windowId?: number
   url?: string
 }
@@ -23,14 +24,50 @@ interface TabsCreateMcpArgs extends TabsMcpArgs {
   url?: string
 }
 
+interface SessionNameArgs {
+  sessionId: string
+  name: string
+}
+
+interface TabsClaimArgs {
+  sessionId?: string
+  tabId: number
+  active?: boolean
+}
+
+interface TabsFinalizeArgs {
+  sessionId?: string
+  closeTabIds?: number[]
+  keep?: Array<{
+    tabId: number
+    status?: string
+    reason?: string
+  }>
+}
+
 // ---------------------------------------------------------------------------
 // Storage key helpers
 // ---------------------------------------------------------------------------
 
 const SESSION_GROUP_KEY_PREFIX = 'session_group_'
+const SESSION_NAME_KEY_PREFIX = 'session_name_'
+const SESSION_OWNED_TABS_KEY_PREFIX = 'session_owned_tabs_'
+const SESSION_CLAIMED_TABS_KEY_PREFIX = 'session_claimed_tabs_'
 
 function sessionGroupKey(sessionId: string): string {
   return `${SESSION_GROUP_KEY_PREFIX}${sessionId}`
+}
+
+function sessionNameKey(sessionId: string): string {
+  return `${SESSION_NAME_KEY_PREFIX}${sessionId}`
+}
+
+function sessionOwnedTabsKey(sessionId: string): string {
+  return `${SESSION_OWNED_TABS_KEY_PREFIX}${sessionId}`
+}
+
+function sessionClaimedTabsKey(sessionId: string): string {
+  return `${SESSION_CLAIMED_TABS_KEY_PREFIX}${sessionId}`
 }
 
 /**
@@ -50,6 +87,51 @@ async function getSessionGroupId(sessionId: string): Promise<number | undefined>
 async function setSessionGroupId(sessionId: string, groupId: number): Promise<void> {
   const key = sessionGroupKey(sessionId)
   await chrome.storage.session.set({ [key]: groupId })
+}
+
+async function getSessionName(sessionId: string): Promise<string | undefined> {
+  const key = sessionNameKey(sessionId)
+  const result = await chrome.storage.session.get(key)
+  const value: unknown = result[key]
+  if (typeof value === 'string' && value.length > 0) return value
+  return undefined
+}
+
+async function setSessionName(sessionId: string, name: string): Promise<void> {
+  const key = sessionNameKey(sessionId)
+  await chrome.storage.session.set({ [key]: name })
+}
+
+async function getSessionTabIds(sessionId: string, kind: 'owned' | 'claimed'): Promise<number[]> {
+  const key = kind === 'owned'
+    ? sessionOwnedTabsKey(sessionId)
+    : sessionClaimedTabsKey(sessionId)
+  const result = await chrome.storage.session.get(key)
+  const value: unknown = result[key]
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is number => typeof item === 'number' && Number.isInteger(item))
+}
+
+async function addSessionTabId(
+  sessionId: string,
+  kind: 'owned' | 'claimed',
+  tabId: number,
+): Promise<void> {
+  const key = kind === 'owned'
+    ? sessionOwnedTabsKey(sessionId)
+    : sessionClaimedTabsKey(sessionId)
+  const existing = await getSessionTabIds(sessionId, kind)
+  const next = [...new Set([...existing, tabId])]
+  await chrome.storage.session.set({ [key]: next })
+}
+
+async function clearSessionState(sessionId: string): Promise<void> {
+  await chrome.storage.session.remove([
+    sessionGroupKey(sessionId),
+    sessionNameKey(sessionId),
+    sessionOwnedTabsKey(sessionId),
+    sessionClaimedTabsKey(sessionId),
+  ])
 }
 
 // ---------------------------------------------------------------------------
@@ -94,6 +176,12 @@ function validateTabsCreateArgs(args: unknown): TabsCreateArgs {
     }
     result.active = a['active']
   }
+  if (a['sessionId'] !== undefined) {
+    if (typeof a['sessionId'] !== 'string') {
+      throw new Error('tabs_create: "sessionId" must be a string')
+    }
+    result.sessionId = a['sessionId']
+  }
   if (a['windowId'] !== undefined) {
     if (typeof a['windowId'] !== 'number' || !Number.isInteger(a['windowId'])) {
       throw new Error('tabs_create: "windowId" must be an integer')
@@ -105,6 +193,93 @@ function validateTabsCreateArgs(args: unknown): TabsCreateArgs {
       throw new Error('tabs_create: "url" must be a string')
     }
     result.url = a['url']
+  }
+  return result
+}
+
+function validateSessionNameArgs(args: unknown): SessionNameArgs {
+  if (typeof args !== 'object' || args === null) {
+    throw new Error('session_name requires an object')
+  }
+  const a = args as Record<string, unknown>
+  if (typeof a['sessionId'] !== 'string' || a['sessionId'].length === 0) {
+    throw new Error('session_name: "sessionId" must be a non-empty string')
+  }
+  if (typeof a['name'] !== 'string' || a['name'].length === 0) {
+    throw new Error('session_name: "name" must be a non-empty string')
+  }
+  return {
+    sessionId: a['sessionId'],
+    name: a['name'],
+  }
+}
+
+function validateTabsClaimArgs(args: unknown): TabsClaimArgs {
+  if (typeof args !== 'object' || args === null) {
+    throw new Error('tabs_claim requires an object')
+  }
+  const a = args as Record<string, unknown>
+  if (typeof a['tabId'] !== 'number' || !Number.isInteger(a['tabId'])) {
+    throw new Error('tabs_claim: "tabId" must be an integer')
+  }
+  const result: TabsClaimArgs = { tabId: a['tabId'] }
+  if (a['sessionId'] !== undefined) {
+    if (typeof a['sessionId'] !== 'string') {
+      throw new Error('tabs_claim: "sessionId" must be a string')
+    }
+    result.sessionId = a['sessionId']
+  }
+  if (a['active'] !== undefined) {
+    if (typeof a['active'] !== 'boolean') {
+      throw new Error('tabs_claim: "active" must be a boolean')
+    }
+    result.active = a['active']
+  }
+  return result
+}
+
+function validateTabsFinalizeArgs(args: unknown): TabsFinalizeArgs {
+  if (typeof args !== 'object' || args === null) {
+    return {}
+  }
+  const a = args as Record<string, unknown>
+  const result: TabsFinalizeArgs = {}
+  if (a['sessionId'] !== undefined) {
+    if (typeof a['sessionId'] !== 'string') {
+      throw new Error('tabs_finalize: "sessionId" must be a string')
+    }
+    result.sessionId = a['sessionId']
+  }
+  if (a['closeTabIds'] !== undefined) {
+    if (!Array.isArray(a['closeTabIds'])) {
+      throw new Error('tabs_finalize: "closeTabIds" must be an array')
+    }
+    result.closeTabIds = a['closeTabIds'].map((value) => {
+      if (typeof value !== 'number' || !Number.isInteger(value)) {
+        throw new Error('tabs_finalize: "closeTabIds" must contain integers')
+      }
+      return value
+    })
+  }
+  if (a['keep'] !== undefined) {
+    if (!Array.isArray(a['keep'])) {
+      throw new Error('tabs_finalize: "keep" must be an array')
+    }
+    result.keep = a['keep'].map((value) => {
+      if (typeof value !== 'object' || value === null) {
+        throw new Error('tabs_finalize: "keep" entries must be objects')
+      }
+      const item = value as Record<string, unknown>
+      if (typeof item['tabId'] !== 'number' || !Number.isInteger(item['tabId'])) {
+        throw new Error('tabs_finalize: keep[].tabId must be an integer')
+      }
+      const keepItem: { tabId: number; status?: string; reason?: string } = {
+        tabId: item['tabId'],
+      }
+      if (typeof item['status'] === 'string') keepItem.status = item['status']
+      if (typeof item['reason'] === 'string') keepItem.reason = item['reason']
+      return keepItem
+    })
   }
   return result
 }
@@ -222,6 +397,30 @@ async function getAnchorTab(tabId: number | undefined): Promise<chrome.tabs.Tab>
   return activeTab
 }
 
+async function ensureSessionGroup(sessionId: string, tabId: number): Promise<number> {
+  let groupId = await getSessionGroupId(sessionId)
+
+  if (groupId !== undefined) {
+    try {
+      await chrome.tabGroups.get(groupId)
+    } catch {
+      groupId = undefined
+    }
+  }
+
+  if (groupId === undefined) {
+    groupId = await chrome.tabs.group({ tabIds: tabId })
+    await setSessionGroupId(sessionId, groupId)
+  } else {
+    await chrome.tabs.group({ tabIds: tabId, groupId })
+  }
+
+  const title = await getSessionName(sessionId)
+    ?? (sessionId.length > 20 ? sessionId.slice(0, 20) + '…' : sessionId)
+  await chrome.tabGroups.update(groupId, { title })
+  return groupId
+}
+
 // ---------------------------------------------------------------------------
 // Tool implementations
 // ---------------------------------------------------------------------------
@@ -308,6 +507,10 @@ async function executeTabsCreate(_tabId: number, rawArgs: unknown): Promise<Tool
     createProperties.windowId = args.windowId
   }
   const newTab = await chrome.tabs.create(createProperties)
+  if (args.sessionId !== undefined && newTab.id !== undefined) {
+    await ensureSessionGroup(args.sessionId, newTab.id)
+    await addSessionTabId(args.sessionId, 'owned', newTab.id)
+  }
   return {
     content: [{ type: 'text', text: `Created tab: ${newTab.id ?? 'unknown'}${newTab.windowId !== undefined ? ` (window ${newTab.windowId})` : ''}` }],
   }
@@ -387,35 +590,96 @@ async function executeTabsCreateMcp(_tabId: number, rawArgs: unknown): Promise<T
     throw new Error('tabs_create_mcp: created tab has no ID')
   }
 
-  // Get existing group for this session, or create one
-  let groupId = await getSessionGroupId(args.sessionId)
-
-  if (groupId !== undefined) {
-    // Verify the group still exists
-    try {
-      await chrome.tabGroups.get(groupId)
-    } catch {
-      // Group no longer exists — reset
-      groupId = undefined
-    }
-  }
-
-  if (groupId === undefined) {
-    // Create a new group with the tab
-    groupId = await chrome.tabs.group({ tabIds: newTabId })
-    // Set the group title to the session ID (truncated for readability)
-    const title = args.sessionId.length > 20
-      ? args.sessionId.slice(0, 20) + '…'
-      : args.sessionId
-    await chrome.tabGroups.update(groupId, { title })
-    await setSessionGroupId(args.sessionId, groupId)
-  } else {
-    // Add the new tab to the existing group
-    await chrome.tabs.group({ tabIds: newTabId, groupId })
-  }
+  await ensureSessionGroup(args.sessionId, newTabId)
+  await addSessionTabId(args.sessionId, 'owned', newTabId)
 
   return {
     content: [{ type: 'text', text: `Created tab: ${newTabId}` }],
+  }
+}
+
+async function executeSessionName(_tabId: number, rawArgs: unknown): Promise<ToolResult> {
+  const args = validateSessionNameArgs(rawArgs)
+  await setSessionName(args.sessionId, args.name)
+
+  const groupId = await getSessionGroupId(args.sessionId)
+  if (groupId !== undefined) {
+    try {
+      await chrome.tabGroups.update(groupId, { title: args.name })
+    } catch {
+      // The stored group may have been closed; the next session tab will recreate it.
+    }
+  }
+
+  return {
+    content: [{ type: 'text', text: `Named session "${args.sessionId}" as "${args.name}".` }],
+  }
+}
+
+async function executeTabsClaim(_tabId: number, rawArgs: unknown): Promise<ToolResult> {
+  const args = validateTabsClaimArgs(rawArgs)
+  const tab = await chrome.tabs.get(args.tabId)
+
+  if (args.active === true) {
+    await chrome.tabs.update(args.tabId, { active: true })
+    if (tab.windowId !== undefined) {
+      await chrome.windows.update(tab.windowId, { focused: true })
+    }
+  }
+
+  if (args.sessionId !== undefined) {
+    await ensureSessionGroup(args.sessionId, args.tabId)
+    await addSessionTabId(args.sessionId, 'claimed', args.tabId)
+  }
+
+  return {
+    content: [{
+      type: 'text',
+      text: `Claimed tab ${args.tabId}: ${tab.title ?? tab.url ?? '(no title)'}`,
+    }],
+  }
+}
+
+async function executeTabsFinalize(_tabId: number, rawArgs: unknown): Promise<ToolResult> {
+  const args = validateTabsFinalizeArgs(rawArgs)
+  const keepIds = new Set((args.keep ?? []).map((item) => item.tabId))
+  const closeIds = new Set(args.closeTabIds ?? [])
+  const closed: number[] = []
+  const kept: number[] = [...keepIds]
+  const errors: string[] = []
+
+  if (args.sessionId !== undefined) {
+    for (const tabId of await getSessionTabIds(args.sessionId, 'owned')) {
+      if (!keepIds.has(tabId)) closeIds.add(tabId)
+    }
+  }
+
+  for (const tabId of closeIds) {
+    if (keepIds.has(tabId)) continue
+    try {
+      await chrome.tabs.remove(tabId)
+      closed.push(tabId)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      errors.push(`tab ${tabId}: ${message}`)
+    }
+  }
+
+  if (args.sessionId !== undefined) {
+    await clearSessionState(args.sessionId)
+  }
+
+  const lines = [
+    'Finalized browser session.',
+    `Closed tabs: ${closed.length > 0 ? closed.join(', ') : '(none)'}`,
+    `Kept tabs: ${kept.length > 0 ? kept.join(', ') : '(none)'}`,
+  ]
+  if (errors.length > 0) {
+    lines.push(`Errors: ${errors.join('; ')}`)
+  }
+
+  return {
+    content: [{ type: 'text', text: lines.join('\n') }],
   }
 }
 
@@ -474,5 +738,8 @@ registerTool('tabs_context', executeTabsContext)
 registerTool('tabs_create', executeTabsCreate)
 registerTool('tabs_context_mcp', executeTabsContextMcp)
 registerTool('tabs_create_mcp', executeTabsCreateMcp)
+registerTool('session_name', executeSessionName)
+registerTool('tabs_claim', executeTabsClaim)
+registerTool('tabs_finalize', executeTabsFinalize)
 registerTool('tabs_activate', executeTabsActivate)
 registerTool('tabs_close', executeTabsClose)
