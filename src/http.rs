@@ -5,12 +5,12 @@ use axum::{
     body::Body,
     extract::{
         ws::{WebSocket, WebSocketUpgrade},
-        State,
+        ConnectInfo, State,
     },
     http::{header, Method, Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use serde::Serialize;
@@ -54,6 +54,7 @@ pub async fn serve(config: ServerConfig) -> Result<()> {
         .route("/health", get(health))
         .route("/status", get(status))
         .route("/ws", get(ws))
+        .route("/reload-extension", post(reload_extension))
         .merge(mcp_router)
         .with_state(state);
 
@@ -65,10 +66,13 @@ pub async fn serve(config: ServerConfig) -> Result<()> {
         .context("failed to read bound server address")?;
     tracing::info!(%local_addr, "server listening");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(shutdown))
-        .await
-        .context("server failed")
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal(shutdown))
+    .await
+    .context("server failed")
 }
 
 async fn health(State(state): State<AppState>) -> impl IntoResponse {
@@ -82,12 +86,32 @@ async fn status(State(state): State<AppState>) -> impl IntoResponse {
     axum::Json(state.bridge.status())
 }
 
-async fn ws(State(state): State<AppState>, upgrade: WebSocketUpgrade) -> impl IntoResponse {
-    upgrade.on_upgrade(move |socket| handle_ws(socket, state))
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReloadResult {
+    reloaded: usize,
 }
 
-async fn handle_ws(socket: WebSocket, state: AppState) {
-    if let Err(error) = state.bridge.handle_socket(socket, &state.token).await {
+async fn reload_extension(State(state): State<AppState>) -> impl IntoResponse {
+    let count = state.bridge.reload_all_extensions();
+    tracing::info!(count, "reload extension requested");
+    axum::Json(ReloadResult { reloaded: count })
+}
+
+async fn ws(
+    State(state): State<AppState>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    upgrade: WebSocketUpgrade,
+) -> impl IntoResponse {
+    upgrade.on_upgrade(move |socket| handle_ws(socket, state, peer_addr))
+}
+
+async fn handle_ws(socket: WebSocket, state: AppState, peer_addr: SocketAddr) {
+    if let Err(error) = state
+        .bridge
+        .handle_socket(socket, &state.token, Some(peer_addr))
+        .await
+    {
         tracing::warn!(%error, "websocket bridge closed with error");
     }
 }

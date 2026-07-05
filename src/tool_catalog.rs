@@ -355,6 +355,30 @@ static SPECS: &[ToolSpec] = &[
         "Execute a keyboard shortcut in a browser tab.",
         "shortcuts_execute",
     ),
+    ToolSpec {
+        name: "userscripts_register",
+        description: "Register one or more user scripts via chrome.userScripts. Scripts auto-inject on matching pages and persist across sessions.",
+        route: ToolRoute::Forward {
+            tab_id_envelope: false,
+        },
+        schema: "userscripts_register",
+    },
+    ToolSpec {
+        name: "userscripts_unregister",
+        description: "Unregister user scripts by ID, or all scripts if no IDs are provided.",
+        route: ToolRoute::Forward {
+            tab_id_envelope: false,
+        },
+        schema: "userscripts_unregister",
+    },
+    ToolSpec {
+        name: "userscripts_list",
+        description: "List registered user scripts, optionally filtered by ID.",
+        route: ToolRoute::Forward {
+            tab_id_envelope: false,
+        },
+        schema: "userscripts_list",
+    },
 ];
 
 fn specs() -> &'static [ToolSpec] {
@@ -683,6 +707,10 @@ fn schema(kind: &str) -> JsonObject {
         ]),
         "javascript_tool" => props(&[
             ("code", json!({"type":"string","minLength":1})),
+            (
+                "awaitPromise",
+                json!({"type":"boolean","default":false,"description":"Await any returned Promise before serializing the result."}),
+            ),
             ("tabId", tab_id_schema("Numeric tab ID to run code in.")),
             ("browserId", browser_id_schema()),
         ]),
@@ -734,6 +762,22 @@ fn schema(kind: &str) -> JsonObject {
             (
                 "timeoutMs",
                 json!({"type":"integer","minimum":0,"maximum":600000,"default":30000}),
+            ),
+            (
+                "includeHeaders",
+                json!({"type":"boolean","default":false,"description":"Include request and response headers for each entry."}),
+            ),
+            (
+                "includeDetails",
+                json!({"type":"boolean","default":false,"description":"Include mimeType, protocol, remote address, cache/service-worker flags, and encoded data length."}),
+            ),
+            (
+                "includeTiming",
+                json!({"type":"boolean","default":false,"description":"Include the CDP ResourceTiming object for each entry."}),
+            ),
+            (
+                "includePostData",
+                json!({"type":"boolean","default":false,"description":"Include request post body for each entry."}),
             ),
             ("tabId", tab_id_schema("Numeric tab ID.")),
             ("browserId", browser_id_schema()),
@@ -796,6 +840,27 @@ fn schema(kind: &str) -> JsonObject {
         "shortcuts_execute" => props(&[
             ("shortcut", json!({"type":"string","minLength":1})),
             ("tabId", tab_id_schema("Numeric tab ID.")),
+            ("browserId", browser_id_schema()),
+        ]),
+        "userscripts_register" => props(&[
+            (
+                "scripts",
+                json!({"type":"array","minItems":1,"items":{"type":"object","required":["id","matches","js"],"additionalProperties":false,"properties":{"id":{"type":"string","minLength":1},"matches":{"type":"array","items":{"type":"string"},"minItems":1},"js":{"type":"array","items":{"type":"object","required":[],"additionalProperties":false,"properties":{"code":{"type":"string"},"file":{"type":"string"}}},"minItems":1},"runAt":{"type":"string","enum":["document_start","document_end","document_idle"]},"allFrames":{"type":"boolean"},"excludeMatches":{"type":"array","items":{"type":"string"}},"world":{"type":"string","enum":["USER_SCRIPT","MAIN"]}}}}),
+            ),
+            ("browserId", browser_id_schema()),
+        ]),
+        "userscripts_unregister" => props(&[
+            (
+                "ids",
+                json!({"type":"array","items":{"type":"string"},"description":"Script IDs to unregister. Omit to unregister all."}),
+            ),
+            ("browserId", browser_id_schema()),
+        ]),
+        "userscripts_list" => props(&[
+            (
+                "ids",
+                json!({"type":"array","items":{"type":"string"},"description":"Script IDs to filter by. Omit to list all."}),
+            ),
             ("browserId", browser_id_schema()),
         ]),
         _ => Map::new(),

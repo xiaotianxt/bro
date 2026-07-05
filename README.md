@@ -181,6 +181,13 @@ bro call browsers_context
 
 `extensionCount` should be at least `1`.
 
+`browsers_context` also includes best-effort native metadata under
+`nativeInfo` when the local server can identify the browser process. On macOS
+and Unix-like systems this includes fields such as `appName`, `processId`,
+`executablePath`, `userDataDir`, `profilePath`, `cookieStorePath`, and
+`safeStorageService`. Use `nativeInfo` for cookie/storage export workflows;
+`browserInfo` is only the browser identity visible to the WebExtension.
+
 ## Main Tools
 
 - `browser.extract`: open one URL, extract visible text, close by default

@@ -14,6 +14,7 @@ import { stopAllMonitoring, stopMonitoring } from './tools/monitoring.js'
 import './tools/tabs.js'
 import './tools/upload.js'
 import './tools/misc.js'
+import './tools/userscripts.js'
 
 // ---------------------------------------------------------------------------
 // Stop agent cancellation token + per-tab indicator debounce

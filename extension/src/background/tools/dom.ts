@@ -211,23 +211,45 @@ async function ensureAccessibilityScript(tabId: number): Promise<void> {
 async function evaluateInPage(
   tabId: number,
   code: string,
+  awaitPromise: boolean,
 ): Promise<{ result: string; isError: boolean }> {
-  // Wrap in eval so arbitrary expressions and statements both work
-  const expression = `(function() { try { var __r = eval(${JSON.stringify(code)}); return { result: JSON.stringify(__r) !== undefined ? JSON.stringify(__r) : 'undefined', isError: false }; } catch(e) { return { result: e instanceof Error ? e.message : String(e), isError: true }; } })()`
+  if (awaitPromise) {
+    // Async wrapper: await the eval result, then return {result, isError}.
+    // CDP awaitPromise:true ensures the outer Promise (from async IIFE) is
+    // awaited before returnByValue serializes the result.
+    const expression = `(async function() { try { var __r = await eval(${JSON.stringify(code)}); return { result: __r === undefined ? 'undefined' : (() => { try { return JSON.stringify(__r) } catch(e) { return String(__r) } })(), isError: false }; } catch(e) { return { result: e instanceof Error ? e.message : String(e), isError: true }; } })()`
+    const res = await cdpSession.send<CDPEvaluateResult>(tabId, 'Runtime.evaluate', {
+      expression,
+      returnByValue: true,
+      awaitPromise: true,
+    })
+    if (res.exceptionDetails) {
+      return {
+        result: res.exceptionDetails.exception?.description ?? res.exceptionDetails.text ?? 'Unknown error',
+        isError: true,
+      }
+    }
+    const value = res.result.value as { result: string; isError: boolean } | undefined
+    if (value && typeof value.result === 'string') {
+      return value
+    }
+    // Fallback: CDP may not have returned by value properly
+    return { result: res.result.description ?? '{}', isError: false }
+  }
 
+  // Sync wrapper: eval and serialize immediately.
+  const expression = `(function() { try { var __r = eval(${JSON.stringify(code)}); return { result: __r === undefined ? 'undefined' : (() => { try { return JSON.stringify(__r) } catch(e) { return String(__r) } })(), isError: false }; } catch(e) { return { result: e instanceof Error ? e.message : String(e), isError: true }; } })()`
   const res = await cdpSession.send<CDPEvaluateResult>(tabId, 'Runtime.evaluate', {
     expression,
     returnByValue: true,
     awaitPromise: false,
   })
-
   if (res.exceptionDetails) {
     return {
       result: res.exceptionDetails.exception?.description ?? res.exceptionDetails.text ?? 'Unknown error',
       isError: true,
     }
   }
-
   return res.result.value as { result: string; isError: boolean }
 }
 
@@ -934,7 +956,10 @@ async function executeJavaScriptTool(
     throw new Error('javascript_tool: "code" is required')
   }
 
-  const { result, isError } = await evaluateInPage(tabId, code)
+  const awaitPromise =
+    typeof args['awaitPromise'] === 'boolean' ? args['awaitPromise'] : false
+
+  const { result, isError } = await evaluateInPage(tabId, code, awaitPromise)
 
   if (isError) {
     return {

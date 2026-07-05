@@ -296,6 +296,13 @@ export class BridgeClient {
         return
       }
 
+      // Handle reload command — reload the extension immediately
+      if (msg.type === 'reload_extension') {
+        console.log('[BridgeClient] Received reload_extension command')
+        chrome.runtime.reload()
+        return
+      }
+
       for (const handler of this.messageHandlers) {
         handler(msg)
       }

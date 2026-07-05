@@ -36,6 +36,7 @@ export const BridgeMessageType = {
   TOOL_CALL: 'tool_call',
   PING: 'ping',
   AGENT_DONE: 'agent_done',
+  RELOAD_EXTENSION: 'reload_extension',
 } as const
 
 export type BridgeMessageTypeValue =
@@ -50,6 +51,19 @@ export type BrowserInfo = {
   version: string   // major version, e.g. "120"
   platform: string  // e.g. "Windows", "macOS", "Linux"
   userAgent: string // full UA string
+}
+
+export type NativeBrowserInfo = {
+  metadataStatus: 'ok' | 'partial' | 'unavailable'
+  metadataError?: string
+  processId?: number
+  appName?: string
+  executablePath?: string
+  userDataDir?: string
+  profileDirectory?: string
+  profilePath?: string
+  cookieStorePath?: string
+  safeStorageService?: string
 }
 
 export type ConnectMessage = {
@@ -110,11 +124,16 @@ export type AgentDoneMessage = {
   tabIds: number[]
 }
 
+export type ReloadExtensionMessage = {
+  type: 'reload_extension'
+}
+
 export type ServerToExtensionMessage =
   | ConnectedMessage
   | ToolCallMessage
   | PingMessage
   | AgentDoneMessage
+  | ReloadExtensionMessage
 
 // ---------------------------------------------------------------------------
 // Status / registry types
@@ -127,6 +146,7 @@ export type ExtensionInfo = {
   activeTabId?: number
   activeTabUrl?: string
   browserInfo?: BrowserInfo
+  nativeInfo?: NativeBrowserInfo
 }
 
 export type StatusResponse = {
@@ -259,6 +279,8 @@ export function parseServerMessage(raw: string): ServerToExtensionMessage {
       }
       return { type: 'agent_done', tabIds: tabIds as number[] }
     }
+    case BridgeMessageType.RELOAD_EXTENSION:
+      return { type: 'reload_extension' }
     default:
       throw new Error(`Unknown ServerToExtension message type: "${type}"`)
   }

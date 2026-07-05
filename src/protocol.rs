@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::native::NativeBrowserInfo;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserInfo {
@@ -66,6 +68,7 @@ pub enum ServerToExtension {
     ToolCall(ToolCallMessage),
     Ping(PingMessage),
     AgentDone(AgentDoneMessage),
+    ReloadExtension,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +109,8 @@ pub struct ExtensionStatus {
     pub session_id: String,
     pub active_tab_url: Option<String>,
     pub browser_info: Option<BrowserInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_info: Option<NativeBrowserInfo>,
     pub last_seen_unix_ms: i64,
 }
 

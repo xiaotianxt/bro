@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -10,6 +11,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::{self, Duration};
 use uuid::Uuid;
 
+use crate::native::{inspect_browser_connection, NativeBrowserInfo};
 use crate::protocol::{
     AgentDoneMessage, ConnectMessage, ConnectedMessage, ExtensionStatus, ExtensionToServer,
     ServerToExtension, StatusResponse, ToolCallMessage,
@@ -62,6 +64,7 @@ struct BrowserConnection {
     session_id: String,
     active_tab_url: Option<String>,
     browser_info: Option<crate::protocol::BrowserInfo>,
+    native_info: Option<NativeBrowserInfo>,
     last_seen_unix_ms: i64,
     sequence: u64,
     sender: mpsc::UnboundedSender<ServerToExtension>,
@@ -92,6 +95,7 @@ impl BrowserBridge {
                 session_id: browser.session_id.clone(),
                 active_tab_url: browser.active_tab_url.clone(),
                 browser_info: browser.browser_info.clone(),
+                native_info: browser.native_info.clone(),
                 last_seen_unix_ms: browser.last_seen_unix_ms,
             })
             .collect::<Vec<_>>();
@@ -157,10 +161,27 @@ impl BrowserBridge {
             .map_err(|_err| BridgeError::BrowserDisconnected)
     }
 
+    /// Send reload command to all connected extensions.
+    pub fn reload_all_extensions(&self) -> usize {
+        let state = read_state(&self.inner.state);
+        let mut sent = 0;
+        for browser in state.browsers.values() {
+            if browser
+                .sender
+                .send(ServerToExtension::ReloadExtension)
+                .is_ok()
+            {
+                sent += 1;
+            }
+        }
+        sent
+    }
+
     pub async fn handle_socket(
         &self,
         mut socket: WebSocket,
         expected_token: &str,
+        peer_addr: Option<SocketAddr>,
     ) -> Result<(), BridgeError> {
         let connect = match socket.recv().await {
             Some(Ok(Message::Text(text))) => match ExtensionToServer::parse_json(text.as_str()) {
@@ -189,7 +210,8 @@ impl BrowserBridge {
         }))
         .map_err(|_err| BridgeError::BrowserDisconnected)?;
 
-        self.register_browser(connect, session_id, tx);
+        let native_info = inspect_browser_connection(peer_addr);
+        self.register_browser(connect, session_id, tx, Some(native_info));
 
         let writer = tokio::spawn(async move {
             while let Some(message) = rx.recv().await {
@@ -251,6 +273,7 @@ impl BrowserBridge {
         connect: ConnectMessage,
         session_id: String,
         sender: mpsc::UnboundedSender<ServerToExtension>,
+        native_info: Option<NativeBrowserInfo>,
     ) {
         let mut state = write_state(&self.inner.state);
         state.sequence = state.sequence.saturating_add(1);
@@ -264,6 +287,7 @@ impl BrowserBridge {
                 session_id,
                 active_tab_url: connect.active_tab_url,
                 browser_info: connect.browser_info,
+                native_info,
                 last_seen_unix_ms: now_unix_ms(),
                 sequence,
                 sender,

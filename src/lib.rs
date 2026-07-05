@@ -4,6 +4,7 @@ pub mod client;
 pub mod facade;
 pub mod http;
 pub mod mcp;
+pub mod native;
 pub mod output;
 pub mod protocol;
 pub mod settings;

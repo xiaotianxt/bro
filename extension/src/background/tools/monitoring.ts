@@ -21,8 +21,41 @@ interface NetworkEntry {
   status?: number
   statusText?: string
   failed?: boolean
-  errorText?: string
+  errorText?: string | undefined
   timestamp: number
+  // Captured fields, only rendered when the caller opts in.
+  requestHeaders?: Record<string, string> | undefined
+  postData?: string | undefined
+  responseHeaders?: Record<string, string> | undefined
+  mimeType?: string | undefined
+  protocol?: string | undefined
+  remoteIPAddress?: string | undefined
+  remotePort?: number | undefined
+  fromDiskCache?: boolean | undefined
+  fromServiceWorker?: boolean | undefined
+  encodedDataLength?: number | undefined
+  timing?: NetworkTiming | undefined
+}
+
+interface NetworkTiming {
+  requestTime: number
+  proxyStart: number
+  proxyEnd: number
+  dnsStart: number
+  dnsEnd: number
+  connectStart: number
+  connectEnd: number
+  sslStart: number
+  sslEnd: number
+  workerStart: number
+  workerReady: number
+  workerFetchStart: number
+  workerRespondWithSettled: number
+  sendStart: number
+  sendEnd: number
+  pushStart: number
+  pushEnd: number
+  receiveHeadersEnd: number
 }
 
 // CDP event param types
@@ -46,6 +79,21 @@ interface RequestWillBeSentParams {
   request: {
     method: string
     url: string
+    headers: Record<string, string>
+    postData?: string
+  }
+  redirectResponse?: {
+    status: number
+    statusText: string
+    headers: Record<string, string>
+    mimeType: string
+    protocol: string
+    remoteIPAddress: string
+    remotePort: number
+    fromDiskCache: boolean
+    fromServiceWorker: boolean
+    encodedDataLength: number
+    timing: NetworkTiming
   }
 }
 
@@ -54,6 +102,15 @@ interface ResponseReceivedParams {
   response: {
     status: number
     statusText: string
+    headers: Record<string, string>
+    mimeType: string
+    protocol: string
+    remoteIPAddress: string
+    remotePort: number
+    fromDiskCache: boolean
+    fromServiceWorker: boolean
+    encodedDataLength: number
+    timing: NetworkTiming
   }
 }
 
@@ -264,10 +321,21 @@ async function enableNetworkMonitoring(tabId: number): Promise<void> {
       if (existing) {
         existing.method = p.request.method
         existing.url = p.request.url
+        existing.requestHeaders = p.request.headers
+        existing.postData = p.request.postData
         delete existing.status
         delete existing.statusText
         delete existing.failed
         delete existing.errorText
+        delete existing.responseHeaders
+        delete existing.mimeType
+        delete existing.protocol
+        delete existing.remoteIPAddress
+        delete existing.remotePort
+        delete existing.fromDiskCache
+        delete existing.fromServiceWorker
+        delete existing.encodedDataLength
+        delete existing.timing
         existing.timestamp = p.timestamp
       } else {
         buf.push({
@@ -275,6 +343,8 @@ async function enableNetworkMonitoring(tabId: number): Promise<void> {
           method: p.request.method,
           url: p.request.url,
           timestamp: p.timestamp,
+          requestHeaders: p.request.headers,
+          postData: p.request.postData,
         })
       }
     },
@@ -289,6 +359,15 @@ async function enableNetworkMonitoring(tabId: number): Promise<void> {
       if (entry) {
         entry.status = p.response.status
         entry.statusText = p.response.statusText
+        entry.responseHeaders = p.response.headers
+        entry.mimeType = p.response.mimeType
+        entry.protocol = p.response.protocol
+        entry.remoteIPAddress = p.response.remoteIPAddress
+        entry.remotePort = p.response.remotePort
+        entry.fromDiskCache = p.response.fromDiskCache
+        entry.fromServiceWorker = p.response.fromServiceWorker
+        entry.encodedDataLength = p.response.encodedDataLength
+        entry.timing = p.response.timing
       }
     },
   )
@@ -425,6 +504,10 @@ interface ReadArgs {
 
 interface ReadNetworkArgs extends ReadArgs {
   timeoutMs: number
+  includeHeaders?: boolean
+  includeDetails?: boolean
+  includeTiming?: boolean
+  includePostData?: boolean
 }
 
 function validateReadArgs(args: unknown): ReadArgs {
@@ -466,6 +549,34 @@ function validateReadNetworkArgs(args: unknown): ReadNetworkArgs {
       )
     }
     result.timeoutMs = a['timeoutMs']
+  }
+
+  if (a['includeHeaders'] !== undefined) {
+    if (typeof a['includeHeaders'] !== 'boolean') {
+      throw new Error('"includeHeaders" must be a boolean')
+    }
+    result.includeHeaders = a['includeHeaders']
+  }
+
+  if (a['includeDetails'] !== undefined) {
+    if (typeof a['includeDetails'] !== 'boolean') {
+      throw new Error('"includeDetails" must be a boolean')
+    }
+    result.includeDetails = a['includeDetails']
+  }
+
+  if (a['includeTiming'] !== undefined) {
+    if (typeof a['includeTiming'] !== 'boolean') {
+      throw new Error('"includeTiming" must be a boolean')
+    }
+    result.includeTiming = a['includeTiming']
+  }
+
+  if (a['includePostData'] !== undefined) {
+    if (typeof a['includePostData'] !== 'boolean') {
+      throw new Error('"includePostData" must be a boolean')
+    }
+    result.includePostData = a['includePostData']
   }
 
   return result
@@ -529,15 +640,14 @@ async function executeReadNetworkRequests(
     }
   }
 
-  const lines = buf.map((entry) => {
-    if (entry.failed) {
-      return `[${entry.requestId}] ${entry.method} ${entry.url} [FAILED: ${entry.errorText ?? 'unknown error'}]`
-    }
-    if (entry.status !== undefined) {
-      return `[${entry.requestId}] ${entry.method} ${entry.url} ${entry.status}`
-    }
-    return `[${entry.requestId}] ${entry.method} ${entry.url} [pending]`
-  })
+  const lines = buf.map((entry) =>
+    formatNetworkEntry(entry, {
+      includeHeaders: args.includeHeaders ?? false,
+      includeDetails: args.includeDetails ?? false,
+      includeTiming: args.includeTiming ?? false,
+      includePostData: args.includePostData ?? false,
+    }),
+  )
   const text = lines.join('\n')
 
   if (args.clear) {
@@ -547,6 +657,93 @@ async function executeReadNetworkRequests(
   return {
     content: [{ type: 'text', text: `${text}\n\n${timeoutNotice}` }],
   }
+}
+
+interface NetworkFormatOptions {
+  includeHeaders: boolean
+  includeDetails: boolean
+  includeTiming: boolean
+  includePostData: boolean
+}
+
+function formatHeaders(headers: Record<string, string> | undefined, indent: string): string {
+  if (!headers) return `${indent}(none)`
+  const entries = Object.entries(headers)
+  if (entries.length === 0) return `${indent}(none)`
+  return entries.map(([k, v]) => `${indent}${k}: ${v}`).join('\n')
+}
+
+function formatTiming(timing: NetworkTiming | undefined, indent: string): string {
+  if (!timing) return `${indent}(none)`
+  const fields: Array<[string, number]> = [
+    ['requestTime', timing.requestTime],
+    ['proxyStart', timing.proxyStart],
+    ['proxyEnd', timing.proxyEnd],
+    ['dnsStart', timing.dnsStart],
+    ['dnsEnd', timing.dnsEnd],
+    ['connectStart', timing.connectStart],
+    ['connectEnd', timing.connectEnd],
+    ['sslStart', timing.sslStart],
+    ['sslEnd', timing.sslEnd],
+    ['workerStart', timing.workerStart],
+    ['workerReady', timing.workerReady],
+    ['workerFetchStart', timing.workerFetchStart],
+    ['workerRespondWithSettled', timing.workerRespondWithSettled],
+    ['sendStart', timing.sendStart],
+    ['sendEnd', timing.sendEnd],
+    ['pushStart', timing.pushStart],
+    ['pushEnd', timing.pushEnd],
+    ['receiveHeadersEnd', timing.receiveHeadersEnd],
+  ]
+  return fields.map(([k, v]) => `${indent}${k}: ${v}`).join('\n')
+}
+
+function formatNetworkEntry(
+  entry: NetworkEntry,
+  opts: NetworkFormatOptions,
+): string {
+  const head =
+    entry.failed
+      ? `[${entry.requestId}] ${entry.method} ${entry.url} [FAILED: ${entry.errorText ?? 'unknown error'}]`
+      : entry.status !== undefined
+        ? `[${entry.requestId}] ${entry.method} ${entry.url} ${entry.status}`
+        : `[${entry.requestId}] ${entry.method} ${entry.url} [pending]`
+
+  const sections: string[] = [head]
+
+  if (opts.includeHeaders) {
+    sections.push(`  Request Headers:`)
+    sections.push(formatHeaders(entry.requestHeaders, '    '))
+    sections.push(`  Response Headers:`)
+    sections.push(formatHeaders(entry.responseHeaders, '    '))
+  }
+
+  if (opts.includePostData) {
+    sections.push(`  Post Data:`)
+    sections.push(`    ${entry.postData ?? '(none)'}`)
+  }
+
+  if (opts.includeDetails) {
+    const detailLines: string[] = []
+    if (entry.mimeType !== undefined) detailLines.push(`mimeType: ${entry.mimeType}`)
+    if (entry.protocol !== undefined) detailLines.push(`protocol: ${entry.protocol}`)
+    if (entry.remoteIPAddress !== undefined) detailLines.push(`remoteIPAddress: ${entry.remoteIPAddress}`)
+    if (entry.remotePort !== undefined) detailLines.push(`remotePort: ${entry.remotePort}`)
+    if (entry.fromDiskCache !== undefined) detailLines.push(`fromDiskCache: ${entry.fromDiskCache}`)
+    if (entry.fromServiceWorker !== undefined) detailLines.push(`fromServiceWorker: ${entry.fromServiceWorker}`)
+    if (entry.encodedDataLength !== undefined) detailLines.push(`encodedDataLength: ${entry.encodedDataLength}`)
+    if (detailLines.length > 0) {
+      sections.push(`  Details:`)
+      sections.push(...detailLines.map((l) => `    ${l}`))
+    }
+  }
+
+  if (opts.includeTiming) {
+    sections.push(`  Timing:`)
+    sections.push(formatTiming(entry.timing, '    '))
+  }
+
+  return sections.join('\n')
 }
 
 // ---------------------------------------------------------------------------
