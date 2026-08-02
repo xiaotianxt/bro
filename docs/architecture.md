@@ -52,13 +52,17 @@ move into Rust unless the browser API forces it to live in the extension.
 ```
 
 The settings file contains the local bridge token. It is created with private
-permissions on Unix systems.
+permissions on Unix systems. Read-only commands never create or chmod it, and
+bro leaves malformed or empty-token settings unchanged so the failure remains
+visible and recoverable.
 
 ## Failure Behavior
 
 - No browser connected: MCP tools return `isError=true` with an actionable
   message.
 - Unknown `browserId`: the request fails instead of falling back silently.
+- Extension authentication must finish within five seconds; an open socket is
+  not registered as connected before the server acknowledges authentication.
 - Tool timeout: Rust stops scheduling more work and makes a best-effort tab
   cleanup when it owns the tab.
 - Partial page readiness: extraction returns `partial` with diagnostics rather

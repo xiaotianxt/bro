@@ -72,6 +72,7 @@ struct BrowserConnection {
 
 struct PendingCall {
     browser_id: String,
+    session_id: String,
     tx: oneshot::Sender<Result<BridgeToolResult, BridgeError>>,
 }
 
@@ -123,6 +124,7 @@ impl BrowserBridge {
             request_id.clone(),
             PendingCall {
                 browser_id: target.browser_id.clone(),
+                session_id: target.session_id.clone(),
                 tx,
             },
         );
@@ -182,19 +184,27 @@ impl BrowserBridge {
         mut socket: WebSocket,
         expected_token: &str,
         peer_addr: Option<SocketAddr>,
+        authentication_timeout: Duration,
     ) -> Result<(), BridgeError> {
-        let connect = match socket.recv().await {
+        let first_frame = match time::timeout(authentication_timeout, socket.recv()).await {
+            Ok(frame) => frame,
+            Err(_elapsed) => {
+                close_policy_violation(&mut socket, "authentication timed out").await?;
+                return Ok(());
+            }
+        };
+        let connect = match first_frame {
             Some(Ok(Message::Text(text))) => match ExtensionToServer::parse_json(text.as_str()) {
                 Ok(ExtensionToServer::Connect(connect)) if connect.token == expected_token => {
                     connect
                 }
                 _ => {
-                    close_policy_violation(&mut socket).await?;
+                    close_policy_violation(&mut socket, "authentication failed").await?;
                     return Ok(());
                 }
             },
             Some(Ok(_)) | None => {
-                close_policy_violation(&mut socket).await?;
+                close_policy_violation(&mut socket, "authentication failed").await?;
                 return Ok(());
             }
             Some(Err(err)) => return Err(BridgeError::WebSocket(err)),
@@ -211,7 +221,7 @@ impl BrowserBridge {
         .map_err(|_err| BridgeError::BrowserDisconnected)?;
 
         let native_info = inspect_browser_connection(peer_addr);
-        self.register_browser(connect, session_id, tx, Some(native_info));
+        self.register_browser(connect, session_id.clone(), tx, Some(native_info));
 
         let writer = tokio::spawn(async move {
             while let Some(message) = rx.recv().await {
@@ -224,22 +234,22 @@ impl BrowserBridge {
         while let Some(frame) = ws_rx.next().await {
             match frame? {
                 Message::Text(text) => {
-                    self.handle_authenticated_message(&browser_id, text.as_str())
+                    self.handle_authenticated_message(&browser_id, &session_id, text.as_str())
                         .await;
                 }
                 Message::Close(_close) => break,
                 Message::Ping(bytes) => {
                     let _ignored = bytes;
-                    self.touch_browser(&browser_id);
+                    self.touch_browser(&browser_id, &session_id);
                 }
                 Message::Pong(_bytes) => {
-                    self.touch_browser(&browser_id);
+                    self.touch_browser(&browser_id, &session_id);
                 }
                 Message::Binary(_bytes) => {}
             }
         }
 
-        self.unregister_browser(&browser_id).await;
+        self.unregister_browser(&browser_id, &session_id).await;
         writer.abort();
         Ok(())
     }
@@ -264,6 +274,7 @@ impl BrowserBridge {
 
         Ok(ResolvedBrowser {
             browser_id: selected,
+            session_id: browser.session_id.clone(),
             sender: browser.sender.clone(),
         })
     }
@@ -295,23 +306,31 @@ impl BrowserBridge {
         );
     }
 
-    async fn unregister_browser(&self, browser_id: &str) {
+    async fn unregister_browser(&self, browser_id: &str, session_id: &str) {
         {
             let mut state = write_state(&self.inner.state);
-            state.browsers.remove(browser_id);
-            if state.latest_browser_id.as_deref() == Some(browser_id) {
-                state.latest_browser_id = state
-                    .browsers
-                    .iter()
-                    .max_by_key(|(_id, browser)| browser.sequence)
-                    .map(|(id, _browser)| id.clone());
+            let is_current = state
+                .browsers
+                .get(browser_id)
+                .is_some_and(|browser| browser.session_id == session_id);
+            if is_current {
+                state.browsers.remove(browser_id);
+                if state.latest_browser_id.as_deref() == Some(browser_id) {
+                    state.latest_browser_id = state
+                        .browsers
+                        .iter()
+                        .max_by_key(|(_id, browser)| browser.sequence)
+                        .map(|(id, _browser)| id.clone());
+                }
             }
         }
 
         let mut pending = self.inner.pending.lock().await;
         let pending_ids = pending
             .iter()
-            .filter(|(_request_id, call)| call.browser_id == browser_id)
+            .filter(|(_request_id, call)| {
+                call.browser_id == browser_id && call.session_id == session_id
+            })
             .map(|(request_id, _call)| request_id.clone())
             .collect::<Vec<_>>();
         for request_id in pending_ids {
@@ -323,7 +342,7 @@ impl BrowserBridge {
         }
     }
 
-    async fn handle_authenticated_message(&self, browser_id: &str, text: &str) {
+    async fn handle_authenticated_message(&self, browser_id: &str, session_id: &str, text: &str) {
         match ExtensionToServer::parse_json(text) {
             Ok(ExtensionToServer::ToolResult(message)) => {
                 self.complete_pending(
@@ -334,7 +353,7 @@ impl BrowserBridge {
                     }),
                 )
                 .await;
-                self.touch_browser(browser_id);
+                self.touch_browser(browser_id, session_id);
             }
             Ok(ExtensionToServer::ToolError(message)) => {
                 self.complete_pending(
@@ -345,10 +364,10 @@ impl BrowserBridge {
                     }),
                 )
                 .await;
-                self.touch_browser(browser_id);
+                self.touch_browser(browser_id, session_id);
             }
             Ok(ExtensionToServer::Pong(_pong)) => {
-                self.touch_browser(browser_id);
+                self.touch_browser(browser_id, session_id);
             }
             Ok(ExtensionToServer::Connect(_)) | Err(_) => {}
         }
@@ -368,8 +387,12 @@ impl BrowserBridge {
         self.inner.pending.lock().await.remove(request_id);
     }
 
-    fn touch_browser(&self, browser_id: &str) {
-        if let Some(browser) = write_state(&self.inner.state).browsers.get_mut(browser_id) {
+    fn touch_browser(&self, browser_id: &str, session_id: &str) {
+        if let Some(browser) = write_state(&self.inner.state)
+            .browsers
+            .get_mut(browser_id)
+            .filter(|browser| browser.session_id == session_id)
+        {
             browser.last_seen_unix_ms = now_unix_ms();
         }
     }
@@ -391,6 +414,7 @@ fn write_state(lock: &RwLock<BridgeState>) -> RwLockWriteGuard<'_, BridgeState> 
 
 struct ResolvedBrowser {
     browser_id: String,
+    session_id: String,
     sender: mpsc::UnboundedSender<ServerToExtension>,
 }
 
@@ -401,11 +425,14 @@ fn error_tool_result(message: &str) -> BridgeToolResult {
     }
 }
 
-async fn close_policy_violation(socket: &mut WebSocket) -> Result<(), BridgeError> {
+async fn close_policy_violation(
+    socket: &mut WebSocket,
+    reason: &'static str,
+) -> Result<(), BridgeError> {
     socket
         .send(Message::Close(Some(CloseFrame {
             code: 1008,
-            reason: "authentication failed".into(),
+            reason: reason.into(),
         })))
         .await?;
     Ok(())
@@ -421,7 +448,11 @@ fn now_unix_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use tokio::sync::mpsc;
+
     use serde_json::json;
+
+    use crate::protocol::ConnectMessage;
 
     use super::{BridgeError, BrowserBridge};
 
@@ -441,5 +472,29 @@ mod tests {
         assert_eq!(status.extension_count, 0);
         assert_eq!(status.default_browser_id, None);
         assert!(status.extensions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stale_disconnect_does_not_unregister_replacement_connection() {
+        let bridge = BrowserBridge::new();
+        let connect = || ConnectMessage {
+            version: "0.2.5".to_string(),
+            extension_id: "extension".to_string(),
+            instance_id: "browser-1".to_string(),
+            token: "secret".to_string(),
+            active_tab_url: None,
+            browser_info: None,
+        };
+        let (old_sender, _old_receiver) = mpsc::unbounded_channel();
+        bridge.register_browser(connect(), "old-session".to_string(), old_sender, None);
+        let (new_sender, _new_receiver) = mpsc::unbounded_channel();
+        bridge.register_browser(connect(), "new-session".to_string(), new_sender, None);
+
+        bridge.unregister_browser("browser-1", "old-session").await;
+
+        let status = bridge.status();
+        assert_eq!(status.extension_count, 1);
+        assert_eq!(status.default_browser_id.as_deref(), Some("browser-1"));
+        assert_eq!(status.extensions[0].session_id, "new-session");
     }
 }

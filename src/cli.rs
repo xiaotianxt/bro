@@ -144,10 +144,21 @@ async fn serve(args: ServeArgs) -> Result<()> {
 }
 
 async fn doctor(args: DoctorArgs) -> Result<()> {
-    let settings = Settings::load_or_create().context("failed to load settings")?;
+    let settings_path = Settings::default_path()?;
+    let token_present = if settings_path.try_exists().with_context(|| {
+        format!(
+            "failed to inspect settings file {}",
+            settings_path.display()
+        )
+    })? {
+        Settings::load().context("failed to load settings")?;
+        true
+    } else {
+        false
+    };
     let report = output::DoctorReport {
-        settings_path: settings.path().to_path_buf(),
-        token_present: !settings.token().is_empty(),
+        settings_path,
+        token_present,
         bind_address: loopback_addr(args.port),
     };
 
@@ -159,7 +170,7 @@ async fn doctor(args: DoctorArgs) -> Result<()> {
 }
 
 async fn call(args: CallArgs) -> Result<()> {
-    let settings = Settings::load_or_create().context("failed to load settings")?;
+    let settings = Settings::load().context("failed to load settings")?;
     let arguments = parse_call_arguments(args.arguments)?;
     let response = client::call_tool(
         loopback_addr(args.port),

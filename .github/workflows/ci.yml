@@ -66,9 +66,13 @@ jobs:
           cache: pnpm
       - name: Install
         run: pnpm install --frozen-lockfile
+      - name: Check versions
+        run: pnpm version:check
       - name: Build shared protocol
         run: pnpm --filter @bro/shared build
       - name: Typecheck extension
         run: pnpm --filter @bro/extension typecheck
+      - name: Test extension
+        run: pnpm --filter @bro/extension test
       - name: Build extension
         run: pnpm --filter @bro/extension build

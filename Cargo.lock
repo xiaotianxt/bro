@@ -189,6 +189,7 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
+ "tokio-tungstenite",
  "tokio-util",
  "toml_edit",
  "tracing",

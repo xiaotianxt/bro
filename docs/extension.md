@@ -11,12 +11,19 @@ options page, receives generic tool calls, executes browser primitives, and
 returns MCP-style content. It should stay policy-free: no site-specific research
 logic, no cloud relay, and no final-answer generation.
 
+Options accept only `ws://` URLs on `localhost`, `127.0.0.1`, or `[::1]`. The
+token stays in local extension storage. The extension refuses to connect unless
+Chromium first restricts that storage to trusted extension contexts. Older
+synced tokens are migrated once and removed from sync storage. The extension
+reports connected only after the Rust server acknowledges authentication.
+
 ## Build
 
 ```bash
 pnpm install
 pnpm --filter @bro/shared build
 pnpm --filter @bro/extension typecheck
+pnpm --filter @bro/extension test
 pnpm --filter @bro/extension build
 ```
 

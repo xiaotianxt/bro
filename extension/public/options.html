@@ -46,10 +46,6 @@
       background: #1a73e8;
       color: #fff;
     }
-    #test-btn {
-      background: #f1f3f4;
-      color: #333;
-    }
     #status {
       margin-top: 16px;
       font-size: 0.9rem;
@@ -92,10 +88,9 @@
 
   <div class="actions">
     <button id="save-btn">Save</button>
-    <button id="test-btn">Test Connection</button>
   </div>
 
-  <div id="status" class="disconnected">
+  <div id="status" class="disconnected" role="status" aria-live="polite">
     <span class="dot"></span>
     <span id="status-text">Disconnected</span>
   </div>

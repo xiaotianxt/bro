@@ -26,3 +26,6 @@ toml_edit = "0.25.12"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tokio-tungstenite = "0.29"

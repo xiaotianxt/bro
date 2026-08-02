@@ -1,12 +1,16 @@
 // Options page script for bro extension.
 // Allows configuring the WebSocket server URL and shows connection status.
 
-const DEFAULT_SERVER_URL = 'ws://127.0.0.1:3500/ws'
+import {
+  DEFAULT_SERVER_URL,
+  loadServerUrl,
+  loadToken,
+  saveSettings,
+} from '../settings.js'
 
 const serverUrlInput = document.getElementById('server-url') as HTMLInputElement
 const tokenInput = document.getElementById('token') as HTMLInputElement
 const saveBtn = document.getElementById('save-btn') as HTMLButtonElement
-const testBtn = document.getElementById('test-btn') as HTMLButtonElement
 const statusEl = document.getElementById('status') as HTMLDivElement
 const statusTextEl = document.getElementById('status-text') as HTMLSpanElement
 
@@ -14,17 +18,16 @@ const statusTextEl = document.getElementById('status-text') as HTMLSpanElement
 // Load saved URL on page open
 // ---------------------------------------------------------------------------
 
-function loadStoredSettings(): void {
-  chrome.storage.sync.get({ serverUrl: DEFAULT_SERVER_URL, token: '' }, (items) => {
-    if (chrome.runtime.lastError) {
-      console.warn('[Options] storage.sync.get error:', chrome.runtime.lastError.message)
-      serverUrlInput.value = DEFAULT_SERVER_URL
-    } else {
-      const url = typeof items['serverUrl'] === 'string' ? items['serverUrl'] : DEFAULT_SERVER_URL
-      serverUrlInput.value = url
-      tokenInput.value = typeof items['token'] === 'string' ? items['token'] : ''
-    }
-  })
+async function loadStoredSettings(): Promise<void> {
+  try {
+    const [serverUrl, token] = await Promise.all([loadServerUrl(), loadToken()])
+    serverUrlInput.value = serverUrl
+    tokenInput.value = token
+  } catch (error) {
+    console.warn('[Options] Failed to load settings:', error)
+    serverUrlInput.value = DEFAULT_SERVER_URL
+    setStatus(false, 'Failed to load settings')
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -94,13 +97,15 @@ function pollUntilConnected(attempts = 0): void {
 // ---------------------------------------------------------------------------
 
 saveBtn.addEventListener('click', () => {
-  const url = serverUrlInput.value.trim() || DEFAULT_SERVER_URL
-  const token = tokenInput.value.trim()
-  chrome.storage.sync.set({ serverUrl: url, token }, () => {
-    if (chrome.runtime.lastError) {
-      console.warn('[Options] storage.sync.set error:', chrome.runtime.lastError.message)
+  void (async () => {
+    try {
+      await saveSettings(serverUrlInput.value, tokenInput.value.trim())
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to save settings'
+      setStatus(false, message)
       return
     }
+
     // Tell the service worker to reconnect with the new URL/token
     chrome.runtime.sendMessage({ type: 'RECONNECT' }, () => {
       void chrome.runtime.lastError
@@ -108,65 +113,13 @@ saveBtn.addEventListener('click', () => {
     // Show connecting state and poll until the service worker reports connected
     setConnecting()
     pollUntilConnected()
-  })
-})
-
-// ---------------------------------------------------------------------------
-// Test Connection button — attempt a WebSocket handshake to the URL
-// ---------------------------------------------------------------------------
-
-testBtn.addEventListener('click', () => {
-  const url = serverUrlInput.value.trim() || DEFAULT_SERVER_URL
-  testBtn.disabled = true
-  testBtn.textContent = 'Testing…'
-
-  let finished = false
-
-  const ws = new WebSocket(url)
-
-  const finish = (success: boolean): void => {
-    if (finished) return
-    finished = true
-    ws.onopen = null
-    ws.onerror = null
-    ws.onclose = null
-    try {
-      ws.close()
-    } catch {
-      // ignore
-    }
-    testBtn.disabled = false
-    testBtn.textContent = 'Test Connection'
-    setStatus(success)
-  }
-
-  const timeoutId = setTimeout(() => {
-    finish(false)
-  }, 5_000)
-
-  ws.onopen = () => {
-    clearTimeout(timeoutId)
-    finish(true)
-  }
-
-  ws.onerror = () => {
-    clearTimeout(timeoutId)
-    finish(false)
-  }
-
-  ws.onclose = () => {
-    clearTimeout(timeoutId)
-    // onopen wasn't called yet → treat as failure
-    if (!finished) {
-      finish(false)
-    }
-  }
+  })()
 })
 
 // ---------------------------------------------------------------------------
 // Auto-refresh status every 3 seconds
 // ---------------------------------------------------------------------------
 
-loadStoredSettings()
+void loadStoredSettings()
 updateStatus()
 setInterval(updateStatus, 3_000)

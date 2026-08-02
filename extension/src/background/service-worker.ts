@@ -102,8 +102,9 @@ chrome.action.onClicked.addListener(() => {
   void chrome.runtime.openOptionsPage()
 })
 
-// Connect to the MCP server on service worker startup.
-void bridgeClient.connect()
+void bridgeClient.connect().catch((error: unknown) => {
+  console.error('[ServiceWorker] Initial connection failed:', error)
+})
 
 // Handle incoming messages from the MCP server.
 bridgeClient.onMessage(async (msg) => {
@@ -229,7 +230,9 @@ chrome.runtime.onMessage.addListener(
     // -----------------------------------------------------------------------
     if (msgType === 'RECONNECT') {
       bridgeClient.disconnect()
-      void bridgeClient.connect()
+      void bridgeClient.connect().catch((error: unknown) => {
+        console.error('[ServiceWorker] Reconnect failed:', error)
+      })
       sendResponse({ ok: true })
       return true
     }

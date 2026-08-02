@@ -26,10 +26,5 @@ through a minimal WebExtension adapter.
 Run before handoff:
 
 ```bash
-cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-pnpm --filter @bro/shared build
-pnpm --filter @bro/extension typecheck
-pnpm --filter @bro/extension build
+make check
 ```

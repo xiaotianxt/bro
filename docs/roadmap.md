@@ -1,23 +1,21 @@
 # Roadmap
 
-## 0.1
+## 1.0
 
-- Rust MCP server and CLI.
-- Minimal WebExtension adapter.
-- OpenBrowserMCP-compatible bridge and public browser tools where useful.
-- Batch extraction and flow tools.
-- Live regression tests for dynamic social/search pages.
-- GitHub CI and release metadata.
+- Stable Rust MCP server and CLI with a minimal authenticated WebExtension
+  adapter.
+- Batch extraction, leased-tab flows, browser monitoring, and generic browser
+  primitives.
+- Cross-platform GitHub artifacts, extension packaging, and Homebrew service
+  installation.
+- CI coverage for Rust, the extension, version synchronization, and the local
+  authentication boundary.
 
 ## Next
 
-- Split Rust facade modules by ownership: batch scheduling, extraction parsing,
-  flow sessions, and JavaScript snippets.
 - Add signed release artifacts for macOS/Linux.
-- Add a stable extension packaging workflow.
-- Improve virtualized-feed extraction without adding site-specific policy.
-- Add generated protocol bindings so Rust and TypeScript bridge types cannot
-  drift.
+- Improve virtualized-feed extraction when live regressions demonstrate a
+  generic failure mode.
 
 ## Later
 

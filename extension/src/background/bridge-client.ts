@@ -11,9 +11,12 @@ import {
   type ServerToExtensionMessage,
   parseServerMessage,
 } from '@bro/shared'
-
-const DEFAULT_SERVER_URL = 'ws://127.0.0.1:3500/ws'
-const EXTENSION_VERSION = '0.1.0'
+import {
+  loadServerUrl,
+  loadToken,
+  normalizeServerUrl,
+  restrictLocalStorageAccess,
+} from '../settings.js'
 
 // Alarm names
 export const ALARM_KEEPALIVE = 'keepalive'
@@ -35,6 +38,7 @@ export class BridgeClient {
   private _isConnected = false
   // Tracks whether connect() has been called (and disconnect() not yet called)
   private active = false
+  private generation = 0
   // Cached server URL for reconnect attempts triggered by alarms
   private serverUrl: string | null = null
 
@@ -48,11 +52,18 @@ export class BridgeClient {
    * Also registers the keepalive alarm to survive service worker suspension.
    */
   async connect(): Promise<void> {
+    if (this.ws !== null) return
+
+    const generation = ++this.generation
+    this.active = false
+    await restrictLocalStorageAccess()
+    if (this.generation !== generation) return
     this.active = true
-    const url = await this.getServerUrl()
+    const url = await loadServerUrl()
+    if (!this.active || this.generation !== generation) return
     this.serverUrl = url
     this.registerKeepaliveAlarm()
-    this.openSocket(url)
+    this.openSocket(url, generation)
   }
 
   /**
@@ -61,6 +72,7 @@ export class BridgeClient {
    */
   disconnect(): void {
     this.active = false
+    this.generation += 1
     this.clearAlarms()
     if (this.ws) {
       this.ws.onclose = null // prevent reconnect callback
@@ -109,17 +121,19 @@ export class BridgeClient {
 
     if (!this.active) return
 
-    if (this._isConnected) {
-      // Already connected — nothing to do
+    if (this._isConnected || this.ws !== null) {
+      // Already connected or authenticating — nothing to do
       return
     }
 
     console.log(`[BridgeClient] Alarm '${alarmName}' fired — attempting reconnect`)
 
     // Re-read server URL in case it changed
-    const url = await this.getServerUrl()
+    const generation = ++this.generation
+    const url = await loadServerUrl()
+    if (!this.active || this.generation !== generation) return
     this.serverUrl = url
-    this.openSocket(url)
+    this.openSocket(url, generation)
   }
 
   // ---------------------------------------------------------------------------
@@ -153,33 +167,6 @@ export class BridgeClient {
     })
   }
 
-  private async getServerUrl(): Promise<string> {
-    return new Promise((resolve) => {
-      chrome.storage.sync.get({ serverUrl: DEFAULT_SERVER_URL }, (items) => {
-        const err = chrome.runtime.lastError
-        if (err) {
-          console.warn('[BridgeClient] storage.sync.get error:', err.message)
-          resolve(DEFAULT_SERVER_URL)
-        } else {
-          const url =
-            typeof items['serverUrl'] === 'string'
-              ? items['serverUrl']
-              : DEFAULT_SERVER_URL
-          resolve(url)
-        }
-      })
-    })
-  }
-
-  private async getToken(): Promise<string> {
-    return new Promise((resolve) => {
-      chrome.storage.sync.get({ token: '' }, (items) => {
-        void chrome.runtime.lastError
-        resolve(typeof items['token'] === 'string' ? items['token'] : '')
-      })
-    })
-  }
-
   private registerKeepaliveAlarm(): void {
     // Create a repeating alarm that fires every KEEPALIVE_PERIOD_MINUTES.
     // This wakes the service worker periodically so we can check connection
@@ -195,99 +182,124 @@ export class BridgeClient {
     chrome.alarms.clear(ALARM_WS_RECONNECT)
   }
 
-  private openSocket(url: string): void {
-    if (!this.active) return
+  private openSocket(value: string, generation: number): void {
+    if (!this.active || this.generation !== generation) return
 
     // Avoid creating duplicate connections
     if (this.ws !== null) return
 
+    const url = normalizeServerUrl(value)
     console.log(`[BridgeClient] Connecting to ${url}…`)
 
     const ws = new WebSocket(url)
     this.ws = ws
 
     ws.onopen = async () => {
+      if (this.ws !== ws || this.generation !== generation) return
       if (!this.active) {
         ws.close()
         return
       }
-      console.log('[BridgeClient] Connected')
-      this._isConnected = true
-
-      // Get or create a per-window instanceId (survives SW restarts, unique per window)
-      const instanceId = await this.getOrCreateInstanceId()
-
-      // Read the authentication token from storage
-      const token = await this.getToken()
-
-      // Query the active tab URL for identification
-      let activeTabUrl = ''
       try {
-        const tabs = await chrome.tabs.query({ active: true, currentWindow: true })
-        activeTabUrl = tabs[0]?.url ?? ''
-      } catch {
-        // tabs.query can fail if no window is focused
-      }
+        console.log('[BridgeClient] WebSocket open; authenticating')
 
-      // Collect browser identity info via User-Agent Client Hints API
-      type UABrand = { brand: string; version: string }
-      type NavigatorUAData = { brands: UABrand[]; mobile: boolean; platform: string }
-      const uaData = (navigator as unknown as { userAgentData?: NavigatorUAData }).userAgentData
-      let browserName = 'Chromium'
-      let browserVersion = ''
-      let platform = ''
-      if (uaData) {
-        platform = uaData.platform ?? ''
-        // Filter out noise entries like "Not A Brand" / "Not-A.Brand"
-        const significant = uaData.brands.filter(
-          (b) => !b.brand.toLowerCase().includes('not') && b.brand !== 'Chromium',
-        )
-        const chromium = uaData.brands.find((b) => b.brand === 'Chromium')
-        if (significant.length > 0) {
-          browserName = significant[0]!.brand
-          browserVersion = significant[0]!.version
-        } else if (chromium) {
-          browserName = 'Chromium'
-          browserVersion = chromium.version
+        // Get or create a per-window instanceId (survives SW restarts, unique per window)
+        const instanceId = await this.getOrCreateInstanceId()
+
+        // Read the authentication token from storage
+        const token = await loadToken()
+
+        // Query the active tab URL for identification
+        let activeTabUrl = ''
+        try {
+          const tabs = await chrome.tabs.query({ active: true, currentWindow: true })
+          activeTabUrl = tabs[0]?.url ?? ''
+        } catch {
+          // tabs.query can fail if no window is focused
         }
-      }
-      // Vivaldi hides from userAgentData brands — detect via User-Agent string
-      const vivaldiMatch = navigator.userAgent.match(/Vivaldi\/([\d.]+)/)
-      if (vivaldiMatch) {
-        browserName = 'Vivaldi'
-        browserVersion = vivaldiMatch[1] ?? ''
-      }
-      // Brave hides from userAgentData brands — detect via navigator.brave
-      type BraveNavigator = { brave?: { isBrave?: () => Promise<boolean> } }
-      if ((navigator as unknown as BraveNavigator).brave?.isBrave) {
-        browserName = 'Brave'
-      }
 
-      // Send the connect handshake
-      const connectMsg: ExtensionToServerMessage = {
-        type: 'connect',
-        version: EXTENSION_VERSION,
-        extensionId: chrome.runtime.id,
-        instanceId,
-        token,
-        activeTabUrl,
-        browserInfo: {
-          name: browserName,
-          version: browserVersion,
-          platform,
-          userAgent: navigator.userAgent,
-        },
+        // Collect browser identity info via User-Agent Client Hints API
+        type UABrand = { brand: string; version: string }
+        type NavigatorUAData = { brands: UABrand[]; mobile: boolean; platform: string }
+        const uaData = (navigator as unknown as { userAgentData?: NavigatorUAData }).userAgentData
+        let browserName = 'Chromium'
+        let browserVersion = ''
+        let platform = ''
+        if (uaData) {
+          platform = uaData.platform ?? ''
+          // Filter out noise entries like "Not A Brand" / "Not-A.Brand"
+          const significant = uaData.brands.filter(
+            (b) => !b.brand.toLowerCase().includes('not') && b.brand !== 'Chromium',
+          )
+          const chromium = uaData.brands.find((b) => b.brand === 'Chromium')
+          if (significant.length > 0) {
+            browserName = significant[0]!.brand
+            browserVersion = significant[0]!.version
+          } else if (chromium) {
+            browserName = 'Chromium'
+            browserVersion = chromium.version
+          }
+        }
+        // Vivaldi hides from userAgentData brands — detect via User-Agent string
+        const vivaldiMatch = navigator.userAgent.match(/Vivaldi\/([\d.]+)/)
+        if (vivaldiMatch) {
+          browserName = 'Vivaldi'
+          browserVersion = vivaldiMatch[1] ?? ''
+        }
+        // Brave hides from userAgentData brands — detect via navigator.brave
+        type BraveNavigator = { brave?: { isBrave?: () => Promise<boolean> } }
+        if ((navigator as unknown as BraveNavigator).brave?.isBrave) {
+          browserName = 'Brave'
+        }
+
+        if (
+          this.ws !== ws ||
+          this.generation !== generation ||
+          !this.active
+        ) {
+          ws.close()
+          return
+        }
+
+        // Send the connect handshake
+        const connectMsg: ExtensionToServerMessage = {
+          type: 'connect',
+          version: chrome.runtime.getManifest().version,
+          extensionId: chrome.runtime.id,
+          instanceId,
+          token,
+          activeTabUrl,
+          browserInfo: {
+            name: browserName,
+            version: browserVersion,
+            platform,
+            userAgent: navigator.userAgent,
+          },
+        }
+        ws.send(JSON.stringify(connectMsg))
+      } catch (error) {
+        if (this.ws !== ws || this.generation !== generation) return
+        console.warn('[BridgeClient] Authentication handshake failed:', error)
+        this._isConnected = false
+        this.ws = null
+        ws.close()
       }
-      ws.send(JSON.stringify(connectMsg))
     }
 
     ws.onmessage = (event: MessageEvent<string>) => {
+      if (this.ws !== ws || this.generation !== generation) return
+
       let msg: ServerToExtensionMessage
       try {
         msg = parseServerMessage(event.data)
       } catch (err) {
         console.warn('[BridgeClient] Failed to parse message:', err)
         return
+      }
+
+      if (msg.type === 'connected') {
+        this._isConnected = true
+        console.log('[BridgeClient] Authenticated')
       }
 
       // Handle ping internally — send pong immediately
@@ -309,6 +321,7 @@ export class BridgeClient {
     }
 
     ws.onclose = () => {
+      if (this.ws !== ws || this.generation !== generation) return
       this._isConnected = false
       this.ws = null
       if (!this.active) return
@@ -320,6 +333,7 @@ export class BridgeClient {
     }
 
     ws.onerror = (event) => {
+      if (this.ws !== ws || this.generation !== generation) return
       // The onclose handler fires after onerror, so just log here.
       console.warn('[BridgeClient] WebSocket error', event)
     }

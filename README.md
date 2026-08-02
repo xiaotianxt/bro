@@ -100,12 +100,16 @@ The first run creates `~/.bro/settings.json`:
 }
 ```
 
+Existing settings are read without modification. If the file is malformed or
+contains an empty token, bro reports the error and leaves the file unchanged.
+
 Build the extension:
 
 ```bash
 pnpm install
 pnpm --filter @bro/shared build
 pnpm --filter @bro/extension typecheck
+pnpm --filter @bro/extension test
 pnpm --filter @bro/extension build
 ```
 
@@ -172,6 +176,11 @@ extensions. In the browser:
 4. Open bro Options.
 5. Paste the copied token and save.
 
+The extension accepts only loopback `ws://` server URLs. Its token is stored
+locally in the extension profile and is not synced between browsers. A token
+saved by an older version is moved out of sync storage on first use. Connected
+status is shown only after the server authenticates the extension.
+
 Verify the connection:
 
 ```bash
@@ -222,13 +231,8 @@ Extraction defaults are intentionally compact for agent workflows:
 ## Development
 
 ```bash
-cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-
-pnpm --filter @bro/shared build
-pnpm --filter @bro/extension typecheck
-pnpm --filter @bro/extension build
+pnpm install --frozen-lockfile
+make check
 ```
 
 Run live dynamic-site regression tests when a local bro server and extension are
@@ -255,6 +259,11 @@ Tagged releases build GitHub-hosted binaries for:
 The Homebrew formula in `xiaotianxt/tap` installs the GitHub release binary for
 the current macOS or Linux architecture, installs the matching extension asset,
 and exposes `brew services start bro`.
+
+Maintainers release from a clean `main` checkout with
+`scripts/release.sh --version <version>`. The script runs the checks, creates and
+pushes the tag, waits for the GitHub release artifacts, updates the Homebrew tap,
+and verifies the installed package.
 
 ## Security Notes
 

@@ -6,13 +6,8 @@ and explicit about failure behavior.
 Before opening a PR, run:
 
 ```bash
-cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test
 pnpm install --frozen-lockfile
-pnpm --filter @bro/shared build
-pnpm --filter @bro/extension typecheck
-pnpm --filter @bro/extension build
+make check
 ```
 
 Do not commit secrets, browser profile data, private URLs, generated extension
