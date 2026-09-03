@@ -6,6 +6,7 @@ import { bridgeClient } from './bridge-client.js'
 import { dispatchTool } from './tool-registry.js'
 import { ALARM_KEEPALIVE, ALARM_WS_RECONNECT } from './bridge-client.js'
 import { ActiveRequestTracker } from './request-tracker.js'
+import { restoreUserScripts } from '../userscripts.js'
 // Register all tools (side-effect imports — each module calls registerTool)
 import './tools/computer.js'
 import './tools/navigation.js'
@@ -15,6 +16,10 @@ import './tools/tabs.js'
 import './tools/upload.js'
 import './tools/misc.js'
 import './tools/userscripts.js'
+
+void restoreUserScripts().catch((error: unknown) => {
+  console.warn('[UserScripts] Failed to restore registered scripts:', error)
+})
 
 // ---------------------------------------------------------------------------
 // Stop agent cancellation token + per-tab indicator debounce

@@ -3,29 +3,12 @@
 // user scripts that auto-inject on matching pages.
 
 import type { ToolResult } from '@bro/shared'
+import {
+  listUserScripts,
+  registerUserScripts,
+  unregisterUserScripts,
+} from '../../userscripts.js'
 import { registerTool } from '../tool-registry.js'
-
-// ---------------------------------------------------------------------------
-// Availability check
-// ---------------------------------------------------------------------------
-
-function ensureUserScriptsAvailable(): void {
-  if (!chrome.userScripts) {
-    throw new Error(
-      'chrome.userScripts is not available. The "userScripts" permission ' +
-        'must be declared in manifest.json and the "Allow User Scripts" toggle ' +
-        'must be enabled in chrome://extensions for the bro extension.',
-    )
-  }
-  try {
-    chrome.userScripts.getScripts()
-  } catch {
-    throw new Error(
-      'chrome.userScripts API is not enabled. Enable the "Allow User Scripts" toggle ' +
-        'in chrome://extensions for the bro extension.',
-    )
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Script source validation
@@ -55,6 +38,7 @@ function validateScriptSource(source: unknown): ScriptSource {
 interface UserscriptsRegisterArgs {
   scripts: Array<{
     id: string
+    description?: string
     matches: string[]
     js: Array<{ code?: string; file?: string }>
     runAt?: 'document_start' | 'document_end' | 'document_idle'
@@ -85,6 +69,11 @@ function validateRegisterArgs(args: unknown): UserscriptsRegisterArgs {
     if (typeof s['id'] !== 'string' || s['id'] === '') {
       throw new Error(
         `userscripts_register: scripts[${i}].id must be a non-empty string`,
+      )
+    }
+    if (s['description'] !== undefined && typeof s['description'] !== 'string') {
+      throw new Error(
+        `userscripts_register: scripts[${i}].description must be a string`,
       )
     }
     if (!Array.isArray(s['matches']) || s['matches'].length === 0) {
@@ -127,11 +116,11 @@ async function executeUserscriptsRegister(
   _tabId: number,
   rawArgs: unknown,
 ): Promise<ToolResult> {
-  ensureUserScriptsAvailable()
   const args = validateRegisterArgs(rawArgs)
-  await chrome.userScripts.register(
+  await registerUserScripts(
     args.scripts.map((s) => ({
       id: s.id,
+      ...(s.description?.trim() ? { description: s.description.trim() } : {}),
       matches: s.matches,
       js: s.js.map((j) => (j.code ? { code: j.code } : { file: j.file! })),
       runAt: s.runAt,
@@ -172,10 +161,8 @@ async function executeUserscriptsUnregister(
   _tabId: number,
   rawArgs: unknown,
 ): Promise<ToolResult> {
-  ensureUserScriptsAvailable()
   const args = validateUnregisterArgs(rawArgs)
-  const filter = args.ids ? { ids: args.ids } : undefined
-  await chrome.userScripts.unregister(filter)
+  await unregisterUserScripts(args.ids)
   const desc = args.ids ? args.ids.join(', ') : 'all'
   return {
     content: [{ type: 'text', text: `Unregistered user script(s): ${desc}` }],
@@ -204,16 +191,13 @@ async function executeUserscriptsList(
   _tabId: number,
   rawArgs: unknown,
 ): Promise<ToolResult> {
-  ensureUserScriptsAvailable()
   const args = validateListArgs(rawArgs)
-  const scripts = await chrome.userScripts.getScripts(
-    args.ids ? { ids: args.ids } : undefined,
-  )
+  const scripts = await listUserScripts(args.ids)
   if (scripts.length === 0) {
     return { content: [{ type: 'text', text: 'No user scripts registered.' }] }
   }
   const summary = scripts
-    .map((s) => `${s.id}: matches=${JSON.stringify(s.matches)}, runAt=${s.runAt ?? 'document_idle'}`)
+    .map((s) => `${s.id}: description=${JSON.stringify(s.description ?? '')}, matches=${JSON.stringify(s.matches)}, runAt=${s.runAt ?? 'document_idle'}`)
     .join('\n')
   return { content: [{ type: 'text', text: summary }] }
 }

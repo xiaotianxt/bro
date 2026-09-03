@@ -845,7 +845,7 @@ fn schema(kind: &str) -> JsonObject {
         "userscripts_register" => props(&[
             (
                 "scripts",
-                json!({"type":"array","minItems":1,"items":{"type":"object","required":["id","matches","js"],"additionalProperties":false,"properties":{"id":{"type":"string","minLength":1},"matches":{"type":"array","items":{"type":"string"},"minItems":1},"js":{"type":"array","items":{"type":"object","required":[],"additionalProperties":false,"properties":{"code":{"type":"string"},"file":{"type":"string"}}},"minItems":1},"runAt":{"type":"string","enum":["document_start","document_end","document_idle"]},"allFrames":{"type":"boolean"},"excludeMatches":{"type":"array","items":{"type":"string"}},"world":{"type":"string","enum":["USER_SCRIPT","MAIN"]}}}}),
+                json!({"type":"array","minItems":1,"items":{"type":"object","required":["id","matches","js"],"additionalProperties":false,"properties":{"id":{"type":"string","minLength":1},"description":{"type":"string","description":"Short human-readable explanation of what the script does."},"matches":{"type":"array","items":{"type":"string"},"minItems":1},"js":{"type":"array","items":{"type":"object","required":[],"additionalProperties":false,"properties":{"code":{"type":"string"},"file":{"type":"string"}}},"minItems":1},"runAt":{"type":"string","enum":["document_start","document_end","document_idle"]},"allFrames":{"type":"boolean"},"excludeMatches":{"type":"array","items":{"type":"string"}},"world":{"type":"string","enum":["USER_SCRIPT","MAIN"]}}}}),
             ),
             ("browserId", browser_id_schema()),
         ]),
