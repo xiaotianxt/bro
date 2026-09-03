@@ -1,4 +1,4 @@
-.PHONY: fmt clippy test extension live-test check release release-build
+.PHONY: fmt clippy test extension pi-extension live-test check release release-build
 
 fmt:
 	cargo fmt --all
@@ -15,6 +15,10 @@ extension:
 	pnpm --filter @bro/extension test
 	pnpm --filter @bro/extension build
 
+pi-extension:
+	pnpm --filter @xiaotianxt/pi-bro typecheck
+	pnpm --filter @xiaotianxt/pi-bro test
+
 live-test:
 	cargo test --test live_extract -- --ignored --nocapture
 
@@ -27,6 +31,8 @@ check:
 	pnpm --filter @bro/extension typecheck
 	pnpm --filter @bro/extension test
 	pnpm --filter @bro/extension build
+	pnpm --filter @xiaotianxt/pi-bro typecheck
+	pnpm --filter @xiaotianxt/pi-bro test
 
 release:
 	scripts/release.sh

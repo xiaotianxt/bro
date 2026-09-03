@@ -1,5 +1,7 @@
 packages:
   - 'extension'
+  - 'pi-extension'
   - 'packages/*'
+autoInstallPeers: false
 allowBuilds:
   esbuild: true

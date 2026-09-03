@@ -1,0 +1,46 @@
+{
+  "name": "@xiaotianxt/pi-bro",
+  "version": "1.0.0",
+  "description": "Native Pi tools for the bro local browser MCP server",
+  "license": "Apache-2.0",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xiaotianxt/bro.git",
+    "directory": "pi-extension"
+  },
+  "keywords": [
+    "pi-package",
+    "mcp",
+    "browser",
+    "chromium",
+    "local-first"
+  ],
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check": "pnpm typecheck && pnpm test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.84.4",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "typebox": "1.3.7",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  }
+}

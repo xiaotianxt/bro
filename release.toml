@@ -5,6 +5,10 @@ push = false
 pre-release-commit-message = "chore: bump {{crate_name}} version to {{version}}"
 pre-release-replacements = [
   { file = "extension/manifest.json", search = '"version": "[^"]+"', replace = '"version": "{{version}}"', exactly = 1 },
+  { file = "package.json", search = '"version": "[^"]+"', replace = '"version": "{{version}}"', exactly = 1 },
+  { file = "extension/package.json", search = '"version": "[^"]+"', replace = '"version": "{{version}}"', exactly = 1 },
+  { file = "packages/shared/package.json", search = '"version": "[^"]+"', replace = '"version": "{{version}}"', exactly = 1 },
+  { file = "pi-extension/package.json", search = '"version": "[^"]+"', replace = '"version": "{{version}}"', exactly = 1 },
 ]
 tag-name = "v{{version}}"
 tag-message = "v{{version}}"

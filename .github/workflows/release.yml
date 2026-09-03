@@ -101,15 +101,28 @@ jobs:
         run: pnpm --filter @bro/shared build
       - name: Build extension
         run: pnpm --filter @bro/extension build
+      - name: Typecheck Pi extension
+        run: pnpm --filter @xiaotianxt/pi-bro typecheck
+      - name: Test Pi extension
+        run: pnpm --filter @xiaotianxt/pi-bro test
       - name: Package extension
         run: |
           set -euo pipefail
           cd extension/dist
           zip -r ../../bro-extension-${{ steps.release.outputs.tag }}.zip .
+      - name: Package Pi extension
+        run: |
+          set -euo pipefail
+          mkdir -p pi-extension-dist
+          pnpm --filter @xiaotianxt/pi-bro pack --pack-destination "$GITHUB_WORKSPACE/pi-extension-dist"
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: bro-extension-${{ steps.release.outputs.tag }}
           path: bro-extension-${{ steps.release.outputs.tag }}.zip
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: bro-pi-extension-${{ steps.release.outputs.tag }}
+          path: pi-extension-dist/*.tgz
 
   github-release:
     name: GitHub Release
@@ -127,4 +140,5 @@ jobs:
           files: |
             artifacts/**/*.tar.gz
             artifacts/**/*.zip
+            artifacts/**/*.tgz
           generate_release_notes: true

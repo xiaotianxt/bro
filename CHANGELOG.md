@@ -8,6 +8,10 @@
 - Preserve user scripts in extension-local storage and restore them when an
   extension update clears Chrome's dynamic registration database.
 - Show an editable purpose description for each user script.
+- Add a bro-owned Pi adapter that exposes live MCP schemas as native namespaced
+  tools over one persistent connection.
+- Add dynamic low-level tool loading, Pi session-aware tab/flow cleanup, bounded
+  result mapping, and correct MCP error propagation for Pi.
 
 ## 1.0.0
 

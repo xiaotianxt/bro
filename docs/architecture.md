@@ -4,7 +4,7 @@ bro has one hard boundary: the MCP server is Rust; browser execution is a thin
 WebExtension adapter.
 
 ```text
-MCP client
+Codex MCP / bro Pi adapter
   -> bro Rust server
   -> authenticated WebSocket bridge
   -> bro extension service worker
@@ -32,9 +32,9 @@ The bridge shape and initial extension adapter are derived from the
 Apache-2.0 OpenBrowserMCP project. bro keeps that attribution in the README and
 NOTICE while using `bro` for project and package names.
 
-## Extension Adapter
+## Browser Extension Adapter
 
-The extension owns mechanisms that cannot be implemented directly in Rust:
+The browser extension owns mechanisms that cannot be implemented directly in Rust:
 
 - `chrome.tabs`
 - `chrome.debugger`
@@ -44,6 +44,23 @@ The extension owns mechanisms that cannot be implemented directly in Rust:
 
 It should stay small and primitive. Any policy that affects MCP users should
 move into Rust unless the browser API forces it to live in the extension.
+
+## Pi Adapter
+
+The Pi package in `pi-extension/` is a client adapter over the same MCP endpoint
+used by Codex. It uses the official MCP TypeScript SDK, discovers schemas from
+the Rust server, and registers namespaced Pi tools without copying browser
+policy. One MCP connection is retained per Pi session.
+
+The adapter owns only Pi-specific concerns:
+
+- dynamic tool exposure and `bro_search_tools`
+- mapping MCP text, images, structured content, errors, and cancellation to Pi
+- associating tab lifecycle calls with the current Pi session
+- preserving browser state across Pi reload and finalizing it at session end
+
+It reads the token at runtime from `~/.bro/settings.json`; the token is not
+stored in Pi settings or tool arguments.
 
 ## Local State
 

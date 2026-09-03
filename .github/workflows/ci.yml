@@ -76,3 +76,7 @@ jobs:
         run: pnpm --filter @bro/extension test
       - name: Build extension
         run: pnpm --filter @bro/extension build
+      - name: Typecheck Pi extension
+        run: pnpm --filter @xiaotianxt/pi-bro typecheck
+      - name: Test Pi extension
+        run: pnpm --filter @xiaotianxt/pi-bro test

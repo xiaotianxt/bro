@@ -28,7 +28,7 @@ Apache-2.0, and this repository keeps the Apache-2.0 license and attribution in
 ## Architecture
 
 ```text
-MCP client
+Codex MCP / bro Pi adapter
   -> bro Rust server (:3500 /mcp, /ws, /health, /status)
   -> bro WebExtension adapter
   -> Chromium-family browser tab
@@ -58,6 +58,12 @@ brew install xiaotianxt/tap/bro
 brew services start bro
 bro setup codex
 bro setup browser
+```
+
+For native bro tools in Pi, install the bro-owned adapter and reload Pi:
+
+```bash
+pi install git:github.com/xiaotianxt/bro@v1.0.1
 ```
 
 Install the optional Codex/agent skill for bro-specific browser workflows:
@@ -150,6 +156,26 @@ The MCP client should connect to this endpoint. It should not spawn the server
 per request; keep `bro serve` running through Homebrew services or another
 local process supervisor. Do not commit browser output, cookies, signed URLs, or
 tokens.
+
+### Pi
+
+The Pi package in `pi-extension/` uses Pi's extension API and the official MCP
+TypeScript SDK. It reads the bearer token directly from `~/.bro/settings.json`,
+keeps one MCP connection per Pi session, and registers bro's live tool schemas
+under a `bro_` namespace. Common extraction and flow tools start active;
+`bro_search_tools` enables lower-level tab, network, console, and JavaScript
+tools through Pi's dynamic tool loading.
+
+The adapter maps Pi session identity into bro's tab lifecycle, preserves browser
+state across `/reload`, and finalizes owned tabs and unfinished flows when the
+session ends. It remains a protocol adapter: browser policy, tool schemas,
+timeouts, and cleanup behavior stay in the Rust server.
+
+For development from this checkout:
+
+```bash
+pi install /absolute/path/to/bro
+```
 
 ## Browser Extension
 
@@ -266,8 +292,10 @@ Tagged releases build GitHub-hosted binaries for:
 - `aarch64-pc-windows-msvc`
 
 The Homebrew formula in `xiaotianxt/tap` installs the GitHub release binary for
-the current macOS or Linux architecture, installs the matching extension asset,
-and exposes `brew services start bro`.
+the current macOS or Linux architecture, installs the matching browser
+extension asset, and exposes `brew services start bro`. Releases also include an
+npm-compatible tarball for the Pi adapter; the tagged Git repository is directly
+installable as a Pi package.
 
 Maintainers release from a clean `main` checkout with
 `scripts/release.sh --version <version>`. The script runs the checks, creates and
