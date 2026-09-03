@@ -1,0 +1,183 @@
+{
+  "benchmarkVersion": 1,
+  "broVersion": "1.0.1",
+  "date": "2026-09-03",
+  "method": {
+    "coreRuns": 15,
+    "repetitionsPerModelTask": 1,
+    "execution": "sequential isolated Pi --print subagents",
+    "tools": "bro Pi extension only; no built-ins, skills, context files, or unrelated extensions",
+    "billedTokens": "input + output + cacheRead + cacheWrite",
+    "rawSessionsCommitted": false
+  },
+  "schemaOverhead": {
+    "model": "gpt-5.4-mini",
+    "prompt": "fixed no-tool JSON response",
+    "noBrowserToolsInputTokens": 39,
+    "minimalFourToolsInputTokens": 974,
+    "currentNineToolsInputTokens": 1630
+  },
+  "modelSummary": {
+    "spark": {
+      "model": "gpt-5.3-codex-spark",
+      "thinking": "low",
+      "successes": 3,
+      "runs": 5,
+      "successRate": 0.6,
+      "meanSeconds": 87.1,
+      "medianSeconds": 50.9,
+      "meanToolCalls": 14.2,
+      "medianToolCalls": 8,
+      "meanBilledTokens": 611393,
+      "medianBilledTokens": 26452,
+      "totalCostUsd": 2.714344
+    },
+    "mini": {
+      "model": "gpt-5.4-mini",
+      "thinking": "medium",
+      "successes": 3,
+      "runs": 5,
+      "successRate": 0.6,
+      "meanSeconds": 63.8,
+      "medianSeconds": 61.3,
+      "meanToolCalls": 8.6,
+      "medianToolCalls": 9,
+      "meanBilledTokens": 46220,
+      "medianBilledTokens": 39046,
+      "totalCostUsd": 0.091092
+    },
+    "sol": {
+      "model": "gpt-5.6-sol",
+      "thinking": "high",
+      "successes": 4,
+      "runs": 5,
+      "successRate": 0.8,
+      "meanSeconds": 91.5,
+      "medianSeconds": 52.7,
+      "meanToolCalls": 14.6,
+      "medianToolCalls": 7,
+      "meanBilledTokens": 81167,
+      "medianBilledTokens": 40580,
+      "totalCostUsd": 0.756563
+    }
+  },
+  "taskSummary": {
+    "social_batch": {
+      "successes": 3,
+      "runs": 3,
+      "successRate": 1.0,
+      "meanSeconds": 30.7,
+      "meanToolCalls": 1.3,
+      "meanBilledTokens": 9920
+    },
+    "dynamic_loading": {
+      "successes": 3,
+      "runs": 3,
+      "successRate": 1.0,
+      "meanSeconds": 38.5,
+      "meanToolCalls": 5.0,
+      "meanBilledTokens": 15410
+    },
+    "github_release": {
+      "successes": 2,
+      "runs": 3,
+      "successRate": 0.6667,
+      "meanSeconds": 51.6,
+      "meanToolCalls": 7.7,
+      "meanBilledTokens": 45963
+    },
+    "saucedemo": {
+      "successes": 2,
+      "runs": 3,
+      "successRate": 0.6667,
+      "meanSeconds": 144.0,
+      "medianSeconds": 127.5,
+      "meanToolCalls": 22.7,
+      "medianToolCalls": 19,
+      "meanBilledTokens": 1014322,
+      "medianBilledTokens": 106266
+    },
+    "network_fetch": {
+      "successes": 0,
+      "runs": 3,
+      "successRate": 0.0,
+      "meanSeconds": 139.1,
+      "medianSeconds": 79.8,
+      "meanToolCalls": 25.7,
+      "medianToolCalls": 17,
+      "meanBilledTokens": 145687,
+      "medianBilledTokens": 99491
+    }
+  },
+  "selectedToolSignals": {
+    "bro_browser_batch_extract": {
+      "calls": 4,
+      "hardOrNestedFailures": 1,
+      "socialTaskSuccesses": 3,
+      "socialTaskRuns": 3
+    },
+    "bro_browser_extract": {
+      "calls": 9,
+      "hardOrNestedFailures": 0,
+      "note": "Execution success did not guarantee complete dynamic-page evidence."
+    },
+    "bro_browser_flow_act": {
+      "calls": 86,
+      "hardOrNestedFailures": 7,
+      "note": "Several nested failures were returned inside outer successful tool results."
+    },
+    "bro_read_network_requests": {
+      "calls": 23,
+      "productiveResults": 0,
+      "emptyResults": 22,
+      "argumentErrors": 1
+    },
+    "bro_search_tools": {
+      "calls": 8,
+      "enabledNewTools": 6,
+      "alreadyActive": 1,
+      "validationErrors": 1
+    },
+    "flowLifecycle": {
+      "flowStarts": 15,
+      "modelIssuedFlowFinishes": 7,
+      "note": "The Pi adapter shutdown cleanup remained necessary for unfinished flows."
+    }
+  },
+  "minimalExposureDynamicLoading": {
+    "description": "Only extract/current-extract/batch-extract/search-tools active initially.",
+    "current": [
+      {"model": "spark", "success": true, "seconds": 50.9, "toolCalls": 8, "billedTokens": 26452},
+      {"model": "mini", "success": true, "seconds": 27.2, "toolCalls": 3, "billedTokens": 8989},
+      {"model": "sol", "success": true, "seconds": 37.3, "toolCalls": 4, "billedTokens": 10789}
+    ],
+    "minimal": [
+      {"model": "spark", "success": true, "seconds": 124.8, "toolCalls": 19, "billedTokens": 91829},
+      {"model": "mini", "success": true, "seconds": 194.9, "toolCalls": 24, "billedTokens": 157025},
+      {"model": "sol", "success": true, "seconds": 206.7, "toolCalls": 31, "billedTokens": 138576}
+    ]
+  },
+  "runs": [
+    {"model":"mini","task":"dynamic_loading","success":true,"seconds":27.2,"toolCalls":3,"billedTokens":8989,"toolFailures":0,"costUsd":0.005686},
+    {"model":"mini","task":"github_release","success":false,"seconds":73.0,"toolCalls":10,"billedTokens":66547,"toolFailures":0,"costUsd":0.027854},
+    {"model":"mini","task":"network_fetch","success":false,"seconds":61.3,"toolCalls":9,"billedTokens":39046,"toolFailures":1,"costUsd":0.015985},
+    {"model":"mini","task":"saucedemo","success":true,"seconds":127.5,"toolCalls":19,"billedTokens":106266,"toolFailures":0,"costUsd":0.033769},
+    {"model":"mini","task":"social_batch","success":true,"seconds":29.9,"toolCalls":2,"billedTokens":10254,"toolFailures":1,"costUsd":0.007799},
+    {"model":"sol","task":"dynamic_loading","success":true,"seconds":37.3,"toolCalls":4,"billedTokens":10789,"toolFailures":0,"costUsd":0.038078},
+    {"model":"sol","task":"github_release","success":true,"seconds":52.7,"toolCalls":7,"billedTokens":46791,"toolFailures":0,"costUsd":0.138495},
+    {"model":"sol","task":"network_fetch","success":false,"seconds":276.2,"toolCalls":51,"billedTokens":298523,"toolFailures":2,"costUsd":0.399241},
+    {"model":"sol","task":"saucedemo","success":true,"seconds":66.0,"toolCalls":10,"billedTokens":40580,"toolFailures":1,"costUsd":0.133797},
+    {"model":"sol","task":"social_batch","success":true,"seconds":25.2,"toolCalls":1,"billedTokens":9153,"toolFailures":0,"costUsd":0.046952},
+    {"model":"spark","task":"dynamic_loading","success":true,"seconds":50.9,"toolCalls":8,"billedTokens":26452,"toolFailures":1,"costUsd":0.02879},
+    {"model":"spark","task":"github_release","success":true,"seconds":29.0,"toolCalls":6,"billedTokens":24550,"toolFailures":0,"costUsd":0.046591},
+    {"model":"spark","task":"network_fetch","success":false,"seconds":79.8,"toolCalls":17,"billedTokens":99491,"toolFailures":2,"costUsd":0.099111},
+    {"model":"spark","task":"saucedemo","success":false,"seconds":238.5,"toolCalls":39,"billedTokens":2896121,"toolFailures":3,"costUsd":2.509729},
+    {"model":"spark","task":"social_batch","success":true,"seconds":37.0,"toolCalls":1,"billedTokens":10353,"toolFailures":0,"costUsd":0.030123}
+  ],
+  "limitations": [
+    "One run per core model/task cell; use this as product-discovery evidence, not a model leaderboard.",
+    "External social content changes over time; validation checks observed structure rather than fixed post authors.",
+    "Wall time includes model, browser, and network latency.",
+    "Raw sessions were retained only in the local temporary directory because they contain browser content."
+  ]
+}

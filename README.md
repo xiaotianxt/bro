@@ -280,6 +280,11 @@ make live-test
 The live test opens Reddit, LinkedIn, X, and Threads search pages in background
 tabs and checks that expected text/links still extract correctly.
 
+Run isolated multi-model Pi browser benchmarks from
+`benchmarks/pi-agent/`. Keep raw sessions outside the repository because they
+can contain sensitive browser content. The current tool-design findings are in
+`docs/pi-tool-design.md`.
+
 ## Releases
 
 Tagged releases build GitHub-hosted binaries for:
