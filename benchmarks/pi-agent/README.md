@@ -22,6 +22,8 @@ python3 benchmarks/pi-agent/run.py \
 ```
 
 Only aggregate metrics stripped of raw browser content belong in `results/`.
+The initial `v1.0.1` matrix and the post-fix flow/network comparison are stored
+as separate summaries so regressions remain visible.
 
 ## Models and tasks
 

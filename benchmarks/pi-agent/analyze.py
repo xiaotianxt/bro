@@ -68,11 +68,12 @@ def validate_task(task: str, final_text: str, tool_names: list[str]) -> bool:
     if task == "saucedemo":
         return "sauce labs onesie" in lower and "7.99" in final_text
     if task == "network_fetch":
-        return (
-            "benchmark" in lower
-            and "bro_read_network_requests" in tool_names
+        used_one_shot_capture = "bro_browser_network_capture" in tool_names
+        used_raw_capture = (
+            "bro_read_network_requests" in tool_names
             and "bro_get_response_body" in tool_names
         )
+        return "benchmark" in lower and (used_one_shot_capture or used_raw_capture)
     return False
 
 

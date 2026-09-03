@@ -1,0 +1,71 @@
+{
+  "benchmarkVersion": 1,
+  "targetBroVersion": "1.0.2",
+  "baselineBroVersion": "1.0.1",
+  "date": "2026-09-03",
+  "method": {
+    "runs": 6,
+    "models": [
+      "gpt-5.3-codex-spark:low",
+      "gpt-5.4-mini:medium",
+      "gpt-5.6-sol:high"
+    ],
+    "tasks": ["network_fetch", "saucedemo"],
+    "execution": "sequential isolated Pi --print subagents",
+    "tools": "bro Pi extension only; no built-ins, skills, context files, or unrelated extensions",
+    "rawSessionsCommitted": false
+  },
+  "schemaOverhead": {
+    "model": "gpt-5.4-mini",
+    "previousNineToolsInputTokens": 1630,
+    "currentTenToolsInputTokens": 2231,
+    "addedInputTokens": 601
+  },
+  "comparison": {
+    "network_fetch": {
+      "before": {
+        "successes": 0,
+        "runs": 3,
+        "meanSeconds": 139.1,
+        "meanToolCalls": 25.7,
+        "meanBilledTokens": 145687
+      },
+      "after": {
+        "successes": 3,
+        "runs": 3,
+        "meanSeconds": 12.7,
+        "meanToolCalls": 1.3,
+        "meanBilledTokens": 6925
+      }
+    },
+    "saucedemo": {
+      "before": {
+        "successes": 2,
+        "runs": 3,
+        "meanSeconds": 144.0,
+        "meanToolCalls": 22.7,
+        "meanBilledTokens": 1014322
+      },
+      "after": {
+        "successes": 3,
+        "runs": 3,
+        "meanSeconds": 30.6,
+        "meanToolCalls": 6.0,
+        "meanBilledTokens": 23563
+      }
+    }
+  },
+  "runs": [
+    {"model":"mini","task":"network_fetch","success":true,"seconds":17.632,"toolCalls":2,"billedTokens":9272,"toolFailures":0,"costUsd":0.0052461},
+    {"model":"mini","task":"saucedemo","success":true,"seconds":31.36,"toolCalls":6,"billedTokens":22978,"toolFailures":0,"costUsd":0.0107604},
+    {"model":"sol","task":"network_fetch","success":true,"seconds":11.256,"toolCalls":1,"billedTokens":5778,"toolFailures":0,"costUsd":0.03234},
+    {"model":"sol","task":"saucedemo","success":true,"seconds":40.871,"toolCalls":7,"billedTokens":26650,"toolFailures":0,"costUsd":0.05869},
+    {"model":"spark","task":"network_fetch","success":true,"seconds":9.126,"toolCalls":1,"billedTokens":5726,"toolFailures":0,"costUsd":0.0101948},
+    {"model":"spark","task":"saucedemo","success":true,"seconds":19.434,"toolCalls":5,"billedTokens":21061,"toolFailures":2,"costUsd":0.02728915}
+  ],
+  "notes": [
+    "browser.network.capture was active by default for the final matrix.",
+    "Spark's two Sauce Demo failures were correctly surfaced selector/eval errors; it recovered and completed the task.",
+    "One run per model/task cell is product-discovery evidence rather than a statistically powered model comparison."
+  ]
+}

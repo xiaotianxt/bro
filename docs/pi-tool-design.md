@@ -1,17 +1,14 @@
 # Pi Tool Design From Agent Benchmarks
 
-Status: provisional decision after the 2026-09-03 `v1.0.1` pilot.
+Status: revised after the 2026-09-03 `v1.0.1` pilot and post-fix benchmark.
 
 ## Decision
 
-Do not expose all 45 bro tools initially, but do not reduce the current Pi default to extraction-only tools either.
+Do not expose the complete bro catalog initially, but do not reduce the Pi default to extraction-only tools either.
 
-Keep the current high-level extraction and four-tool flow surface active until bro has two replacements:
+Keep high-level extraction, flow, and one-call network capture active. Keep raw tab, DOM, JavaScript, and monitoring primitives discoverable but inactive. The next reduction experiment should happen only after dynamic loading can activate coherent capability packs.
 
-1. intent-aware tool packs for dynamic loading; and
-2. an outcome-level network capture facade that executes monitoring and its trigger inside one MCP call.
-
-Fix flow error propagation and schema guidance before trying to optimize the number of tool names. A shorter list that causes extra model turns is not a more efficient interface.
+The benchmark confirmed that a shorter list which causes extra model turns is not a more efficient interface.
 
 ## Workload and method
 
@@ -45,7 +42,20 @@ This is a product-discovery pilot with one run per model/task cell, not a statis
 | Sauce Demo login and sort | 2/3 | 144.0 s | 22.7 | 1,014,322 mean / 106,266 median |
 | Network request and body inspection | 0/3 | 139.1 s | 25.7 | 145,687 |
 
-Batch extraction is already an effective outcome-level API. Multi-step interaction works but has a high tail cost. The network workflow is not agent-usable in its current shape.
+Batch extraction is already an effective outcome-level API. The initial multi-step interaction had a high tail cost, and the initial raw network workflow was not agent-usable.
+
+### Post-fix flow and network benchmark
+
+After adding one-call network capture, typed select steps, framework-aware input setters, shorter flow IDs, awaited eval, and outer error propagation, the three models repeated the two failing/high-tail tasks:
+
+| Task | Before | After | Mean time | Mean calls | Mean billed tokens |
+|---|---:|---:|---:|---:|---:|
+| Network request and body | 0/3 | 3/3 | 139.1 → 12.7 s | 25.7 → 1.3 | 145,687 → 6,925 |
+| Sauce Demo login and sort | 2/3 | 3/3 | 144.0 → 30.6 s | 22.7 → 6.0 | 1,014,322 → 23,563 |
+
+Spark's previously failed Sauce Demo run fell from 238.5 seconds, 39 calls, and 2.90 million billed tokens to 19.4 seconds, 5 calls, and 21,061 tokens. With `browser.network.capture` active by default, Spark and Sol completed the network task in one tool call; Mini used one search call plus capture.
+
+Adding the network facade to the default tool set increased the controlled GPT-5.4 Mini no-op request from 1,630 to 2,231 input tokens. The additional 601 schema tokens are justified by the network task's reduction from 145,687 to 6,925 mean billed tokens. This should be revisited if server-owned capability packs make one-turn discovery reliable.
 
 ### Model outcomes
 
@@ -65,7 +75,8 @@ A no-op GPT-5.4 Mini request measured:
 
 - no browser tools: 39 input tokens
 - extraction-only default plus `bro_search_tools`: 974 input tokens
-- current default high-level set plus `bro_search_tools`: 1,630 input tokens
+- `v1.0.1` nine-tool default: 1,630 input tokens
+- post-fix ten-tool default with network capture: 2,231 input tokens
 
 The extraction-only default saves 656 initial input tokens. On the dynamic interaction task, however, it caused every model to search and assemble a workflow from individual low-level tools:
 
@@ -86,7 +97,7 @@ A useful benchmark must therefore track both:
 - protocol/tool execution; and
 - whether the returned evidence satisfies the user outcome.
 
-### 3. Network monitoring is structurally incompatible with model latency
+### 3. Raw network monitoring is structurally incompatible with model latency
 
 Across the three network tasks:
 
@@ -98,7 +109,7 @@ Across the three network tasks:
 
 Even `timeoutMs:0` did not make a direct multi-call probe reliable. Monitoring state lives in the Manifest V3 service worker and must survive model think time between MCP calls. It cannot be treated as a dependable cross-turn primitive.
 
-The durable fix is a single owner-layer operation that performs:
+The implemented durable fix is `browser.network.capture`, a single owner-layer operation that performs:
 
 1. attach and enable network monitoring;
 2. execute navigation, interaction, or JavaScript trigger;
@@ -106,7 +117,7 @@ The durable fix is a single owner-layer operation that performs:
 4. collect request metadata and selected response bodies;
 5. stop monitoring and clean up;
 
-inside one MCP request.
+inside one MCP request. The post-fix task succeeded 3/3 with a 95% reduction in mean tool calls and billed token volume.
 
 ### 4. Flow failures are partially hidden
 
@@ -119,7 +130,7 @@ Observed recurring failures included:
 - JavaScript written as a function body with top-level `return` when the tool expected an expression;
 - form interactions that continued after an earlier failed step.
 
-`browser.flow.act` promises to stop at the first failed step. The facade must enforce that promise and return MCP `isError=true` or an outer failed status.
+`browser.flow.act` now enforces that promise: embedded extension errors become bridge errors, execution stops at the failed step, and a failed facade status becomes MCP `isError=true`. The schema also exposes `select`, documents required companion fields, and defines eval as an awaited JavaScript expression.
 
 ### 5. Automatic lifecycle cleanup is necessary
 
@@ -133,6 +144,7 @@ Agents started 15 flows but explicitly finished only seven. The Pi adapter's shu
 - `browser.current.extract`
 - `browser.batch.extract`
 - `browser.batch.flow`
+- `browser.network.capture`
 - `browser.flow.start`
 - `browser.flow.observe`
 - `browser.flow.act`
@@ -151,13 +163,10 @@ This is not the final smallest surface; it is the smallest tested surface that d
 
 ### Improve next
 
-1. Make flow step errors fail the outer flow result and stop subsequent steps.
-2. Add a typed `select` step and explicit descriptions for every flow step field.
-3. State that eval code is a JavaScript expression and show the accepted shape in the schema.
-4. Replace individual keyword matches in `bro_search_tools` with server-owned capability groups such as interaction, tabs, debugging, uploads, and user scripts.
-5. Add a one-call network capture facade; do not rely on monitoring state across model turns.
-6. Add generic readiness controls such as `waitForText` or `waitForSelector` to extraction/interaction facades for dynamic pages.
-7. Re-run the same matrix after each owner-layer change and compare task success, p50/p95 calls, billed tokens, and wall time.
+1. Replace individual keyword matches in `bro_search_tools` with server-owned capability groups such as interaction, tabs, debugging, uploads, and user scripts.
+2. Add generic readiness controls such as `waitForText` or `waitForSelector` to extraction/interaction facades for dynamic pages.
+3. Investigate whether flow observation and action can be consolidated without recreating the expensive minimal-tool behavior.
+4. Repeat decisive benchmark cells to measure variance and compare p50/p95 calls, billed tokens, and wall time.
 
 ## Revisit the default tool count when
 
