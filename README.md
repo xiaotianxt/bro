@@ -181,6 +181,15 @@ locally in the extension profile and is not synced between browsers. A token
 saved by an older version is moved out of sync storage on first use. Connected
 status is shown only after the server authenticates the extension.
 
+Connection settings stay collapsed after setup so the Options page can focus on
+persistent inline user scripts. It can list, create, edit, and delete scripts
+registered through either the UI or bro's `userscripts_*` tools. Enable **Allow
+User Scripts** for the extension in `chrome://extensions` before using this
+feature. File-backed scripts can be listed and deleted but cannot be edited in
+the UI. Each script can include a short description so its purpose is visible
+without opening the source. bro keeps its own local registry and restores
+registered scripts if a browser extension update clears Chrome's runtime copy.
+
 Verify the connection:
 
 ```bash

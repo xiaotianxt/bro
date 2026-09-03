@@ -2,99 +2,535 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>bro Settings</title>
   <style>
+    :root {
+      color-scheme: light;
+      --ink: #111;
+      --muted: #666;
+      --line: #d7d7d7;
+      --success: #16733b;
+      --danger: #b42318;
+      --warning: #8a5b00;
+      --focus: #075fd8;
+    }
+
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+
     body {
-      font-family: system-ui, -apple-system, sans-serif;
-      max-width: 480px;
-      margin: 40px auto;
-      padding: 0 20px;
-      color: #333;
+      margin: 0;
+      min-width: 20rem;
+      min-height: 100vh;
+      color: var(--ink);
+      font-family: system-ui, sans-serif;
+      font-size: 1rem;
+      line-height: 1.5;
     }
-    h1 {
-      font-size: 1.4rem;
-      margin-bottom: 24px;
-    }
-    label {
-      display: block;
-      font-weight: 600;
-      margin-bottom: 6px;
-    }
-    input[type="text"],
-    input[type="password"] {
-      width: 100%;
-      padding: 8px 12px;
-      border: 1px solid #ccc;
-      border-radius: 4px;
-      font-size: 0.95rem;
-      box-sizing: border-box;
-    }
-    .actions {
-      display: flex;
-      gap: 8px;
-      margin-top: 12px;
-    }
+
+    button,
+    input,
+    select,
+    textarea { font: inherit; }
+
     button {
-      padding: 8px 16px;
-      border: none;
-      border-radius: 4px;
+      min-height: 2.5rem;
+      border: 1px solid var(--ink);
+      border-radius: 0;
+      padding: 0.45rem 0.75rem;
+      background: none;
+      color: var(--ink);
       cursor: pointer;
-      font-size: 0.95rem;
     }
-    #save-btn {
-      background: #1a73e8;
-      color: #fff;
+
+    button:hover { text-decoration: underline; }
+    button:active { color: var(--muted); }
+    button:disabled { cursor: not-allowed; opacity: 0.55; }
+
+    button:focus-visible,
+    input:focus-visible,
+    select:focus-visible,
+    textarea:focus-visible,
+    summary:focus-visible {
+      outline: 2px solid var(--focus);
+      outline-offset: 2px;
     }
+
+    .page {
+      width: min(62rem, 100%);
+      margin: 0 auto;
+      padding: 1.25rem 1.5rem 2rem;
+    }
+
+    .masthead {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 3rem;
+      padding-bottom: 0.875rem;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.625rem;
+    }
+
+    .brand img {
+      width: 2.25rem;
+      height: 2.25rem;
+    }
+
+    .brand-name {
+      margin: 0;
+      font-size: 1.3rem;
+      line-height: 1;
+    }
+
+    .brand-subtitle {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.875rem;
+    }
+
     #status {
-      margin-top: 16px;
-      font-size: 0.9rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      min-height: 2rem;
+      font-size: 0.875rem;
+      white-space: nowrap;
     }
+
     #status .dot {
-      display: inline-block;
-      width: 10px;
-      height: 10px;
+      width: 0.55rem;
+      height: 0.55rem;
       border-radius: 50%;
-      margin-right: 6px;
+      background: var(--danger);
     }
-    #status.connected .dot { background: #34a853; }
-    #status.disconnected .dot { background: #ea4335; }
+
+    #status.connected .dot { background: var(--success); }
     #status.connecting .dot {
-      background: #fbbc04;
-      animation: status-blink 0.9s ease-in-out infinite;
+      background: var(--warning);
     }
-    @keyframes status-blink {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.3; }
+
+    .workspace {
+      padding-top: 0.5rem;
     }
+
+    .connection-settings {
+      border-bottom: 1px solid var(--line);
+    }
+
+    .connection-settings summary {
+      min-height: 2.75rem;
+      padding: 0.6rem 0;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .connection-settings summary::marker { color: var(--muted); }
+
+    .connection-summary {
+      margin-left: 0.5rem;
+      color: var(--muted);
+      font-size: 0.875rem;
+      font-weight: 400;
+    }
+
+    .connection-panel { padding: 0.5rem 0 1rem; }
+
+    .connection-fields {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+      gap: 0.75rem;
+      align-items: end;
+    }
+
+    .connection-fields .field { margin-bottom: 0; }
+
+    .scripts-panel { padding-top: 1rem; }
+
+    h2 {
+      margin: 0;
+      font-size: 1.25rem;
+      line-height: 1.4;
+    }
+
+    .section-copy {
+      max-width: 52ch;
+      margin: 0.25rem 0 0.875rem;
+      color: var(--muted);
+      font-size: 0.875rem;
+    }
+
+    .field {
+      display: grid;
+      gap: 0.3rem;
+      margin-bottom: 0.75rem;
+    }
+
+    .field-row {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.75rem;
+    }
+
+    label,
+    legend {
+      font-size: 0.875rem;
+      font-weight: 600;
+    }
+
+    .hint {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.8rem;
+    }
+
+    input[type="text"],
+    input[type="password"],
+    select,
+    textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: none;
+      color: var(--ink);
+      padding: 0.55rem 0.65rem;
+    }
+
+    input::placeholder,
+    textarea::placeholder {
+      color: var(--muted);
+      opacity: 1;
+    }
+
+    textarea {
+      min-height: 6rem;
+      resize: vertical;
+    }
+
+    #script-code {
+      min-height: 14rem;
+      font-family: ui-monospace, monospace;
+      font-size: 0.875rem;
+      tab-size: 2;
+    }
+
+    .button-primary,
+    .button-accent { border-color: var(--ink); }
+    .button-secondary { border-color: var(--line); }
+    .button-danger { border-color: var(--danger); color: var(--danger); }
+
+    .button-text {
+      min-height: 2rem;
+      border-color: transparent;
+      padding: 0.25rem 0.4rem;
+      color: var(--muted);
+    }
+
+    .button-text:hover { color: var(--ink); }
+    .button-text.danger:hover { color: var(--danger); }
+
+    .actions,
+    .panel-heading,
+    .editor-heading,
+    .script-actions,
+    .delete-confirmation {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .panel-heading,
+    .editor-heading {
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+
+    .connection-status {
+      min-height: 1.5rem;
+      margin: 1rem 0 0;
+      color: var(--muted);
+      font-size: 0.875rem;
+    }
+
+    .connection-status:empty,
+    .manager-status:empty { display: none; }
+
+    .manager-status {
+      min-height: 1.5rem;
+      margin: 1rem 0;
+      color: var(--muted);
+      font-size: 0.875rem;
+    }
+
+    .manager-status.error { color: var(--danger); }
+    .manager-status.success { color: var(--success); }
+
+    .empty-state {
+      padding: 0.875rem 0;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .empty-state p {
+      max-width: 42ch;
+      margin: 0 0 1rem;
+      color: var(--muted);
+    }
+
+    .script-list {
+      display: grid;
+      border-top: 1px solid var(--line);
+    }
+
+    .script-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 0.75rem;
+      padding: 0.875rem 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .script-id {
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 600;
+      overflow-wrap: anywhere;
+    }
+
+    .script-description {
+      max-width: 65ch;
+      margin: 0.2rem 0 0;
+      font-size: 0.9rem;
+      overflow-wrap: anywhere;
+    }
+
+    .script-match {
+      margin: 0.4rem 0 0;
+      color: var(--muted);
+      font-family: ui-monospace, monospace;
+      font-size: 0.8rem;
+      overflow-wrap: anywhere;
+      white-space: pre-line;
+    }
+
+    .script-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 0.4rem;
+    }
+
+    .meta-tag {
+      color: var(--muted);
+      font-size: 0.75rem;
+    }
+
+    .meta-tag + .meta-tag::before { content: "· "; }
+
+    .delete-confirmation {
+      grid-column: 1 / -1;
+      justify-content: flex-end;
+      padding-top: 0.5rem;
+      color: var(--danger);
+      font-size: 0.875rem;
+      font-weight: 600;
+    }
+
+    .editor {
+      margin-top: 1rem;
+      border-top: 1px solid var(--ink);
+    }
+
+    .editor-heading { margin-bottom: 1rem; }
+
+    .advanced {
+      margin: 1rem 0;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .advanced summary {
+      min-height: 2.75rem;
+      cursor: pointer;
+      padding: 0.5rem 0;
+      font-weight: 600;
+    }
+
+    .advanced-fields { padding-bottom: 1rem; }
+
+    .checkbox-field {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      min-height: 2.75rem;
+    }
+
+    .checkbox-field input {
+      width: 1.1rem;
+      height: 1.1rem;
+      accent-color: var(--ink);
+    }
+
+    @media (max-width: 47rem) {
+      .page { padding: 1rem; }
+
+      .masthead,
+      .panel-heading,
+      .editor-heading {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .connection-fields { grid-template-columns: 1fr; }
+      .field-row { grid-template-columns: 1fr; }
+      .script-row { grid-template-columns: 1fr; }
+      .script-actions { justify-content: flex-start; }
+      .delete-confirmation { justify-content: flex-start; }
+    }
+
   </style>
 </head>
 <body>
-  <h1>bro Settings</h1>
+  <main class="page">
+    <header class="masthead">
+      <div class="brand">
+        <img src="icon48.png" alt="" />
+        <div>
+          <h1 class="brand-name">bro</h1>
+          <p class="brand-subtitle">Local browser bridge</p>
+        </div>
+      </div>
+      <div id="status" class="disconnected" role="status" aria-live="polite">
+        <span class="dot" aria-hidden="true"></span>
+        <span id="status-text">Disconnected</span>
+      </div>
+    </header>
 
-  <label for="server-url">WebSocket Server URL</label>
-  <input
-    type="text"
-    id="server-url"
-    placeholder="ws://localhost:3500/ws"
-  />
+    <div class="workspace">
+      <details id="connection-settings" class="connection-settings">
+        <summary>
+          Connection settings
+          <span class="connection-summary">WebSocket URL and token</span>
+        </summary>
+        <div class="connection-panel">
+          <p class="section-copy">Keep the server on loopback and use the token created by bro.</p>
 
-  <label for="token" style="margin-top: 16px;">Authentication Token</label>
-  <input
-    type="password"
-    id="token"
-    placeholder="Paste token from settings.json"
-  />
+          <div class="connection-fields">
+            <div class="field">
+              <label for="server-url">WebSocket URL</label>
+              <input type="text" id="server-url" placeholder="ws://127.0.0.1:3500/ws" />
+            </div>
 
-  <div class="actions">
-    <button id="save-btn">Save</button>
-  </div>
+            <div class="field">
+              <label for="token">Authentication token</label>
+              <input type="password" id="token" placeholder="Paste the token copied by bro" />
+            </div>
 
-  <div id="status" class="disconnected" role="status" aria-live="polite">
-    <span class="dot"></span>
-    <span id="status-text">Disconnected</span>
-  </div>
+            <div class="actions">
+              <button id="save-btn" class="button-primary" type="button">Save connection</button>
+            </div>
+          </div>
+          <p id="connection-message" class="connection-status" role="status" aria-live="polite"></p>
+        </div>
+      </details>
 
-  <script src="options.js"></script>
+      <section class="scripts-panel" aria-labelledby="scripts-heading">
+        <div class="panel-heading">
+          <div>
+            <h2 id="scripts-heading">User scripts</h2>
+            <p class="section-copy">Run small, persistent scripts on matching pages.</p>
+          </div>
+          <button id="create-script-btn" class="button-accent" type="button">Create script</button>
+        </div>
+
+        <p id="userscript-status" class="manager-status" role="status" aria-live="polite">Reading scripts…</p>
+
+        <div id="userscript-empty" class="empty-state" hidden>
+          <p>No scripts yet. Create one to change matching pages whenever they load.</p>
+          <button id="empty-create-script-btn" class="button-secondary" type="button">Create first script</button>
+        </div>
+
+        <div id="userscript-list" class="script-list" role="list"></div>
+
+        <form id="userscript-form" class="editor" hidden novalidate>
+          <div class="editor-heading">
+            <h2 id="editor-title">Create script</h2>
+            <button id="close-editor-btn" class="button-text" type="button">Close editor</button>
+          </div>
+
+          <div class="field">
+            <label for="script-id">Script ID</label>
+            <input type="text" id="script-id" autocomplete="off" required placeholder="dismiss-cookie-banner" />
+            <p class="hint">A stable name used by Chrome and bro.</p>
+          </div>
+
+          <div class="field">
+            <label for="script-description">Description</label>
+            <input type="text" id="script-description" autocomplete="off" required placeholder="Explain what this script does" />
+            <p class="hint">Shown under the script name for quick review.</p>
+          </div>
+
+          <div class="field">
+            <label for="script-matches">Match patterns</label>
+            <textarea id="script-matches" required placeholder="https://example.com/*"></textarea>
+            <p class="hint">One Chrome match pattern per line.</p>
+          </div>
+
+          <div class="field">
+            <label for="script-code">JavaScript</label>
+            <textarea id="script-code" required spellcheck="false" placeholder="document.documentElement.dataset.ready = 'true'"></textarea>
+          </div>
+
+          <div class="field">
+            <label for="script-run-at">Run at</label>
+            <select id="script-run-at">
+              <option value="document_idle">After the page settles</option>
+              <option value="document_start">Before page scripts</option>
+              <option value="document_end">After the document loads</option>
+            </select>
+          </div>
+
+          <details class="advanced">
+            <summary>Advanced options</summary>
+            <div class="advanced-fields">
+              <div class="field-row">
+                <div class="field">
+                  <label for="script-world">JavaScript world</label>
+                  <select id="script-world">
+                    <option value="USER_SCRIPT">Isolated user script</option>
+                    <option value="MAIN">Page main world</option>
+                  </select>
+                </div>
+                <label class="checkbox-field" for="script-all-frames">
+                  <input type="checkbox" id="script-all-frames" />
+                  Run in matching frames
+                </label>
+              </div>
+
+              <div class="field">
+                <label for="script-exclude-matches">Excluded patterns</label>
+                <textarea id="script-exclude-matches" placeholder="https://example.com/account/*"></textarea>
+                <p class="hint">Optional. One match pattern per line.</p>
+              </div>
+            </div>
+          </details>
+
+          <p id="editor-message" class="manager-status" role="status" aria-live="polite"></p>
+          <div class="actions">
+            <button id="save-script-btn" class="button-primary" type="submit">Create script</button>
+            <button id="discard-script-btn" class="button-secondary" type="button">Discard changes</button>
+          </div>
+        </form>
+      </section>
+    </div>
+  </main>
+
+  <script type="module" src="options.js"></script>
 </body>
 </html>

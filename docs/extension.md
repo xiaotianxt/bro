@@ -17,6 +17,23 @@ Chromium first restricts that storage to trusted extension contexts. Older
 synced tokens are migrated once and removed from sync storage. The extension
 reports connected only after the Rust server acknowledges authentication.
 
+## User Scripts
+
+The Options page and the `userscripts_*` MCP tools share one implementation over
+`chrome.userScripts`. The page supports listing, creating, editing, and deleting
+inline scripts at full width. Low-frequency connection settings stay collapsed;
+execution world, frame behavior, and excluded match patterns live under
+Advanced options. A short editable description appears below each script ID so
+users can review purpose before editing or deleting a script.
+
+The extension also stores the registered definitions in `chrome.storage.local`.
+On startup it restores any definitions missing from Chrome's dynamic script
+registry, which protects installed scripts across extension updates.
+
+Chrome requires **Allow User Scripts** to be enabled for the extension in
+`chrome://extensions`. File-backed scripts can be listed and deleted, but the
+Options page does not edit extension package files.
+
 ## Build
 
 ```bash

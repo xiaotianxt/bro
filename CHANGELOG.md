@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Fix the extension options bundle so its ES module imports load correctly.
+- Add a full-width Options-page manager for listing, creating, editing, and
+  deleting inline user scripts, with low-frequency connection settings collapsed.
+- Preserve user scripts in extension-local storage and restore them when an
+  extension update clears Chrome's dynamic registration database.
+- Show an editable purpose description for each user script.
+
 ## 1.0.0
 
 - Mark the local Rust MCP server, authenticated extension bridge, and supported
