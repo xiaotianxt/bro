@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "bro",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "background": {
     "service_worker": "service-worker.js",
     "type": "module"
