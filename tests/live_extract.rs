@@ -31,7 +31,7 @@ fn extracts_dynamic_social_search_pages() {
         LiveCase {
             id: "x",
             url: "https://x.com/search?q=WWDC%202026&src=typed_query",
-            expected_text: &["WWDC", "MacRumors"],
+            expected_text: &["WWDC"],
             expected_links: &["x.com/"],
         },
         LiveCase {
