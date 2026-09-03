@@ -36,7 +36,7 @@ jobs:
           - os: windows-2022
             target: x86_64-pc-windows-msvc
             package: zip
-          - os: windows-11-arm
+          - os: windows-11-vs2026-arm
             target: aarch64-pc-windows-msvc
             package: zip
     steps:
