@@ -136,6 +136,23 @@ Observed recurring failures included:
 
 Agents started 15 flows but explicitly finished only seven. The Pi adapter's shutdown cleanup is therefore product behavior, not optional convenience. Cleanup must remain automatic while preserving `/reload` continuation semantics.
 
+### 6. Hidden capability retention benchmark
+
+A second matrix ran 18 valid subagents against a deterministic local fixture. It tested outcomes that the ten default tools do not completely cover. The interrupted Mini visual run caused by a laptop lid close was excluded and rerun.
+
+| Hidden capability | Success | Mean time | Mean calls | Mean billed tokens | Decision |
+|---|---:|---:|---:|---:|---|
+| Existing-tab discovery and claim | 3/3 | 33.3 s | 6.3 | 32,825 | Keep dynamic |
+| Console trigger and observation | 3/3 | 73.4 s | 14.7 | 76,517 | Keep capability; add facade |
+| Typed file injection | 2/3 | 39.6 s | 8.7 | 39,125 | Keep dynamic |
+| User-script register/verify/remove | 3/3 | 35.9 s | 7.7 | 29,935 | Keep dynamic |
+| Shadow-DOM a11y/ref interaction | 2/3 | 136.3 s | 21.0 | 143,737 | Keep capability; load as pack |
+| Canvas-only visual interaction | 3/3 | 178.5 s | 32.7 | 525,974 | Keep hidden; needs higher-level workflow |
+
+The matrix called `bro_search_tools` 29 times. Dynamic discovery worked, but individual-tool search caused expensive reconstruction for visual, console, and accessibility workflows. Three benchmark tabs also required explicit post-run cleanup, reinforcing that raw-tool packs need lifecycle ownership.
+
+These results justify retaining unique hidden capabilities, not retaining every historical public name.
+
 ## Resulting tool policy
 
 ### Keep active initially
@@ -155,11 +172,33 @@ This is not the final smallest surface; it is the smallest tested surface that d
 
 ### Keep discoverable but inactive
 
-- raw tab/session tools
-- direct accessibility/refId actions
-- JavaScript execution
-- console and network primitives
-- uploads, shortcuts, GIF recording, and user scripts
+Keep these 27 model-facing capabilities available through dynamic loading:
+
+- browser selection and tabs: `browsers_context`, `tabs_context`, `tabs_create`,
+  `tabs_claim`, `tabs_activate`, `tabs_close`
+- advanced page work: `computer`, `navigate`, `resize_window`, `read_page`,
+  `find`, `javascript_tool`, `form_input`, `click_element`, `scroll_element`,
+  `fill_element`, `get_element_info`, `wait_for_element`
+- diagnostics and media: `read_console_messages`, `file_upload`, `upload_image`,
+  `gif_creator`, `shortcuts_list`, `shortcuts_execute`
+- persistent scripts: `userscripts_register`, `userscripts_unregister`,
+  `userscripts_list`
+
+### Keep server-side but hide from Pi model discovery
+
+These ten names remain available to existing MCP clients or internal adapters,
+but do not need to be model-discoverable in Pi:
+
+- lifecycle internals: `agent_done`, `session_name`, `tabs_finalize`
+- compatibility variants: `tabs_context_mcp`, `tabs_create_mcp`
+- facade internals: `get_page_text`, `extract_page`
+- superseded workflows: `browser.batch.run`, `read_network_requests`,
+  `get_response_body`
+
+The first deprecation candidates at the server contract are `agent_done`,
+`browser.batch.run`, the two `_mcp` tab aliases, and the two cross-turn raw
+network tools. Do not delete them until downstream clients and the skill have a
+published migration window.
 
 ### Improve next
 

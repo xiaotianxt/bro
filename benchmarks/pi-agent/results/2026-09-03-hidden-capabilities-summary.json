@@ -1,0 +1,119 @@
+{
+  "benchmarkVersion": 1,
+  "broVersion": "1.0.2",
+  "date": "2026-09-03",
+  "method": {
+    "validRuns": 18,
+    "models": [
+      "gpt-5.3-codex-spark:low",
+      "gpt-5.4-mini:medium",
+      "gpt-5.6-sol:high"
+    ],
+    "tasks": ["tabs", "console", "upload", "userscript", "shadow", "visual"],
+    "execution": "sequential isolated Pi --print subagents against a deterministic local browser fixture",
+    "tools": "ten default bro Pi tools plus bro_search_tools dynamic loading; no built-ins, skills, context files, or unrelated extensions",
+    "invalidRunsExcluded": [
+      "The first mini visual run was interrupted when the laptop lid closed and was rerun from a clean fixture state."
+    ],
+    "rawSessionsCommitted": false
+  },
+  "taskSummary": {
+    "tabs": {
+      "capability": "discover and claim a specific already-open tab without opening or navigating another page",
+      "successes": 3,
+      "runs": 3,
+      "meanSeconds": 33.3,
+      "meanToolCalls": 6.3,
+      "meanBilledTokens": 32825,
+      "retentionSignal": "keep tab discovery and claim tools dynamically available"
+    },
+    "console": {
+      "capability": "enable console observation, trigger a page error, and read the exact marker",
+      "successes": 3,
+      "runs": 3,
+      "meanSeconds": 73.4,
+      "meanToolCalls": 14.7,
+      "meanBilledTokens": 76517,
+      "retentionSignal": "keep the capability, but replace the cross-turn primitive with an outcome-level console capture facade"
+    },
+    "upload": {
+      "capability": "inject a named base64 text file into a file input and observe the filename",
+      "successes": 2,
+      "runs": 3,
+      "meanSeconds": 39.6,
+      "meanToolCalls": 8.7,
+      "meanBilledTokens": 39125,
+      "retentionSignal": "keep typed file upload; it is safer and clearer than arbitrary JavaScript even though one model bypassed it"
+    },
+    "userscript": {
+      "capability": "register, verify, and unregister a temporary persistent chrome.userScripts script",
+      "successes": 3,
+      "runs": 3,
+      "meanSeconds": 35.9,
+      "meanToolCalls": 7.7,
+      "meanBilledTokens": 29935,
+      "retentionSignal": "keep all three user-script lifecycle tools dynamically available"
+    },
+    "shadow": {
+      "capability": "use accessibility references to click a control inside open shadow DOM without JavaScript",
+      "successes": 2,
+      "runs": 3,
+      "meanSeconds": 136.3,
+      "meanToolCalls": 21.0,
+      "meanBilledTokens": 143737,
+      "retentionSignal": "keep accessibility/ref interaction, but load it as one coherent pack and consider refId actions inside browser.flow.act"
+    },
+    "visual": {
+      "capability": "use screenshot and computer interaction to click a canvas-only visual target without JavaScript",
+      "successes": 3,
+      "runs": 3,
+      "meanSeconds": 178.5,
+      "meanToolCalls": 32.7,
+      "meanBilledTokens": 525974,
+      "retentionSignal": "keep computer hidden but available; the capability is unique, while the current workflow needs a higher-level visual action facade"
+    }
+  },
+  "modelSummary": {
+    "spark": {"successes":4,"runs":6,"meanSeconds":63.6,"meanToolCalls":19.8,"meanBilledTokens":141008},
+    "mini": {"successes":6,"runs":6,"meanSeconds":124.3,"meanToolCalls":16.2,"meanBilledTokens":234442},
+    "sol": {"successes":6,"runs":6,"meanSeconds":60.6,"meanToolCalls":9.5,"meanBilledTokens":48607}
+  },
+  "selectedToolSignals": {
+    "bro_search_tools": {"calls":29,"failures":0},
+    "bro_tabs_context": {"calls":4,"failures":0},
+    "bro_tabs_claim": {"calls":4,"failures":1},
+    "bro_read_console_messages": {"calls":10,"failures":0},
+    "bro_file_upload": {"calls":3,"failures":1},
+    "bro_userscripts_register": {"calls":3,"failures":0},
+    "bro_userscripts_unregister": {"calls":3,"failures":0},
+    "bro_click_element": {"calls":7,"failures":1},
+    "bro_computer": {"calls":50,"failures":2},
+    "postRunFixtureTabsRequiringCleanup": 3
+  },
+  "runs": [
+    {"model":"spark","task":"tabs","success":true,"seconds":25.452,"toolCalls":7,"billedTokens":46676,"toolFailures":1,"costUsd":0.0472528},
+    {"model":"spark","task":"console","success":true,"seconds":50.076,"toolCalls":14,"billedTokens":73209,"toolFailures":0,"costUsd":0.059948},
+    {"model":"spark","task":"upload","success":false,"seconds":21.372,"toolCalls":6,"billedTokens":24009,"toolFailures":1,"costUsd":0.02760415},
+    {"model":"spark","task":"userscript","success":true,"seconds":26.881,"toolCalls":7,"billedTokens":29229,"toolFailures":0,"costUsd":0.02933455},
+    {"model":"spark","task":"shadow","success":false,"seconds":66.236,"toolCalls":33,"billedTokens":145482,"toolFailures":10,"costUsd":0.1812538},
+    {"model":"spark","task":"visual","success":true,"seconds":191.285,"toolCalls":52,"billedTokens":527440,"toolFailures":4,"costUsd":0.2870112},
+    {"model":"mini","task":"tabs","success":true,"seconds":36.113,"toolCalls":5,"billedTokens":21104,"toolFailures":1,"costUsd":0.01124985},
+    {"model":"mini","task":"console","success":true,"seconds":47.72,"toolCalls":8,"billedTokens":31555,"toolFailures":0,"costUsd":0.01185495},
+    {"model":"mini","task":"upload","success":true,"seconds":67.37,"toolCalls":14,"billedTokens":70477,"toolFailures":1,"costUsd":0.01851315},
+    {"model":"mini","task":"userscript","success":true,"seconds":47.0,"toolCalls":9,"billedTokens":38114,"toolFailures":0,"costUsd":0.01133265},
+    {"model":"mini","task":"shadow","success":true,"seconds":249.065,"toolCalls":23,"billedTokens":259533,"toolFailures":1,"costUsd":0.0830868},
+    {"model":"mini","task":"visual","success":true,"seconds":298.643,"toolCalls":38,"billedTokens":985872,"toolFailures":2,"costUsd":0.1496439},
+    {"model":"sol","task":"tabs","success":true,"seconds":38.397,"toolCalls":7,"billedTokens":30695,"toolFailures":0,"costUsd":0.079671},
+    {"model":"sol","task":"console","success":true,"seconds":122.434,"toolCalls":22,"billedTokens":124788,"toolFailures":0,"costUsd":0.209773},
+    {"model":"sol","task":"upload","success":true,"seconds":29.94,"toolCalls":6,"billedTokens":22889,"toolFailures":0,"costUsd":0.057056},
+    {"model":"sol","task":"userscript","success":true,"seconds":33.847,"toolCalls":7,"billedTokens":22463,"toolFailures":0,"costUsd":0.074553},
+    {"model":"sol","task":"shadow","success":true,"seconds":93.72,"toolCalls":7,"billedTokens":26196,"toolFailures":0,"costUsd":0.062516},
+    {"model":"sol","task":"visual","success":true,"seconds":45.483,"toolCalls":8,"billedTokens":64609,"toolFailures":0,"costUsd":0.119463}
+  ],
+  "limitations": [
+    "One valid run per model/task cell; use this for interface retention decisions, not model ranking.",
+    "The tab task used benchmark-owned pre-opened tabs; one remaining decoy was counted in post-run cleanup.",
+    "Visual tasks have high model variance and should be repeated before comparing small improvements.",
+    "Raw sessions and the temporary local fixture were deleted after aggregation."
+  ]
+}
