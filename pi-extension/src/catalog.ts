@@ -15,6 +15,7 @@ export const DEFAULT_ACTIVE_UPSTREAM_TOOLS = new Set([
   "browser.current.extract",
   "browser.batch.extract",
   "browser.batch.flow",
+  "browser.network.capture",
   "browser.flow.start",
   "browser.flow.observe",
   "browser.flow.act",

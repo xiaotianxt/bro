@@ -35,6 +35,7 @@ pub enum ToolRoute {
     Extract,
     CurrentExtract,
     BatchExtract,
+    NetworkCapture,
     FlowStart,
     FlowObserve,
     FlowAct,
@@ -154,6 +155,12 @@ static SPECS: &[ToolSpec] = &[
         schema: "browser_batch_extract",
     },
     ToolSpec {
+        name: "browser.network.capture",
+        description: "Open one URL, enable browser network instrumentation, evaluate one JavaScript expression that triggers requests, collect matching request metadata and response bodies, then clean up in one call. Use instead of carrying network-monitor state across model turns.",
+        route: ToolRoute::NetworkCapture,
+        schema: "browser_network_capture",
+    },
+    ToolSpec {
         name: "browser.flow.start",
         description: "Start a default background browser flow for one URL and keep its tab in server memory. Defaults: active false, cleanup true.",
         route: ToolRoute::FlowStart,
@@ -167,7 +174,7 @@ static SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "browser.flow.act",
-        description: "Run explicit flow steps on the owned tab: goto, eval, click, fill, wait, or read_text. Stops at the first failed step.",
+        description: "Run ordered steps on the owned tab: goto, eval, click, fill, select, wait, or read_text. Eval accepts a JavaScript expression and awaits returned Promises. Stops at the first failed step.",
         route: ToolRoute::FlowAct,
         schema: "browser_flow_act",
     },
@@ -322,12 +329,12 @@ static SPECS: &[ToolSpec] = &[
     ),
     forward(
         "read_network_requests",
-        "Read network request and response records from the browser.",
+        "Begin or read best-effort network monitoring for one tab. Monitoring is extension-memory state and may not survive model turns; prefer browser.network.capture when an action must trigger the request. Use timeoutMs 0 only for deliberate multi-call debugging.",
         "read_network_requests",
     ),
     forward(
         "get_response_body",
-        "Retrieve a network response body by request ID.",
+        "Retrieve a network response body by request ID while the originating debugger session is still available. Prefer browser.network.capture for trigger-and-body workflows.",
         "get_response_body",
     ),
     forward(
@@ -521,6 +528,20 @@ fn schema(kind: &str) -> JsonObject {
             ("active", json!({"type":"boolean","default":false})),
             ("browserId", browser_id_schema()),
         ]),
+        "browser_network_capture" => props(&[
+            ("url", json!({"type":"string","format":"uri","description":"Page to open before network capture starts."})),
+            ("code", json!({"type":"string","minLength":1,"description":"JavaScript trigger evaluated after monitoring starts. Returned Promises are awaited; a zero-argument function expression is invoked automatically. Examples: fetch('/api') or () => fetch('/api')."})),
+            ("urlIncludes", json!({"type":"string","minLength":1,"description":"Only return requests whose URL contains this substring."})),
+            ("timeoutMs", json!({"type":"integer","minimum":1,"maximum":20000,"default":10000,"description":"Maximum time to wait for a matching request to finish."})),
+            ("includeResponseBodies", json!({"type":"boolean","default":true,"description":"Include bounded response bodies for finished matching requests."})),
+            ("includeHeaders", json!({"type":"boolean","default":false,"description":"Include request and response headers. Keep false unless headers are required."})),
+            ("includePostData", json!({"type":"boolean","default":false,"description":"Include request post bodies. Keep false unless request payloads are required."})),
+            ("maxBodyChars", json!({"type":"integer","minimum":1,"maximum":60000,"default":20000,"description":"Total response-body character budget shared across matching requests."})),
+            ("maxRequests", json!({"type":"integer","minimum":1,"maximum":100,"default":20})),
+            ("cleanup", json!({"type":"boolean","default":true})),
+            ("active", json!({"type":"boolean","default":false})),
+            ("browserId", browser_id_schema()),
+        ]),
         "browser_batch_flow" => props(&[
             (
                 "urls",
@@ -532,7 +553,7 @@ fn schema(kind: &str) -> JsonObject {
             ),
             (
                 "steps",
-                json!({"type":"array","minItems":1,"items":{"type":"object","required":["type"],"properties":{"type":{"type":"string","enum":["goto","eval","click","fill","wait","read_text"]},"url":{"type":"string","format":"uri"},"code":{"type":"string"},"css":{"type":"string"},"value":{"type":"string"},"ms":{"type":"integer","minimum":0,"maximum":30000}},"additionalProperties":false},"description":"Ordered flow steps to run on every URL."}),
+                flow_steps_schema("Ordered flow steps to run on every URL."),
             ),
             (
                 "concurrency",
@@ -563,7 +584,7 @@ fn schema(kind: &str) -> JsonObject {
             ("sessionId", json!({"type":"string","minLength":1})),
             (
                 "steps",
-                json!({"type":"array","minItems":1,"items":{"type":"object","required":["type"],"properties":{"type":{"type":"string","enum":["goto","eval","click","fill","wait","read_text"]},"url":{"type":"string","format":"uri"},"code":{"type":"string"},"css":{"type":"string"},"value":{"type":"string"},"ms":{"type":"integer","minimum":0,"maximum":30000}},"additionalProperties":false}}),
+                flow_steps_schema("Ordered steps. Combine related actions in one call when their selectors are known."),
             ),
         ]),
         "browser_flow_finish" => props(&[
@@ -761,7 +782,7 @@ fn schema(kind: &str) -> JsonObject {
             ),
             (
                 "timeoutMs",
-                json!({"type":"integer","minimum":0,"maximum":600000,"default":30000}),
+                json!({"type":"integer","minimum":0,"maximum":600000,"default":30000,"description":"Idle lifetime for best-effort monitoring. Use 0 to request no timer, but prefer browser.network.capture across model turns."}),
             ),
             (
                 "includeHeaders",
@@ -888,12 +909,38 @@ fn required_fields(kind: &str) -> Option<&'static [&'static str]> {
     match kind {
         "agent_done" => Some(&["tabIds"]),
         "browser_extract" => Some(&["url"]),
+        "browser_network_capture" => Some(&["url", "code"]),
         "browser_batch_flow" => Some(&["steps"]),
         "browser_flow_start" => Some(&["url"]),
         "browser_flow_observe" | "browser_flow_finish" => Some(&["sessionId"]),
         "browser_flow_act" => Some(&["sessionId", "steps"]),
         _ => None,
     }
+}
+
+fn flow_steps_schema(description: &str) -> Value {
+    json!({
+        "type": "array",
+        "minItems": 1,
+        "description": description,
+        "items": {
+            "type": "object",
+            "required": ["type"],
+            "additionalProperties": false,
+            "properties": {
+                "type": {
+                    "type": "string",
+                    "enum": ["goto", "eval", "click", "fill", "select", "wait", "read_text"],
+                    "description": "Step operation. Required companion fields: goto=url, eval=code, click=css, fill/select=css+value, wait=ms; read_text has no companion fields."
+                },
+                "url": {"type": "string", "format": "uri", "description": "Destination for a goto step."},
+                "code": {"type": "string", "description": "JavaScript expression for an eval step. Returned Promises are awaited. Do not use a top-level return; wrap multi-statement code as (() => { ...; return value; })()."},
+                "css": {"type": "string", "minLength": 1, "description": "CSS selector for click, fill, or select."},
+                "value": {"type": "string", "description": "Text for fill or option value for select."},
+                "ms": {"type": "integer", "minimum": 0, "maximum": 30000, "description": "Delay in milliseconds for wait."}
+            }
+        }
+    })
 }
 
 fn props(entries: &[(&str, Value)]) -> Map<String, Value> {
@@ -920,4 +967,37 @@ fn take_string(args: &mut JsonObject, key: &str) -> Option<String> {
 
 fn take_i64(args: &mut JsonObject, key: &str) -> Option<i64> {
     args.remove(key).and_then(|value| value.as_i64())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{route_for, schema, ToolRoute};
+
+    #[test]
+    fn flow_schema_exposes_select_and_eval_contract() {
+        let schema = schema("browser_flow_act");
+        let step = &schema["properties"]["steps"]["items"];
+        let operations = step["properties"]["type"]["enum"]
+            .as_array()
+            .expect("flow operations should be an array");
+
+        assert!(operations.iter().any(|value| value == "select"));
+        assert!(step["properties"]["code"]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("expression")));
+    }
+
+    #[test]
+    fn network_capture_is_a_first_class_facade() {
+        assert_eq!(
+            route_for("browser.network.capture"),
+            Some(ToolRoute::NetworkCapture)
+        );
+        let schema = schema("browser_network_capture");
+        assert_eq!(schema["required"], serde_json::json!(["url", "code"]));
+        assert_eq!(
+            schema["properties"]["includeResponseBodies"]["default"],
+            true
+        );
+    }
 }

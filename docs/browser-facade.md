@@ -99,18 +99,49 @@ The extension includes the resolved `tabId` in the extraction payload when
 available, so the facade can still use fallback readers inside the same MCP
 tool call.
 
+## Network Capture
+
+`browser.network.capture` keeps the whole debugging transaction inside one MCP
+call so Manifest V3 service-worker suspension and model think time cannot discard
+monitoring state between tools.
+
+```json
+{
+  "url": "https://httpbin.org/html",
+  "code": "fetch('/anything?bro=benchmark').then(r => r.json())",
+  "urlIncludes": "/anything?bro=benchmark",
+  "includeResponseBodies": true
+}
+```
+
+The facade opens an owned background tab, waits for initial page readiness,
+enables CDP network events, evaluates and awaits the trigger expression, waits
+for a matching request to finish, includes bounded response bodies, and cleans
+up by default. A zero-argument function expression is also accepted and invoked.
+Headers and post bodies remain opt-in because they are sensitive and verbose.
+`maxBodyChars` is a total budget shared by all returned bodies.
+
+Use raw `read_network_requests` and `get_response_body` only for deliberate
+interactive diagnostics where losing extension-memory state is acceptable.
+
 ## Flow
 
 Use `browser.flow.*` for sequential interaction with one leased tab.
 
 1. `browser.flow.start` opens a tab and returns `sessionId`.
-2. `browser.flow.act` runs ordered steps: `goto`, `eval`, `click`, `fill`,
-   `wait`, `read_text`.
+2. `browser.flow.act` runs ordered steps: `goto`, awaited `eval`, `click`,
+   `fill`, `select`, `wait`, and `read_text`.
 3. `browser.flow.observe` reads current text or accessibility tree.
 4. `browser.flow.finish` releases server state and closes the tab by default.
 
-If a step fails, `browser.flow.act` stops at that step and returns prior step
-results plus the failure location.
+`fill` uses the native input/textarea value setter and dispatches input and
+change events so controlled frameworks observe the update. `select` validates
+the option value, uses the native select setter, and dispatches the same events.
+Eval code is a JavaScript expression; wrap multiple statements in an IIFE rather
+than using a top-level `return`.
+
+If a step fails, `browser.flow.act` stops at that step, returns prior results and
+the failure location, and marks the outer MCP result as an error.
 
 ## Design Rule
 

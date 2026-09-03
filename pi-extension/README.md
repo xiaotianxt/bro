@@ -32,7 +32,7 @@ Then start a new Pi session or run `/reload`.
 ## Behavior
 
 - MCP tool names are normalized, for example `browser.batch.extract` becomes `bro_browser_batch_extract`.
-- Common facade and flow tools are active by default.
+- Common extraction, flow, and one-call network capture tools are active by default.
 - `bro_search_tools` enables additional tools through Pi's dynamic tool loading.
 - Pi's session ID is supplied to bro tab-lifecycle tools when the caller omits `sessionId`.
 - MCP errors become failed Pi tool results rather than successful text containing an error.

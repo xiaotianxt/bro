@@ -240,9 +240,12 @@ and Unix-like systems this includes fields such as `appName`, `processId`,
 - `browser.batch.run`: open many URLs, read plain text, close by default
 - `browser.batch.flow`: run the same ordered interaction on many URLs in
   parallel, close by default
+- `browser.network.capture`: open a page, trigger requests, and collect matching
+  request metadata and bounded response bodies in one call
 - `browser.flow.start`: lease one tab for sequential work
 - `browser.flow.observe`: read leased-tab text or accessibility tree
-- `browser.flow.act`: run ordered generic steps such as `goto`, `click`, `fill`
+- `browser.flow.act`: run ordered generic steps such as `goto`, `click`, `fill`,
+  `select`, and awaited `eval`
 - `browser.flow.finish`: release and optionally close the leased tab
 
 Use `browser.batch.flow` when each page needs the same interaction before
@@ -277,8 +280,9 @@ connected:
 make live-test
 ```
 
-The live test opens Reddit, LinkedIn, X, and Threads search pages in background
-tabs and checks that expected text/links still extract correctly.
+The live tests open Reddit, LinkedIn, X, and Threads search pages in background
+tabs, verify dynamic extraction, and exercise one-call request/body capture
+against httpbin.
 
 Run isolated multi-model Pi browser benchmarks from
 `benchmarks/pi-agent/`. Keep raw sessions outside the repository because they

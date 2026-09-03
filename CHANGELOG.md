@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Add `browser.network.capture` to keep monitoring, trigger execution, matching
+  request collection, bounded response bodies, and cleanup inside one MCP call.
+- Propagate nested browser errors through flow results, stop at the failed step,
+  and mark failed facade outcomes as MCP tool errors.
+- Add typed `select` flow steps, framework-aware input setters, awaited eval
+  expressions, shorter flow IDs, and explicit flow-step schemas.
+- Keep the outcome-level network facade active by default in Pi after benchmark
+  runs reduced the network task from 0/3 to 3/3 success.
+
+## 1.0.1
+
 - Fix the extension options bundle so its ES module imports load correctly.
 - Add a full-width Options-page manager for listing, creating, editing, and
   deleting inline user scripts, with low-frequency connection settings collapsed.

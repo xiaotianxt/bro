@@ -19,6 +19,7 @@ export type ImageContent = {
 
 export type ToolResult = {
   content: Array<TextContent | ImageContent>
+  isError?: boolean
 }
 
 // ---------------------------------------------------------------------------

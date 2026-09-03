@@ -219,6 +219,104 @@ impl BrowserFacade {
         }))
     }
 
+    pub async fn network_capture(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
+        let args = parse_args::<NetworkCaptureArgs>(args)?;
+        let create = self
+            .bridge
+            .dispatch(
+                "tabs_create",
+                json!({ "url": args.url.clone(), "active": args.active }),
+                None,
+                args.browser_id.clone(),
+            )
+            .await?;
+        fail_if_tool_error("tabs_create", &create)?;
+        let tab_id = extract_tab_id(&create.result).ok_or_else(|| FacadeError::ToolFailed {
+            tool: "tabs_create",
+            message: "response did not include tabId".to_string(),
+        })?;
+        let session = FlowSession {
+            session_id: format!("network-capture-{}", Uuid::new_v4()),
+            tab_id,
+            browser_id: args.browser_id.clone(),
+            url: args.url.clone(),
+            cleanup: args.cleanup,
+        };
+
+        let outcome = async {
+            let ready = self
+                .read_text_with_retry(tab_id, args.browser_id.clone())
+                .await?;
+            fail_if_tool_error("get_page_text", &ready)?;
+
+            let mut capture_args = Map::from_iter([
+                ("code".to_string(), json!(args.code.clone())),
+                ("timeoutMs".to_string(), json!(args.timeout_ms.min(20_000))),
+                (
+                    "includeResponseBodies".to_string(),
+                    json!(args.include_response_bodies),
+                ),
+                ("includeHeaders".to_string(), json!(args.include_headers)),
+                ("includePostData".to_string(), json!(args.include_post_data)),
+                (
+                    "maxBodyChars".to_string(),
+                    json!(args.max_body_chars.min(60_000)),
+                ),
+                ("maxRequests".to_string(), json!(args.max_requests.min(100))),
+            ]);
+            if let Some(url_includes) = &args.url_includes {
+                capture_args.insert("urlIncludes".to_string(), json!(url_includes));
+            }
+            let capture = self
+                .bridge
+                .dispatch(
+                    "capture_network",
+                    Value::Object(capture_args),
+                    Some(tab_id),
+                    args.browser_id.clone(),
+                )
+                .await?;
+            fail_if_tool_error("capture_network", &capture)?;
+            let text = extract_text(&capture.result).ok_or_else(|| FacadeError::ToolFailed {
+                tool: "capture_network",
+                message: "response did not contain JSON text".to_string(),
+            })?;
+            let mut value =
+                serde_json::from_str::<Value>(&text).map_err(|error| FacadeError::ToolFailed {
+                    tool: "capture_network",
+                    message: format!("response was not valid JSON: {error}"),
+                })?;
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| FacadeError::ToolFailed {
+                    tool: "capture_network",
+                    message: "response JSON was not an object".to_string(),
+                })?;
+            object.insert("tabId".to_string(), json!(tab_id));
+            object.insert("url".to_string(), json!(args.url.clone()));
+            if let Some(browser_id) = &args.browser_id {
+                object.insert("browserId".to_string(), json!(browser_id));
+            }
+            Ok(value)
+        }
+        .await;
+
+        let cleanup_error = if args.cleanup {
+            self.close_tab(&session).await.err()
+        } else {
+            None
+        };
+        match (outcome, cleanup_error) {
+            (Ok(value), None) => Ok(value),
+            (Ok(_value), Some(error)) => Err(error),
+            (Err(error), None) => Err(error),
+            (Err(error), Some(cleanup)) => Err(FacadeError::ToolFailed {
+                tool: "capture_network",
+                message: format!("{error}; cleanup failed: {cleanup}"),
+            }),
+        }
+    }
+
     pub async fn flow_start(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
         let args = parse_args::<FlowStartArgs>(args)?;
         let result = self
@@ -236,7 +334,7 @@ impl BrowserFacade {
             tool: "tabs_create",
             message: "response did not include tabId".to_string(),
         })?;
-        let session_id = Uuid::new_v4().to_string();
+        let session_id = new_flow_session_id();
         let session = FlowSession {
             session_id: session_id.clone(),
             tab_id,
@@ -869,7 +967,7 @@ impl BrowserFacade {
                     .bridge
                     .dispatch(
                         "javascript_tool",
-                        json!({ "code": code }),
+                        json!({ "code": code, "awaitPromise": true }),
                         Some(session.tab_id),
                         session.browser_id.clone(),
                     )
@@ -893,6 +991,20 @@ impl BrowserFacade {
             }
             FlowStep::Fill { css, value } => {
                 let code = fill_script(&css, &value)?;
+                let result = self
+                    .bridge
+                    .dispatch(
+                        "javascript_tool",
+                        json!({ "code": code }),
+                        Some(session.tab_id),
+                        session.browser_id.clone(),
+                    )
+                    .await?;
+                fail_if_tool_error("javascript_tool", &result)?;
+                Ok(single_result(result.result))
+            }
+            FlowStep::Select { css, value } => {
+                let code = select_script(&css, &value)?;
                 let result = self
                     .bridge
                     .dispatch(
@@ -1588,6 +1700,50 @@ impl FlowSession {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NetworkCaptureArgs {
+    url: String,
+    code: String,
+    #[serde(default)]
+    url_includes: Option<String>,
+    #[serde(default = "default_network_capture_timeout_ms")]
+    timeout_ms: u64,
+    #[serde(default = "default_true")]
+    include_response_bodies: bool,
+    #[serde(default)]
+    include_headers: bool,
+    #[serde(default)]
+    include_post_data: bool,
+    #[serde(default = "default_network_capture_max_body_chars")]
+    max_body_chars: u64,
+    #[serde(default = "default_network_capture_max_requests")]
+    max_requests: u64,
+    #[serde(default)]
+    browser_id: Option<String>,
+    #[serde(default)]
+    active: bool,
+    #[serde(default = "default_true")]
+    cleanup: bool,
+}
+
+fn new_flow_session_id() -> String {
+    let id = Uuid::new_v4().simple().to_string();
+    format!("flow-{}", &id[..12])
+}
+
+fn default_network_capture_timeout_ms() -> u64 {
+    10_000
+}
+
+fn default_network_capture_max_body_chars() -> u64 {
+    20_000
+}
+
+fn default_network_capture_max_requests() -> u64 {
+    20
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FlowStartArgs {
     url: String,
     #[serde(default)]
@@ -1628,6 +1784,7 @@ enum FlowStep {
     Eval { code: String },
     Click { css: String },
     Fill { css: String, value: String },
+    Select { css: String, value: String },
     Wait { ms: u64 },
     ReadText,
 }
@@ -1639,6 +1796,7 @@ impl FlowStep {
             Self::Eval { .. } => "eval",
             Self::Click { .. } => "click",
             Self::Fill { .. } => "fill",
+            Self::Select { .. } => "select",
             Self::Wait { .. } => "wait",
             Self::ReadText => "read_text",
         }
@@ -1792,10 +1950,41 @@ fn fill_script(css: &str, value: &str) -> Result<String, FacadeError> {
 const selector = {selector};
 const value = {value};
 const element = document.querySelector(selector);
-if (!element) throw new Error(`No element matches selector: ${{selector}}`);
+if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) {{
+  throw new Error(`No text input matches selector: ${{selector}}`);
+}}
+const prototype = element instanceof HTMLInputElement
+  ? HTMLInputElement.prototype
+  : HTMLTextAreaElement.prototype;
+const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
 element.focus();
-element.value = value;
-element.dispatchEvent(new Event("input", {{ bubbles: true }}));
+if (setter) setter.call(element, value);
+else element.value = value;
+element.dispatchEvent(new InputEvent("input", {{ bubbles: true, inputType: "insertText", data: value }}));
+element.dispatchEvent(new Event("change", {{ bubbles: true }}));
+return true;
+}})()"#
+    ))
+}
+
+fn select_script(css: &str, value: &str) -> Result<String, FacadeError> {
+    let selector = serde_json::to_string(css)?;
+    let value = serde_json::to_string(value)?;
+    Ok(format!(
+        r#"(() => {{
+const selector = {selector};
+const value = {value};
+const element = document.querySelector(selector);
+if (!(element instanceof HTMLSelectElement)) {{
+  throw new Error(`No select element matches selector: ${{selector}}`);
+}}
+if (!Array.from(element.options).some((option) => option.value === value)) {{
+  throw new Error(`Select option value not found: ${{value}}`);
+}}
+const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+if (setter) setter.call(element, value);
+else element.value = value;
+element.dispatchEvent(new InputEvent("input", {{ bubbles: true, inputType: "insertReplacementText", data: value }}));
 element.dispatchEvent(new Event("change", {{ bubbles: true }}));
 return true;
 }})()"#
@@ -2086,8 +2275,9 @@ mod tests {
 
     use super::{
         click_script, enforce_extract_limits, extract_tab_id, fill_script, has_page_text,
-        parse_dom_snapshot, BatchFlowArgs, BatchRunArgs, CurrentExtractArgs, ExtractArgs,
-        ExtractLink, ExtractOptions, FlowActArgs, FlowStep,
+        new_flow_session_id, parse_dom_snapshot, select_script, BatchFlowArgs, BatchRunArgs,
+        CurrentExtractArgs, ExtractArgs, ExtractLink, ExtractOptions, FlowActArgs, FlowStep,
+        NetworkCaptureArgs,
     };
 
     #[test]
@@ -2186,19 +2376,48 @@ mod tests {
     }
 
     #[test]
+    fn flow_session_ids_are_short_and_opaque() {
+        let id = new_flow_session_id();
+
+        assert!(id.starts_with("flow-"));
+        assert_eq!(id.len(), 17);
+        assert!(id[5..]
+            .chars()
+            .all(|character| character.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn network_capture_args_use_bounded_defaults() {
+        let args: NetworkCaptureArgs = serde_json::from_value(json!({
+            "url": "https://example.test",
+            "code": "fetch('/api')"
+        }))
+        .unwrap();
+
+        assert_eq!(args.timeout_ms, 10_000);
+        assert_eq!(args.max_body_chars, 20_000);
+        assert_eq!(args.max_requests, 20);
+        assert!(args.include_response_bodies);
+        assert!(args.cleanup);
+        assert!(!args.active);
+    }
+
+    #[test]
     fn flow_steps_parse_explicit_step_types() {
         let args: FlowActArgs = serde_json::from_value(json!({
             "sessionId": "session",
             "steps": [
                 {"type": "goto", "url": "https://example.test"},
+                {"type": "select", "css": "#sort", "value": "lohi"},
                 {"type": "read_text"}
             ]
         }))
         .unwrap();
 
-        assert_eq!(args.steps.len(), 2);
+        assert_eq!(args.steps.len(), 3);
         assert!(matches!(args.steps[0], FlowStep::Goto { .. }));
-        assert!(matches!(args.steps[1], FlowStep::ReadText));
+        assert!(matches!(args.steps[1], FlowStep::Select { .. }));
+        assert!(matches!(args.steps[2], FlowStep::ReadText));
     }
 
     #[test]
@@ -2208,6 +2427,11 @@ mod tests {
 
         let fill = fill_script("#name", "Alice\nBob").unwrap();
         assert!(fill.contains(r#""Alice\nBob""#));
+        assert!(fill.contains("HTMLInputElement.prototype"));
+
+        let select = select_script("#sort", "lohi").unwrap();
+        assert!(select.contains(r#""lohi""#));
+        assert!(select.contains("HTMLSelectElement.prototype"));
     }
 
     #[test]

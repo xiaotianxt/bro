@@ -21,6 +21,7 @@ pi-extension:
 
 live-test:
 	cargo test --test live_extract -- --ignored --nocapture
+	cargo test --test live_network -- --ignored --nocapture
 
 check:
 	pnpm version:check

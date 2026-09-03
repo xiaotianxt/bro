@@ -35,6 +35,7 @@ interface NetworkEntry {
   fromServiceWorker?: boolean | undefined
   encodedDataLength?: number | undefined
   timing?: NetworkTiming | undefined
+  finished?: boolean | undefined
 }
 
 interface NetworkTiming {
@@ -118,6 +119,11 @@ interface LoadingFailedParams {
   requestId: string
   timestamp: number
   errorText: string
+}
+
+interface LoadingFinishedParams {
+  requestId: string
+  encodedDataLength: number
 }
 
 // ---------------------------------------------------------------------------
@@ -336,6 +342,7 @@ async function enableNetworkMonitoring(tabId: number): Promise<void> {
         delete existing.fromServiceWorker
         delete existing.encodedDataLength
         delete existing.timing
+        delete existing.finished
         existing.timestamp = p.timestamp
       } else {
         buf.push({
@@ -381,11 +388,25 @@ async function enableNetworkMonitoring(tabId: number): Promise<void> {
       if (entry) {
         entry.failed = true
         entry.errorText = p.errorText
+        entry.finished = true
       }
     },
   )
 
-  unsubs.push(unsubRequest, unsubResponse, unsubFailed)
+  const unsubFinished = cdpSession.onEvent(
+    tabId,
+    'Network.loadingFinished',
+    (params: unknown) => {
+      const p = params as LoadingFinishedParams
+      const entry = buf.find((e) => e.requestId === p.requestId)
+      if (entry) {
+        entry.finished = true
+        entry.encodedDataLength = p.encodedDataLength
+      }
+    },
+  )
+
+  unsubs.push(unsubRequest, unsubResponse, unsubFailed, unsubFinished)
 }
 
 /**
@@ -747,6 +768,206 @@ function formatNetworkEntry(
 }
 
 // ---------------------------------------------------------------------------
+// capture_network tool — one request owns monitor, trigger, collection, and cleanup
+// ---------------------------------------------------------------------------
+
+interface CaptureNetworkArgs {
+  code: string
+  urlIncludes?: string
+  timeoutMs: number
+  includeResponseBodies: boolean
+  includeHeaders: boolean
+  includePostData: boolean
+  maxBodyChars: number
+  maxRequests: number
+}
+
+interface CaptureEvaluateResult {
+  result: {
+    value?: { result?: string; isError?: boolean }
+    description?: string
+  }
+  exceptionDetails?: {
+    text: string
+    exception?: { description?: string }
+  }
+}
+
+function validateCaptureNetworkArgs(args: unknown): CaptureNetworkArgs {
+  if (typeof args !== 'object' || args === null) {
+    throw new Error('capture_network: args must be an object')
+  }
+  const value = args as Record<string, unknown>
+  if (typeof value['code'] !== 'string' || value['code'].trim() === '') {
+    throw new Error('capture_network: "code" must be a non-empty JavaScript expression')
+  }
+
+  const timeoutMs = boundedInteger(value['timeoutMs'], 'timeoutMs', 1, 20_000, 10_000)
+  const maxBodyChars = boundedInteger(value['maxBodyChars'], 'maxBodyChars', 1, 60_000, 20_000)
+  const maxRequests = boundedInteger(value['maxRequests'], 'maxRequests', 1, 100, 20)
+  const urlIncludes = value['urlIncludes']
+  if (urlIncludes !== undefined && (typeof urlIncludes !== 'string' || urlIncludes === '')) {
+    throw new Error('capture_network: "urlIncludes" must be a non-empty string')
+  }
+
+  return {
+    code: value['code'],
+    ...(typeof urlIncludes === 'string' ? { urlIncludes } : {}),
+    timeoutMs,
+    includeResponseBodies: optionalBoolean(value['includeResponseBodies'], 'includeResponseBodies', true),
+    includeHeaders: optionalBoolean(value['includeHeaders'], 'includeHeaders', false),
+    includePostData: optionalBoolean(value['includePostData'], 'includePostData', false),
+    maxBodyChars,
+    maxRequests,
+  }
+}
+
+function boundedInteger(
+  value: unknown,
+  name: string,
+  minimum: number,
+  maximum: number,
+  fallback: number,
+): number {
+  if (value === undefined) return fallback
+  if (!Number.isInteger(value) || (value as number) < minimum || (value as number) > maximum) {
+    throw new Error(`capture_network: "${name}" must be an integer between ${minimum} and ${maximum}`)
+  }
+  return value as number
+}
+
+function optionalBoolean(value: unknown, name: string, fallback: boolean): boolean {
+  if (value === undefined) return fallback
+  if (typeof value !== 'boolean') {
+    throw new Error(`capture_network: "${name}" must be a boolean`)
+  }
+  return value
+}
+
+async function evaluateCaptureTrigger(tabId: number, code: string): Promise<string> {
+  const expression = `(async function() { try { var __r = eval(${JSON.stringify(code)}); if (typeof __r === 'function') __r = __r(); __r = await __r; return { result: __r === undefined ? 'undefined' : (() => { try { return JSON.stringify(__r) } catch(e) { return String(__r) } })(), isError: false }; } catch(e) { return { result: e instanceof Error ? e.message : String(e), isError: true }; } })()`
+  const response = await cdpSession.send<CaptureEvaluateResult>(tabId, 'Runtime.evaluate', {
+    expression,
+    returnByValue: true,
+    awaitPromise: true,
+  })
+  if (response.exceptionDetails) {
+    throw new Error(
+      response.exceptionDetails.exception?.description ??
+        response.exceptionDetails.text ??
+        'Network capture trigger failed',
+    )
+  }
+  const value = response.result.value
+  if (value?.isError) throw new Error(value.result ?? 'Network capture trigger failed')
+  return value?.result ?? response.result.description ?? 'undefined'
+}
+
+function matchingNetworkEntries(tabId: number, args: CaptureNetworkArgs): NetworkEntry[] {
+  return getNetworkBuffer(tabId)
+    .filter((entry) => args.urlIncludes === undefined || entry.url.includes(args.urlIncludes))
+    .slice(0, args.maxRequests)
+}
+
+async function waitForMatchingNetworkEntry(
+  tabId: number,
+  args: CaptureNetworkArgs,
+): Promise<NetworkEntry[]> {
+  const deadline = Date.now() + args.timeoutMs
+  while (Date.now() < deadline) {
+    const matches = matchingNetworkEntries(tabId, args)
+    if (matches.some((entry) => entry.finished || entry.failed)) return matches
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  return matchingNetworkEntries(tabId, args)
+}
+
+async function responseBody(
+  tabId: number,
+  entry: NetworkEntry,
+  maxBodyChars: number,
+): Promise<Record<string, unknown>> {
+  try {
+    const result = await cdpSession.send<CDPGetResponseBodyResult>(
+      tabId,
+      'Network.getResponseBody',
+      { requestId: entry.requestId },
+    )
+    const truncated = result.body.length > maxBodyChars
+    return {
+      body: result.body.slice(0, maxBodyChars),
+      base64Encoded: result.base64Encoded,
+      truncated,
+    }
+  } catch (error) {
+    return { bodyError: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+async function executeCaptureNetwork(
+  tabId: number,
+  rawArgs: unknown,
+): Promise<ToolResult> {
+  const args = validateCaptureNetworkArgs(rawArgs)
+  clearNetworkIdleTimer(tabId)
+  const buffer = getNetworkBuffer(tabId)
+  buffer.length = 0
+  await enableNetworkMonitoring(tabId)
+
+  try {
+    const triggerResult = await evaluateCaptureTrigger(tabId, args.code)
+    const matches = await waitForMatchingNetworkEntry(tabId, args)
+    const requests: Array<Record<string, unknown>> = []
+    let remainingBodyChars = args.maxBodyChars
+    for (const entry of matches) {
+      let body: Record<string, unknown> = {}
+      if (args.includeResponseBodies && entry.finished && !entry.failed) {
+        if (remainingBodyChars > 0) {
+          body = await responseBody(tabId, entry, remainingBodyChars)
+          if (typeof body['body'] === 'string') {
+            remainingBodyChars -= body['body'].length
+          }
+        } else {
+          body = { bodyOmitted: 'total response body limit reached' }
+        }
+      }
+      requests.push({
+        requestId: entry.requestId,
+        method: entry.method,
+        url: entry.url,
+        ...(entry.status === undefined ? {} : { status: entry.status }),
+        ...(entry.failed ? { failed: true, errorText: entry.errorText } : {}),
+        ...(entry.mimeType === undefined ? {} : { mimeType: entry.mimeType }),
+        ...(entry.encodedDataLength === undefined ? {} : { encodedDataLength: entry.encodedDataLength }),
+        ...(args.includeHeaders
+          ? { requestHeaders: entry.requestHeaders ?? {}, responseHeaders: entry.responseHeaders ?? {} }
+          : {}),
+        ...(args.includePostData ? { postData: entry.postData ?? null } : {}),
+        ...body,
+      })
+    }
+
+    const timedOut =
+      matches.length === 0 ||
+      !matches.some((entry) => entry.status !== undefined || entry.failed)
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          triggerResult,
+          matchedRequests: requests.length,
+          timedOut,
+          requests,
+        }),
+      }],
+      ...(timedOut ? { isError: true } : {}),
+    }
+  } finally {
+    stopNetworkMonitoring(tabId)
+  }
+}
+
+// ---------------------------------------------------------------------------
 // get_response_body tool
 // ---------------------------------------------------------------------------
 
@@ -802,4 +1023,5 @@ async function executeGetResponseBody(
 
 registerTool('read_console_messages', executeReadConsoleMessages)
 registerTool('read_network_requests', executeReadNetworkRequests)
+registerTool('capture_network', executeCaptureNetwork)
 registerTool('get_response_body', executeGetResponseBody)

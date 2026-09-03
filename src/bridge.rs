@@ -348,8 +348,8 @@ impl BrowserBridge {
                 self.complete_pending(
                     &message.request_id,
                     Ok(BridgeToolResult {
+                        is_error: embedded_tool_error(&message.result),
                         result: message.result,
-                        is_error: false,
                     }),
                 )
                 .await;
@@ -418,6 +418,13 @@ struct ResolvedBrowser {
     sender: mpsc::UnboundedSender<ServerToExtension>,
 }
 
+fn embedded_tool_error(result: &Value) -> bool {
+    result
+        .get("isError")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 fn error_tool_result(message: &str) -> BridgeToolResult {
     BridgeToolResult {
         result: serde_json::json!({ "message": message }),
@@ -454,7 +461,7 @@ mod tests {
 
     use crate::protocol::ConnectMessage;
 
-    use super::{BridgeError, BrowserBridge};
+    use super::{embedded_tool_error, BridgeError, BrowserBridge};
 
     #[tokio::test]
     async fn dispatch_without_browser_returns_no_browser_error() {
@@ -472,6 +479,17 @@ mod tests {
         assert_eq!(status.extension_count, 0);
         assert_eq!(status.default_browser_id, None);
         assert!(status.extensions.is_empty());
+    }
+
+    #[test]
+    fn recognizes_embedded_tool_errors() {
+        assert!(embedded_tool_error(&json!({
+            "content": [{"type": "text", "text": "failed"}],
+            "isError": true
+        })));
+        assert!(!embedded_tool_error(&json!({
+            "content": [{"type": "text", "text": "ok"}]
+        })));
     }
 
     #[tokio::test]

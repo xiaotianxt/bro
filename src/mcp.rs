@@ -86,6 +86,7 @@ impl ServerHandler for BrowserMcpServer {
             ToolRoute::Extract => Ok(facade_result(self.facade.extract(args).await)),
             ToolRoute::CurrentExtract => Ok(facade_result(self.facade.current_extract(args).await)),
             ToolRoute::BatchExtract => Ok(facade_result(self.facade.batch_extract(args).await)),
+            ToolRoute::NetworkCapture => Ok(facade_result(self.facade.network_capture(args).await)),
             ToolRoute::FlowStart => Ok(facade_result(self.facade.flow_start(args).await)),
             ToolRoute::FlowObserve => Ok(facade_result(self.facade.flow_observe(args).await)),
             ToolRoute::FlowAct => Ok(facade_result(self.facade.flow_act(args).await)),
@@ -143,6 +144,9 @@ async fn browsers_context(bridge: &BrowserBridge) -> CallToolResult {
 
 fn facade_result(result: Result<serde_json::Value, crate::facade::FacadeError>) -> CallToolResult {
     match result {
+        Ok(value) if value.get("status").and_then(serde_json::Value::as_str) == Some("failed") => {
+            CallToolResult::structured_error(value)
+        }
         Ok(value) => CallToolResult::structured(value),
         Err(error) => tool_error(error.to_string()),
     }
@@ -189,4 +193,20 @@ fn bridge_error(error: BridgeError) -> CallToolResult {
 
 fn tool_error(message: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![Content::text(message.into())])
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::facade_result;
+
+    #[test]
+    fn failed_facade_status_becomes_an_mcp_tool_error() {
+        let failed = facade_result(Ok(json!({"status": "failed", "stoppedAt": 1})));
+        let succeeded = facade_result(Ok(json!({"status": "ok"})));
+
+        assert_eq!(failed.is_error, Some(true));
+        assert_ne!(succeeded.is_error, Some(true));
+    }
 }

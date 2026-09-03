@@ -74,6 +74,7 @@ describe("bro Pi extension", () => {
       async listTools() {
         return [
           upstreamTool("browser.extract"),
+          upstreamTool("browser.network.capture"),
           upstreamTool("javascript_tool"),
           upstreamTool("session_name"),
           upstreamTool("tabs_finalize"),
@@ -97,6 +98,7 @@ describe("bro Pi extension", () => {
     expect(harness.activeTools()).toContain("bash");
     expect(harness.activeTools()).toContain(BRO_SEARCH_TOOL_NAME);
     expect(harness.activeTools()).toContain("bro_browser_extract");
+    expect(harness.activeTools()).toContain("bro_browser_network_capture");
     expect(harness.activeTools()).not.toContain("bro_javascript_tool");
     expect(calls[0]).toEqual({
       name: "session_name",
