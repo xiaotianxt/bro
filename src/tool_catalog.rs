@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rmcp::model::{JsonObject, Tool};
+use rmcp::model::{JsonObject, Meta, Tool};
 use serde_json::{json, Map, Value};
 
 const ENVELOPE_TAB_TOOLS: &[&str] = &[
@@ -9,9 +9,11 @@ const ENVELOPE_TAB_TOOLS: &[&str] = &[
     "resize_window",
     "read_page",
     "find",
+    "frames_list",
     "javascript_tool",
     "form_input",
     "get_page_text",
+    "extract_page",
     "click_element",
     "scroll_element",
     "fill_element",
@@ -35,6 +37,7 @@ pub enum ToolRoute {
     Extract,
     CurrentExtract,
     BatchExtract,
+    ConsoleCapture,
     NetworkCapture,
     FlowStart,
     FlowObserve,
@@ -107,7 +110,70 @@ pub fn take_agent_done_args(mut args: JsonObject) -> Result<(Vec<i64>, Option<St
 
 impl ToolSpec {
     fn to_tool(self) -> Tool {
-        Tool::new(self.name, self.description, Arc::new(schema(self.schema)))
+        let mut tool = Tool::new(self.name, self.description, Arc::new(schema(self.schema)));
+        let mut meta = Map::new();
+        if let Some(capability) = capability_for(self.name) {
+            meta.insert("bro/capability".to_string(), json!(capability));
+        }
+        if let Some(visibility) = pi_visibility_for(self.name) {
+            meta.insert("bro/piVisibility".to_string(), json!(visibility));
+        }
+        if !meta.is_empty() {
+            tool.meta = Some(Meta(meta));
+        }
+        tool
+    }
+}
+
+fn pi_visibility_for(name: &str) -> Option<&'static str> {
+    match name {
+        "agent_done"
+        | "browser.batch.run"
+        | "tabs_context_mcp"
+        | "tabs_create_mcp"
+        | "session_name"
+        | "get_page_text"
+        | "extract_page"
+        | "read_network_requests"
+        | "get_response_body" => Some("internal"),
+        _ => None,
+    }
+}
+
+fn capability_for(name: &str) -> Option<&'static str> {
+    match name {
+        "browsers_context" | "tabs_context" | "tabs_create" | "tabs_claim" | "tabs_finalize"
+        | "tabs_activate" | "tabs_close" => Some("tabs"),
+        "read_page" | "find" | "form_input" | "click_element" | "scroll_element"
+        | "fill_element" | "get_element_info" | "wait_for_element" => Some("accessibility"),
+        "frames_list" => Some("frames"),
+        "browser.console.capture" | "read_console_messages" => Some("console"),
+        "browser.network.capture" | "read_network_requests" | "get_response_body" => {
+            Some("network")
+        }
+        "computer" | "gif_creator" => Some("visual"),
+        "file_upload" | "upload_image" => Some("upload"),
+        "shortcuts_list" | "shortcuts_execute" => Some("shortcuts"),
+        "userscripts_register" | "userscripts_unregister" | "userscripts_list" => {
+            Some("userscripts")
+        }
+        "browser.flow.start"
+        | "browser.flow.observe"
+        | "browser.flow.act"
+        | "browser.flow.finish" => Some("interaction"),
+        "navigate" | "resize_window" | "javascript_tool" => Some("advanced"),
+        "agent_done"
+        | "browser.batch.run"
+        | "browser.batch.flow"
+        | "browser.extract"
+        | "browser.current.extract"
+        | "browser.batch.extract"
+        | "tabs_context_mcp"
+        | "tabs_create_mcp"
+        | "session_name"
+        | "get_page_text"
+        | "extract_page" => Some("internal"),
+        _ => None,
     }
 }
 
@@ -153,6 +219,12 @@ static SPECS: &[ToolSpec] = &[
         description: "Extract multiple URLs in parallel using browser-side DOM quiet readiness. Returns compact text by default; links and a11y fallback are opt-in. Defaults: concurrency 6, cleanup true, active false.",
         route: ToolRoute::BatchExtract,
         schema: "browser_batch_extract",
+    },
+    ToolSpec {
+        name: "browser.console.capture",
+        description: "Open one URL, enable browser console instrumentation, evaluate one JavaScript expression that triggers logs, collect console messages, then clean up in one call. Use instead of carrying console-monitor state across model turns.",
+        route: ToolRoute::ConsoleCapture,
+        schema: "browser_console_capture",
     },
     ToolSpec {
         name: "browser.network.capture",
@@ -258,7 +330,7 @@ static SPECS: &[ToolSpec] = &[
     },
     forward(
         "computer",
-        "Interact with the browser by screenshot, click, type, scroll, drag, or key input.",
+        "Interact with the browser by screenshot, click, type, scroll, drag, or key input. Real input actions bring the target tab to the foreground because Chromium can stall Input.* dispatch for background targets; screenshot and zoom remain background-capable.",
         "computer",
     ),
     forward(
@@ -282,8 +354,13 @@ static SPECS: &[ToolSpec] = &[
         "find",
     ),
     forward(
+        "frames_list",
+        "List the main frame and child frames for a tab, including stable frameIds for frame-aware flow eval, click, fill, select, and read_text steps.",
+        "frames_list",
+    ),
+    forward(
         "javascript_tool",
-        "Execute JavaScript in the page context.",
+        "Execute JavaScript in the page context, optionally targeting a frameId from frames_list.",
         "javascript_tool",
     ),
     forward(
@@ -324,7 +401,7 @@ static SPECS: &[ToolSpec] = &[
     ),
     forward(
         "read_console_messages",
-        "Read console logs and exceptions from the browser.",
+        "Begin or read best-effort console monitoring for one tab. Prefer browser.console.capture when an action must trigger the message in a reliable one-call workflow.",
         "read_console_messages",
     ),
     forward(
@@ -528,6 +605,15 @@ fn schema(kind: &str) -> JsonObject {
             ("active", json!({"type":"boolean","default":false})),
             ("browserId", browser_id_schema()),
         ]),
+        "browser_console_capture" => props(&[
+            ("url", json!({"type":"string","format":"uri","description":"Page to open before console capture starts."})),
+            ("code", json!({"type":"string","minLength":1,"description":"JavaScript trigger evaluated after console monitoring starts. Returned Promises are awaited; a zero-argument function expression is invoked automatically."})),
+            ("timeoutMs", json!({"type":"integer","minimum":1,"maximum":20000,"default":5000,"description":"Maximum time to wait for the first console message."})),
+            ("maxMessages", json!({"type":"integer","minimum":1,"maximum":500,"default":100})),
+            ("cleanup", json!({"type":"boolean","default":true})),
+            ("active", json!({"type":"boolean","default":false})),
+            ("browserId", browser_id_schema()),
+        ]),
         "browser_network_capture" => props(&[
             ("url", json!({"type":"string","format":"uri","description":"Page to open before network capture starts."})),
             ("code", json!({"type":"string","minLength":1,"description":"JavaScript trigger evaluated after monitoring starts. Returned Promises are awaited; a zero-argument function expression is invoked automatically. Examples: fetch('/api') or () => fetch('/api')."})),
@@ -726,12 +812,17 @@ fn schema(kind: &str) -> JsonObject {
             ("tabId", tab_id_schema("Numeric tab ID to search.")),
             ("browserId", browser_id_schema()),
         ]),
+        "frames_list" => props(&[
+            ("tabId", tab_id_schema("Numeric tab ID whose frame tree should be listed.")),
+            ("browserId", browser_id_schema()),
+        ]),
         "javascript_tool" => props(&[
             ("code", json!({"type":"string","minLength":1})),
             (
                 "awaitPromise",
                 json!({"type":"boolean","default":false,"description":"Await any returned Promise before serializing the result."}),
             ),
+            ("frameId", json!({"type":"string","minLength":1,"description":"Optional child frameId from frames_list. Omit for the main frame."})),
             ("tabId", tab_id_schema("Numeric tab ID to run code in.")),
             ("browserId", browser_id_schema()),
         ]),
@@ -909,7 +1000,7 @@ fn required_fields(kind: &str) -> Option<&'static [&'static str]> {
     match kind {
         "agent_done" => Some(&["tabIds"]),
         "browser_extract" => Some(&["url"]),
-        "browser_network_capture" => Some(&["url", "code"]),
+        "browser_console_capture" | "browser_network_capture" => Some(&["url", "code"]),
         "browser_batch_flow" => Some(&["steps"]),
         "browser_flow_start" => Some(&["url"]),
         "browser_flow_observe" | "browser_flow_finish" => Some(&["sessionId"]),
@@ -936,6 +1027,7 @@ fn flow_steps_schema(description: &str) -> Value {
                 "url": {"type": "string", "format": "uri", "description": "Destination for a goto step."},
                 "code": {"type": "string", "description": "JavaScript expression for an eval step. Returned Promises are awaited. Do not use a top-level return; wrap multi-statement code as (() => { ...; return value; })()."},
                 "css": {"type": "string", "minLength": 1, "description": "CSS selector for click, fill, or select."},
+                "frameId": {"type": "string", "minLength": 1, "description": "Optional child frameId from frames_list for eval, click, fill, select, or read_text. Omit for the main frame."},
                 "value": {"type": "string", "description": "Text for fill or option value for select."},
                 "ms": {"type": "integer", "minimum": 0, "maximum": 30000, "description": "Delay in milliseconds for wait."}
             }
@@ -971,7 +1063,39 @@ fn take_i64(args: &mut JsonObject, key: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{route_for, schema, ToolRoute};
+    use serde_json::json;
+
+    use super::{find_tool, prepare_forward_args, route_for, schema, ToolRoute};
+
+    #[test]
+    fn every_tab_enveloped_tool_extracts_tab_and_browser_ids() {
+        for tool in super::specs().iter().filter(|tool| {
+            matches!(
+                tool.route,
+                ToolRoute::Forward {
+                    tab_id_envelope: true
+                }
+            )
+        }) {
+            let (arguments, tab_id, browser_id) = prepare_forward_args(
+                tool.name,
+                json!({"tabId": 42, "browserId": "browser-1"})
+                    .as_object()
+                    .expect("arguments should be an object")
+                    .clone(),
+            );
+
+            assert_eq!(tab_id, Some(42), "{} did not extract tabId", tool.name);
+            assert_eq!(
+                browser_id.as_deref(),
+                Some("browser-1"),
+                "{} did not extract browserId",
+                tool.name
+            );
+            assert!(!arguments.contains_key("tabId"));
+            assert!(!arguments.contains_key("browserId"));
+        }
+    }
 
     #[test]
     fn flow_schema_exposes_select_and_eval_contract() {
@@ -985,6 +1109,40 @@ mod tests {
         assert!(step["properties"]["code"]["description"]
             .as_str()
             .is_some_and(|description| description.contains("expression")));
+        assert_eq!(step["properties"]["frameId"]["type"], "string");
+    }
+
+    #[test]
+    fn tools_publish_server_owned_capability_metadata() {
+        let tool = find_tool("userscripts_register").expect("tool should exist");
+        let meta = tool.meta.expect("tool should include metadata");
+        let internal = find_tool("agent_done").expect("tool should exist");
+        let internal_meta = internal.meta.expect("tool should include metadata");
+
+        assert_eq!(meta.0["bro/capability"], "userscripts");
+        assert_eq!(internal_meta.0["bro/piVisibility"], "internal");
+    }
+
+    #[test]
+    fn frame_listing_is_a_tab_enveloped_tool() {
+        assert_eq!(
+            route_for("frames_list"),
+            Some(ToolRoute::Forward {
+                tab_id_envelope: true
+            })
+        );
+        let schema = schema("frames_list");
+        assert_eq!(schema["properties"]["tabId"]["type"], "integer");
+    }
+
+    #[test]
+    fn console_capture_is_a_first_class_facade() {
+        assert_eq!(
+            route_for("browser.console.capture"),
+            Some(ToolRoute::ConsoleCapture)
+        );
+        let schema = schema("browser_console_capture");
+        assert_eq!(schema["required"], serde_json::json!(["url", "code"]));
     }
 
     #[test]

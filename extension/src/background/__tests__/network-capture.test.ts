@@ -13,14 +13,12 @@ function installChromeMock(): void {
       _target: chrome.debugger.Debuggee,
       method: string,
       _params: object,
-      callback: (result?: unknown) => void,
     ) => {
       if (method === 'Runtime.evaluate') {
         if (triggerFails) {
-          callback({
+          return Promise.resolve({
             result: { value: { result: 'trigger failed', isError: true } },
           })
-          return
         }
         emitDebuggerEvent(
           { tabId: 42 },
@@ -60,17 +58,15 @@ function installChromeMock(): void {
           'Network.loadingFinished',
           { requestId: 'request-1', encodedDataLength: 41 },
         )
-        callback({ result: { value: { result: '"done"', isError: false } } })
-        return
+        return Promise.resolve({ result: { value: { result: '"done"', isError: false } } })
       }
       if (method === 'Network.getResponseBody') {
-        callback({
+        return Promise.resolve({
           body: '{"args":{"bro":"benchmark"}}',
           base64Encoded: false,
         })
-        return
       }
-      callback({})
+      return Promise.resolve({})
     },
   )
 

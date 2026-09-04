@@ -10,6 +10,19 @@
   expressions, shorter flow IDs, and explicit flow-step schemas.
 - Keep the outcome-level network facade active by default in Pi after benchmark
   runs reduced the network task from 0/3 to 3/3 success.
+- Fix tab-envelope extraction for every forwarded tab tool, including
+  `extract_page`, with a catalog-wide invariant test.
+- Bound CDP commands, detach failed sessions, foreground real input targets,
+  preserve held mouse-button state during drag, and publish screenshot coordinate
+  and device-scale guidance.
+- Add `frames_list` plus frame-aware flow eval, click, fill, select, and read
+  steps for child-frame interaction.
+- Add one-call `browser.console.capture` and server-owned capability metadata so
+  Pi loads coherent interaction, tabs, frames, accessibility, console, visual,
+  upload, shortcut, and user-script tool packs.
+- Keep nine internal or compatibility tools on the MCP server while omitting
+  them from Pi registration; retain `tabs_finalize` in the dynamic tab pack for
+  explicit keep/handoff lifecycle work.
 
 ## 1.0.1
 

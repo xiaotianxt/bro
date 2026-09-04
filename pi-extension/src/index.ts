@@ -53,9 +53,9 @@ export function installBroPiExtension(
       }),
       limit: Type.Optional(
         Type.Integer({
-          description: "Maximum tools to enable. Defaults to 5.",
+          description: "Maximum tools to enable. Defaults to 8.",
           minimum: 1,
-          maximum: 8,
+          maximum: 10,
         }),
       ),
     }),
@@ -70,7 +70,7 @@ export function installBroPiExtension(
         throw error;
       }
 
-      const matches = searchBroCatalog(catalog, params.query, params.limit ?? 5);
+      const matches = searchBroCatalog(catalog, params.query, params.limit ?? 8);
       const active = pi.getActiveTools();
       const activeSet = new Set(active);
       const added = matches.map((tool) => tool.piName).filter((name) => !activeSet.has(name));
@@ -223,7 +223,6 @@ function exposeDefaultTools(pi: PiExtensionApi, catalog: BroCatalogTool[]): void
 
 async function syncSessionName(runtime: RuntimeState): Promise<void> {
   if (!runtime.session.id || !runtime.session.name) return;
-  if (!runtime.catalog?.some((tool) => tool.upstream.name === "session_name")) return;
 
   await runtime.client.callTool(
     "session_name",

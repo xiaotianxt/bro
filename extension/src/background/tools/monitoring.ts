@@ -427,6 +427,27 @@ function cleanupTab(tabId: number): void {
   monitoringEnabled.delete(tabId)
 }
 
+function stopConsoleMonitoring(tabId: number): void {
+  const unsubs = unsubscribeFns.get(tabId)
+  if (unsubs) {
+    for (const fn of unsubs.console) {
+      fn()
+    }
+    unsubs.console.length = 0
+    compactUnsubscribers(tabId)
+  }
+
+  const state = monitoringEnabled.get(tabId)
+  if (state) {
+    state.console = false
+    compactMonitoringState(tabId)
+  }
+
+  void cdpSession.detachIfIdle(tabId).catch(() => {
+    // Best-effort cleanup after one-call console capture.
+  })
+}
+
 function stopNetworkMonitoring(tabId: number): void {
   clearNetworkIdleTimer(tabId)
 
@@ -802,9 +823,9 @@ function validateCaptureNetworkArgs(args: unknown): CaptureNetworkArgs {
     throw new Error('capture_network: "code" must be a non-empty JavaScript expression')
   }
 
-  const timeoutMs = boundedInteger(value['timeoutMs'], 'timeoutMs', 1, 20_000, 10_000)
-  const maxBodyChars = boundedInteger(value['maxBodyChars'], 'maxBodyChars', 1, 60_000, 20_000)
-  const maxRequests = boundedInteger(value['maxRequests'], 'maxRequests', 1, 100, 20)
+  const timeoutMs = boundedInteger('capture_network', value['timeoutMs'], 'timeoutMs', 1, 20_000, 10_000)
+  const maxBodyChars = boundedInteger('capture_network', value['maxBodyChars'], 'maxBodyChars', 1, 60_000, 20_000)
+  const maxRequests = boundedInteger('capture_network', value['maxRequests'], 'maxRequests', 1, 100, 20)
   const urlIncludes = value['urlIncludes']
   if (urlIncludes !== undefined && (typeof urlIncludes !== 'string' || urlIncludes === '')) {
     throw new Error('capture_network: "urlIncludes" must be a non-empty string')
@@ -814,15 +835,16 @@ function validateCaptureNetworkArgs(args: unknown): CaptureNetworkArgs {
     code: value['code'],
     ...(typeof urlIncludes === 'string' ? { urlIncludes } : {}),
     timeoutMs,
-    includeResponseBodies: optionalBoolean(value['includeResponseBodies'], 'includeResponseBodies', true),
-    includeHeaders: optionalBoolean(value['includeHeaders'], 'includeHeaders', false),
-    includePostData: optionalBoolean(value['includePostData'], 'includePostData', false),
+    includeResponseBodies: optionalBoolean('capture_network', value['includeResponseBodies'], 'includeResponseBodies', true),
+    includeHeaders: optionalBoolean('capture_network', value['includeHeaders'], 'includeHeaders', false),
+    includePostData: optionalBoolean('capture_network', value['includePostData'], 'includePostData', false),
     maxBodyChars,
     maxRequests,
   }
 }
 
 function boundedInteger(
+  owner: string,
   value: unknown,
   name: string,
   minimum: number,
@@ -831,15 +853,15 @@ function boundedInteger(
 ): number {
   if (value === undefined) return fallback
   if (!Number.isInteger(value) || (value as number) < minimum || (value as number) > maximum) {
-    throw new Error(`capture_network: "${name}" must be an integer between ${minimum} and ${maximum}`)
+    throw new Error(`${owner}: "${name}" must be an integer between ${minimum} and ${maximum}`)
   }
   return value as number
 }
 
-function optionalBoolean(value: unknown, name: string, fallback: boolean): boolean {
+function optionalBoolean(owner: string, value: unknown, name: string, fallback: boolean): boolean {
   if (value === undefined) return fallback
   if (typeof value !== 'boolean') {
-    throw new Error(`capture_network: "${name}" must be a boolean`)
+    throw new Error(`${owner}: "${name}" must be a boolean`)
   }
   return value
 }
@@ -861,6 +883,71 @@ async function evaluateCaptureTrigger(tabId: number, code: string): Promise<stri
   const value = response.result.value
   if (value?.isError) throw new Error(value.result ?? 'Network capture trigger failed')
   return value?.result ?? response.result.description ?? 'undefined'
+}
+
+interface CaptureConsoleArgs {
+  code: string
+  timeoutMs: number
+  maxMessages: number
+}
+
+function validateCaptureConsoleArgs(args: unknown): CaptureConsoleArgs {
+  if (typeof args !== 'object' || args === null) {
+    throw new Error('capture_console: args must be an object')
+  }
+  const value = args as Record<string, unknown>
+  if (typeof value['code'] !== 'string' || value['code'].trim() === '') {
+    throw new Error('capture_console: "code" must be a non-empty JavaScript expression')
+  }
+  return {
+    code: value['code'],
+    timeoutMs: boundedInteger('capture_console', value['timeoutMs'], 'timeoutMs', 1, 20_000, 5_000),
+    maxMessages: boundedInteger('capture_console', value['maxMessages'], 'maxMessages', 1, 500, 100),
+  }
+}
+
+async function waitForConsoleMessages(
+  tabId: number,
+  timeoutMs: number,
+): Promise<ConsoleEntry[]> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const messages = getConsoleBuffer(tabId)
+    if (messages.length > 0) return messages
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  return getConsoleBuffer(tabId)
+}
+
+async function executeCaptureConsole(
+  tabId: number,
+  rawArgs: unknown,
+): Promise<ToolResult> {
+  const args = validateCaptureConsoleArgs(rawArgs)
+  const buffer = getConsoleBuffer(tabId)
+  buffer.length = 0
+  await enableConsoleMonitoring(tabId)
+
+  try {
+    const triggerResult = await evaluateCaptureTrigger(tabId, args.code)
+    const messages = (await waitForConsoleMessages(tabId, args.timeoutMs))
+      .slice(0, args.maxMessages)
+    const timedOut = messages.length === 0
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          triggerResult,
+          matchedMessages: messages.length,
+          timedOut,
+          messages,
+        }),
+      }],
+      ...(timedOut ? { isError: true } : {}),
+    }
+  } finally {
+    stopConsoleMonitoring(tabId)
+  }
 }
 
 function matchingNetworkEntries(tabId: number, args: CaptureNetworkArgs): NetworkEntry[] {
@@ -1022,6 +1109,7 @@ async function executeGetResponseBody(
 // ---------------------------------------------------------------------------
 
 registerTool('read_console_messages', executeReadConsoleMessages)
+registerTool('capture_console', executeCaptureConsole)
 registerTool('read_network_requests', executeReadNetworkRequests)
 registerTool('capture_network', executeCaptureNetwork)
 registerTool('get_response_body', executeGetResponseBody)

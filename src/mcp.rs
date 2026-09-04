@@ -86,6 +86,7 @@ impl ServerHandler for BrowserMcpServer {
             ToolRoute::Extract => Ok(facade_result(self.facade.extract(args).await)),
             ToolRoute::CurrentExtract => Ok(facade_result(self.facade.current_extract(args).await)),
             ToolRoute::BatchExtract => Ok(facade_result(self.facade.batch_extract(args).await)),
+            ToolRoute::ConsoleCapture => Ok(facade_result(self.facade.console_capture(args).await)),
             ToolRoute::NetworkCapture => Ok(facade_result(self.facade.network_capture(args).await)),
             ToolRoute::FlowStart => Ok(facade_result(self.facade.flow_start(args).await)),
             ToolRoute::FlowObserve => Ok(facade_result(self.facade.flow_observe(args).await)),

@@ -41,6 +41,7 @@ export interface BroCatalogTool {
   upstream: Tool;
   piName: string;
   searchText: string;
+  capability?: string;
 }
 
 export interface BroToolDetails {
@@ -70,7 +71,9 @@ export function buildBroCatalog(
 ): BroCatalogTool[] {
   const existing = new Set(existingPiToolNames);
   const byPiName = new Map<string, string>();
-  const catalog = tools.map((upstream) => {
+  const catalog = tools
+    .filter((tool) => toolPiVisibility(tool) !== "internal")
+    .map((upstream) => {
     const piName = normalizeBroToolName(upstream.name);
     const previous = byPiName.get(piName);
     if (previous) {
@@ -86,30 +89,62 @@ export function buildBroCatalog(
     const propertyNames = isRecord(upstream.inputSchema.properties)
       ? Object.keys(upstream.inputSchema.properties)
       : [];
+    const capability = toolCapability(upstream);
     return {
       upstream,
       piName,
-      searchText: [upstream.name, piName, upstream.description ?? "", ...propertyNames]
+      ...(capability ? { capability } : {}),
+      searchText: [
+        upstream.name,
+        piName,
+        upstream.description ?? "",
+        capability ?? "",
+        ...propertyNames,
+      ]
         .join(" ")
         .toLowerCase(),
-    };
-  });
+      };
+    });
 
   return catalog;
 }
+
+const CAPABILITY_ALIASES: Record<string, string[]> = {
+  interaction: ["interact", "interaction", "multi-step", "click", "wait for", "page action", "form workflow"],
+  tabs: ["existing tab", "browser tab", "claim tab", "tabs"],
+  accessibility: ["accessibility", "refid", "element reference", "shadow dom", "shadow"],
+  frames: ["iframe", "child frame", "frame"],
+  console: ["console", "page error", "javascript error", "logs"],
+  network: ["network", "request body", "response body", "http request"],
+  visual: ["visual", "canvas", "screenshot", "coordinate", "drag"],
+  upload: ["upload", "file input"],
+  userscripts: ["user script", "userscript", "persistent script", "persistent automation"],
+  shortcuts: ["shortcut", "keyboard command"],
+  advanced: ["raw javascript", "resize window", "advanced browser"],
+};
 
 export function searchBroCatalog(
   catalog: BroCatalogTool[],
   query: string,
   limit: number,
 ): BroCatalogTool[] {
+  const normalizedQuery = query.toLowerCase();
+  const requestedCapabilities = new Set(
+    Object.entries(CAPABILITY_ALIASES)
+      .filter(([, aliases]) => aliases.some((alias) => normalizedQuery.includes(alias)))
+      .map(([capability]) => capability),
+  );
+  const packed = catalog.filter(
+    (tool) => tool.capability && requestedCapabilities.has(tool.capability),
+  );
+  const packedNames = new Set(packed.map((tool) => tool.piName));
   const terms = query
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter(Boolean);
   if (terms.length === 0) return [];
 
-  return catalog
+  const lexical = catalog
     .map((tool, index) => {
       const name = `${tool.upstream.name} ${tool.piName}`.toLowerCase();
       const score = terms.reduce((total, term) => {
@@ -122,8 +157,24 @@ export function searchBroCatalog(
     })
     .filter((entry) => entry.score > 0)
     .sort((left, right) => right.score - left.score || left.index - right.index)
-    .slice(0, limit)
-    .map((entry) => entry.tool);
+    .map((entry) => entry.tool)
+    .filter((tool) => !packedNames.has(tool.piName));
+
+  return [...packed, ...lexical].slice(0, limit);
+}
+
+function toolCapability(tool: Tool): string | undefined {
+  const meta = tool._meta;
+  if (!isRecord(meta)) return undefined;
+  const capability = meta["bro/capability"];
+  return typeof capability === "string" && capability.length > 0 ? capability : undefined;
+}
+
+function toolPiVisibility(tool: Tool): string | undefined {
+  const meta = tool._meta;
+  if (!isRecord(meta)) return undefined;
+  const visibility = meta["bro/piVisibility"];
+  return typeof visibility === "string" && visibility.length > 0 ? visibility : undefined;
 }
 
 export function prepareBroArguments(

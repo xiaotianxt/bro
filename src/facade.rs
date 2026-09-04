@@ -219,6 +219,67 @@ impl BrowserFacade {
         }))
     }
 
+    pub async fn console_capture(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
+        let args = parse_args::<ConsoleCaptureArgs>(args)?;
+        let create = self
+            .bridge
+            .dispatch(
+                "tabs_create",
+                json!({ "url": args.url.clone(), "active": args.active }),
+                None,
+                args.browser_id.clone(),
+            )
+            .await?;
+        fail_if_tool_error("tabs_create", &create)?;
+        let tab_id = extract_tab_id(&create.result).ok_or_else(|| FacadeError::ToolFailed {
+            tool: "tabs_create",
+            message: "response did not include tabId".to_string(),
+        })?;
+        let session = FlowSession {
+            session_id: format!("console-capture-{}", Uuid::new_v4()),
+            tab_id,
+            browser_id: args.browser_id.clone(),
+            url: args.url.clone(),
+            cleanup: args.cleanup,
+        };
+
+        let outcome = async {
+            let ready = self
+                .read_text_with_retry(tab_id, args.browser_id.clone())
+                .await?;
+            fail_if_tool_error("get_page_text", &ready)?;
+            let capture = self
+                .bridge
+                .dispatch(
+                    "capture_console",
+                    json!({
+                        "code": args.code,
+                        "timeoutMs": args.timeout_ms.min(20_000),
+                        "maxMessages": args.max_messages.min(500)
+                    }),
+                    Some(tab_id),
+                    args.browser_id.clone(),
+                )
+                .await?;
+            fail_if_tool_error("capture_console", &capture)?;
+            parse_capture_json(
+                "capture_console",
+                &capture.result,
+                tab_id,
+                &args.url,
+                args.browser_id.as_deref(),
+            )
+        }
+        .await;
+
+        let cleanup_error = if args.cleanup {
+            self.close_tab(&session).await.err()
+        } else {
+            None
+        };
+        finish_capture("capture_console", outcome, cleanup_error)
+    }
+
     pub async fn network_capture(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
         let args = parse_args::<NetworkCaptureArgs>(args)?;
         let create = self
@@ -277,27 +338,13 @@ impl BrowserFacade {
                 )
                 .await?;
             fail_if_tool_error("capture_network", &capture)?;
-            let text = extract_text(&capture.result).ok_or_else(|| FacadeError::ToolFailed {
-                tool: "capture_network",
-                message: "response did not contain JSON text".to_string(),
-            })?;
-            let mut value =
-                serde_json::from_str::<Value>(&text).map_err(|error| FacadeError::ToolFailed {
-                    tool: "capture_network",
-                    message: format!("response was not valid JSON: {error}"),
-                })?;
-            let object = value
-                .as_object_mut()
-                .ok_or_else(|| FacadeError::ToolFailed {
-                    tool: "capture_network",
-                    message: "response JSON was not an object".to_string(),
-                })?;
-            object.insert("tabId".to_string(), json!(tab_id));
-            object.insert("url".to_string(), json!(args.url.clone()));
-            if let Some(browser_id) = &args.browser_id {
-                object.insert("browserId".to_string(), json!(browser_id));
-            }
-            Ok(value)
+            parse_capture_json(
+                "capture_network",
+                &capture.result,
+                tab_id,
+                &args.url,
+                args.browser_id.as_deref(),
+            )
         }
         .await;
 
@@ -306,15 +353,7 @@ impl BrowserFacade {
         } else {
             None
         };
-        match (outcome, cleanup_error) {
-            (Ok(value), None) => Ok(value),
-            (Ok(_value), Some(error)) => Err(error),
-            (Err(error), None) => Err(error),
-            (Err(error), Some(cleanup)) => Err(FacadeError::ToolFailed {
-                tool: "capture_network",
-                message: format!("{error}; cleanup failed: {cleanup}"),
-            }),
-        }
+        finish_capture("capture_network", outcome, cleanup_error)
     }
 
     pub async fn flow_start(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
@@ -962,12 +1001,12 @@ impl BrowserFacade {
                 self.update_session_url(&session.session_id, url).await;
                 Ok(single_result(result.result))
             }
-            FlowStep::Eval { code } => {
+            FlowStep::Eval { code, frame_id } => {
                 let result = self
                     .bridge
                     .dispatch(
                         "javascript_tool",
-                        json!({ "code": code, "awaitPromise": true }),
+                        javascript_tool_args(code, true, frame_id),
                         Some(session.tab_id),
                         session.browser_id.clone(),
                     )
@@ -975,13 +1014,13 @@ impl BrowserFacade {
                 fail_if_tool_error("javascript_tool", &result)?;
                 Ok(single_result(result.result))
             }
-            FlowStep::Click { css } => {
+            FlowStep::Click { css, frame_id } => {
                 let code = click_script(&css)?;
                 let result = self
                     .bridge
                     .dispatch(
                         "javascript_tool",
-                        json!({ "code": code }),
+                        javascript_tool_args(code, false, frame_id),
                         Some(session.tab_id),
                         session.browser_id.clone(),
                     )
@@ -989,13 +1028,17 @@ impl BrowserFacade {
                 fail_if_tool_error("javascript_tool", &result)?;
                 Ok(single_result(result.result))
             }
-            FlowStep::Fill { css, value } => {
+            FlowStep::Fill {
+                css,
+                value,
+                frame_id,
+            } => {
                 let code = fill_script(&css, &value)?;
                 let result = self
                     .bridge
                     .dispatch(
                         "javascript_tool",
-                        json!({ "code": code }),
+                        javascript_tool_args(code, false, frame_id),
                         Some(session.tab_id),
                         session.browser_id.clone(),
                     )
@@ -1003,13 +1046,17 @@ impl BrowserFacade {
                 fail_if_tool_error("javascript_tool", &result)?;
                 Ok(single_result(result.result))
             }
-            FlowStep::Select { css, value } => {
+            FlowStep::Select {
+                css,
+                value,
+                frame_id,
+            } => {
                 let code = select_script(&css, &value)?;
                 let result = self
                     .bridge
                     .dispatch(
                         "javascript_tool",
-                        json!({ "code": code }),
+                        javascript_tool_args(code, false, frame_id),
                         Some(session.tab_id),
                         session.browser_id.clone(),
                     )
@@ -1022,7 +1069,7 @@ impl BrowserFacade {
                 time::sleep(Duration::from_millis(clamped)).await;
                 Ok(Map::from_iter([("ms".to_string(), json!(clamped))]))
             }
-            FlowStep::ReadText => {
+            FlowStep::ReadText { frame_id: None } => {
                 let result = self
                     .read_text_with_retry(session.tab_id, session.browser_id.clone())
                     .await?;
@@ -1030,6 +1077,28 @@ impl BrowserFacade {
                 Ok(Map::from_iter([(
                     "text".to_string(),
                     json!(extract_text(&result.result).unwrap_or_default()),
+                )]))
+            }
+            FlowStep::ReadText {
+                frame_id: Some(frame_id),
+            } => {
+                let result = self
+                    .bridge
+                    .dispatch(
+                        "javascript_tool",
+                        javascript_tool_args(
+                            "document.body?.innerText ?? ''".to_string(),
+                            true,
+                            Some(frame_id),
+                        ),
+                        Some(session.tab_id),
+                        session.browser_id.clone(),
+                    )
+                    .await?;
+                fail_if_tool_error("javascript_tool", &result)?;
+                Ok(Map::from_iter([(
+                    "text".to_string(),
+                    json!(javascript_string_result(&result.result)?),
                 )]))
             }
         }
@@ -1700,6 +1769,31 @@ impl FlowSession {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ConsoleCaptureArgs {
+    url: String,
+    code: String,
+    #[serde(default = "default_console_capture_timeout_ms")]
+    timeout_ms: u64,
+    #[serde(default = "default_console_capture_max_messages")]
+    max_messages: u64,
+    #[serde(default)]
+    browser_id: Option<String>,
+    #[serde(default)]
+    active: bool,
+    #[serde(default = "default_true")]
+    cleanup: bool,
+}
+
+fn default_console_capture_timeout_ms() -> u64 {
+    5_000
+}
+
+fn default_console_capture_max_messages() -> u64 {
+    100
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct NetworkCaptureArgs {
     url: String,
     code: String,
@@ -1780,13 +1874,38 @@ struct FlowActArgs {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum FlowStep {
-    Goto { url: String },
-    Eval { code: String },
-    Click { css: String },
-    Fill { css: String, value: String },
-    Select { css: String, value: String },
-    Wait { ms: u64 },
-    ReadText,
+    Goto {
+        url: String,
+    },
+    Eval {
+        code: String,
+        #[serde(default, rename = "frameId")]
+        frame_id: Option<String>,
+    },
+    Click {
+        css: String,
+        #[serde(default, rename = "frameId")]
+        frame_id: Option<String>,
+    },
+    Fill {
+        css: String,
+        value: String,
+        #[serde(default, rename = "frameId")]
+        frame_id: Option<String>,
+    },
+    Select {
+        css: String,
+        value: String,
+        #[serde(default, rename = "frameId")]
+        frame_id: Option<String>,
+    },
+    Wait {
+        ms: u64,
+    },
+    ReadText {
+        #[serde(default, rename = "frameId")]
+        frame_id: Option<String>,
+    },
 }
 
 impl FlowStep {
@@ -1798,7 +1917,7 @@ impl FlowStep {
             Self::Fill { .. } => "fill",
             Self::Select { .. } => "select",
             Self::Wait { .. } => "wait",
-            Self::ReadText => "read_text",
+            Self::ReadText { .. } => "read_text",
         }
     }
 }
@@ -1925,8 +2044,77 @@ fn tool_error_message(result: &BridgeToolResult) -> Option<String> {
     })
 }
 
+fn parse_capture_json(
+    tool: &'static str,
+    result: &Value,
+    tab_id: i64,
+    url: &str,
+    browser_id: Option<&str>,
+) -> Result<Value, FacadeError> {
+    let text = extract_text(result).ok_or_else(|| FacadeError::ToolFailed {
+        tool,
+        message: "response did not contain JSON text".to_string(),
+    })?;
+    let mut value =
+        serde_json::from_str::<Value>(&text).map_err(|error| FacadeError::ToolFailed {
+            tool,
+            message: format!("response was not valid JSON: {error}"),
+        })?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| FacadeError::ToolFailed {
+            tool,
+            message: "response JSON was not an object".to_string(),
+        })?;
+    object.insert("tabId".to_string(), json!(tab_id));
+    object.insert("url".to_string(), json!(url));
+    if let Some(browser_id) = browser_id {
+        object.insert("browserId".to_string(), json!(browser_id));
+    }
+    Ok(value)
+}
+
+fn finish_capture(
+    tool: &'static str,
+    outcome: Result<Value, FacadeError>,
+    cleanup_error: Option<FacadeError>,
+) -> Result<Value, FacadeError> {
+    match (outcome, cleanup_error) {
+        (Ok(value), None) => Ok(value),
+        (Ok(_value), Some(error)) => Err(error),
+        (Err(error), None) => Err(error),
+        (Err(error), Some(cleanup)) => Err(FacadeError::ToolFailed {
+            tool,
+            message: format!("{error}; cleanup failed: {cleanup}"),
+        }),
+    }
+}
+
 fn single_result(result: Value) -> Map<String, Value> {
     Map::from_iter([("result".to_string(), result)])
+}
+
+fn javascript_tool_args(code: String, await_promise: bool, frame_id: Option<String>) -> Value {
+    let mut args = Map::from_iter([
+        ("code".to_string(), json!(code)),
+        ("awaitPromise".to_string(), json!(await_promise)),
+    ]);
+    if let Some(frame_id) = frame_id {
+        args.insert("frameId".to_string(), json!(frame_id));
+    }
+    Value::Object(args)
+}
+
+fn javascript_string_result(result: &Value) -> Result<String, FacadeError> {
+    let text = extract_text(result).ok_or_else(|| FacadeError::ToolFailed {
+        tool: "javascript_tool",
+        message: "frame read returned no text".to_string(),
+    })?;
+    match serde_json::from_str::<Value>(&text) {
+        Ok(Value::String(value)) => Ok(value),
+        Ok(value) => Ok(value.to_string()),
+        Err(_error) => Ok(text),
+    }
 }
 
 fn click_script(css: &str) -> Result<String, FacadeError> {
@@ -2408,16 +2596,27 @@ mod tests {
             "sessionId": "session",
             "steps": [
                 {"type": "goto", "url": "https://example.test"},
-                {"type": "select", "css": "#sort", "value": "lohi"},
-                {"type": "read_text"}
+                {"type": "select", "css": "#sort", "value": "lohi", "frameId": "child-1"},
+                {"type": "read_text", "frameId": "child-1"}
             ]
         }))
         .unwrap();
 
         assert_eq!(args.steps.len(), 3);
         assert!(matches!(args.steps[0], FlowStep::Goto { .. }));
-        assert!(matches!(args.steps[1], FlowStep::Select { .. }));
-        assert!(matches!(args.steps[2], FlowStep::ReadText));
+        assert!(matches!(
+            &args.steps[1],
+            FlowStep::Select {
+                frame_id: Some(frame_id),
+                ..
+            } if frame_id == "child-1"
+        ));
+        assert!(matches!(
+            &args.steps[2],
+            FlowStep::ReadText {
+                frame_id: Some(frame_id)
+            } if frame_id == "child-1"
+        ));
     }
 
     #[test]

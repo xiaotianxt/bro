@@ -26,6 +26,23 @@ describe("bro tool catalog", () => {
     expect(normalizeBroToolName("find")).toBe("bro_find");
   });
 
+  it("omits server-owned internal tools from Pi registration", () => {
+    const internal = {
+      ...tool("agent_done"),
+      _meta: { "bro/piVisibility": "internal" },
+    } as Tool;
+
+    const lifecycle = {
+      ...tool("tabs_finalize"),
+      _meta: { "bro/capability": "tabs" },
+    } as Tool;
+
+    expect(buildBroCatalog([internal], [])).toEqual([]);
+    expect(buildBroCatalog([lifecycle], []).map((entry) => entry.piName)).toEqual([
+      "bro_tabs_finalize",
+    ]);
+  });
+
   it("rejects normalized collisions before registering tools", () => {
     expect(() => buildBroCatalog([tool("a.b"), tool("a_b")], [])).toThrow(
       "bro tool name collision",
@@ -36,6 +53,50 @@ describe("bro tool catalog", () => {
     expect(() => buildBroCatalog([tool("find")], ["bro_find"])).toThrow(
       "Pi tool name already registered: bro_find",
     );
+  });
+
+  it("loads the complete flow pack for interaction intent", () => {
+    const flowTools = [
+      tool("browser.flow.start"),
+      tool("browser.flow.observe"),
+      tool("browser.flow.act"),
+      tool("browser.flow.finish"),
+    ].map((entry) => ({
+      ...entry,
+      _meta: { "bro/capability": "interaction" },
+    })) as Tool[];
+    const catalog = buildBroCatalog(flowTools, []);
+
+    expect(
+      searchBroCatalog(catalog, "interact with a multi-step page", 8).map(
+        (entry) => entry.piName,
+      ),
+    ).toEqual([
+      "bro_browser_flow_start",
+      "bro_browser_flow_observe",
+      "bro_browser_flow_act",
+      "bro_browser_flow_finish",
+    ]);
+  });
+
+  it("loads a complete server-owned capability pack", () => {
+    const scripts = [
+      tool("userscripts_register"),
+      tool("userscripts_unregister"),
+      tool("userscripts_list"),
+    ].map((entry) => ({
+      ...entry,
+      _meta: { "bro/capability": "userscripts" },
+    })) as Tool[];
+    const catalog = buildBroCatalog(scripts, []);
+
+    expect(
+      searchBroCatalog(catalog, "persistent automation", 8).map((entry) => entry.piName),
+    ).toEqual([
+      "bro_userscripts_register",
+      "bro_userscripts_unregister",
+      "bro_userscripts_list",
+    ]);
   });
 
   it("searches names, descriptions, and parameter names", () => {

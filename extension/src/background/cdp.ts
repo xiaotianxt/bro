@@ -6,6 +6,8 @@ import { getDebuggerTargetBlockReason } from './debug-target.js'
 type EventCallback = (params: unknown) => void
 type DetachCallback = (tabId: number) => void
 
+const CDP_COMMAND_TIMEOUT_MS = 5_000
+
 /**
  * CDPSession manages chrome.debugger attachments and routes CDP events
  * to registered callbacks. One instance is shared across the service worker.
@@ -43,11 +45,7 @@ export class CDPSession {
       (source: chrome.debugger.Debuggee) => {
         const tabId = source.tabId
         if (tabId === undefined) return
-        this.attached.delete(tabId)
-        this.eventListeners.delete(tabId)
-        for (const callback of this.detachCallbacks) {
-          callback(tabId)
-        }
+        this.markDetached(tabId)
       },
     )
   }
@@ -101,8 +99,7 @@ export class CDPSession {
         }
       })
     })
-    this.attached.delete(tabId)
-    this.eventListeners.delete(tabId)
+    this.markDetached(tabId)
   }
 
   /**
@@ -148,20 +145,56 @@ export class CDPSession {
     params?: object,
   ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      chrome.debugger.sendCommand(
-        { tabId },
-        method,
-        (params ?? {}) as Record<string, unknown>,
-        (result) => {
-          const err = chrome.runtime.lastError
-          if (err) {
-            reject(new Error(`CDP command "${method}" failed for tab ${tabId}: ${err.message ?? ''}`))
-          } else {
+      let settled = false
+      const timeout = setTimeout(() => {
+        if (settled) return
+        settled = true
+        this.forceDetach(tabId)
+        reject(
+          new Error(
+            `CDP command "${method}" timed out for tab ${tabId} after ${CDP_COMMAND_TIMEOUT_MS}ms`,
+          ),
+        )
+      }, CDP_COMMAND_TIMEOUT_MS)
+
+      void chrome.debugger
+        .sendCommand(
+          { tabId },
+          method,
+          (params ?? {}) as Record<string, unknown>,
+        )
+        .then(
+          (result) => {
+            if (settled) return
+            settled = true
+            clearTimeout(timeout)
             resolve(result as T)
-          }
-        },
-      )
+          },
+          (error: unknown) => {
+            if (settled) return
+            settled = true
+            clearTimeout(timeout)
+            const message = error instanceof Error ? error.message : String(error)
+            reject(new Error(`CDP command "${method}" failed for tab ${tabId}: ${message}`))
+          },
+        )
     })
+  }
+
+  private forceDetach(tabId: number): void {
+    this.markDetached(tabId)
+    chrome.debugger.detach({ tabId }, () => {
+      void chrome.runtime.lastError
+    })
+  }
+
+  private markDetached(tabId: number): void {
+    const wasAttached = this.attached.delete(tabId)
+    this.eventListeners.delete(tabId)
+    if (!wasAttached) return
+    for (const callback of this.detachCallbacks) {
+      callback(tabId)
+    }
   }
 
   /**

@@ -32,8 +32,9 @@ Then start a new Pi session or run `/reload`.
 ## Behavior
 
 - MCP tool names are normalized, for example `browser.batch.extract` becomes `bro_browser_batch_extract`.
-- Common extraction, flow, and one-call network capture tools are active by default.
-- `bro_search_tools` enables additional tools through Pi's dynamic tool loading.
+- Ten tools are active initially: search plus common extraction, flow, and one-call network capture.
+- Server-marked internal and compatibility tools remain available to other MCP clients but are not registered in Pi.
+- `bro_search_tools` enables server-owned capability packs through Pi's dynamic tool loading, so tabs, frames, accessibility, console, visual, upload, shortcut, and user-script workflows load coherently.
 - Pi's session ID is supplied to bro tab-lifecycle tools when the caller omits `sessionId`.
 - MCP errors become failed Pi tool results rather than successful text containing an error.
 - Text output is bounded to Pi's 50 KB / 2,000-line tool limit.

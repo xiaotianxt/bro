@@ -162,9 +162,11 @@ tokens.
 The Pi package in `pi-extension/` uses Pi's extension API and the official MCP
 TypeScript SDK. It reads the bearer token directly from `~/.bro/settings.json`,
 keeps one MCP connection per Pi session, and registers bro's live tool schemas
-under a `bro_` namespace. Common extraction and flow tools start active;
-`bro_search_tools` enables lower-level tab, network, console, and JavaScript
-tools through Pi's dynamic tool loading.
+under a `bro_` namespace. Ten outcome-level extraction, flow, network, and
+search tools start active. `bro_search_tools` enables server-owned capability
+packs for tabs, frames, accessibility, console, visual input, uploads,
+shortcuts, and user scripts. Server-marked internal and compatibility tools are
+not registered in Pi.
 
 The adapter maps Pi session identity into bro's tab lifecycle, preserves browser
 state across `/reload`, and finalizes owned tabs and unfinished flows when the
@@ -240,6 +242,8 @@ and Unix-like systems this includes fields such as `appName`, `processId`,
 - `browser.batch.run`: open many URLs, read plain text, close by default
 - `browser.batch.flow`: run the same ordered interaction on many URLs in
   parallel, close by default
+- `browser.console.capture`: open a page, trigger console output, collect logs
+  or exceptions, and clean up in one call
 - `browser.network.capture`: open a page, trigger requests, and collect matching
   request metadata and bounded response bodies in one call
 - `browser.flow.start`: lease one tab for sequential work
@@ -255,8 +259,11 @@ one MCP call with bounded per-URL timeouts and cleanup, instead of requiring the
 agent to start, act on, and finish many separate flow sessions.
 
 Raw browser primitives such as `tabs_create`, `tabs_close`, `read_page`,
-`javascript_tool`, `click_element`, `fill_element`, and `computer` remain
-available for lower-level work.
+`frames_list`, `javascript_tool`, `click_element`, `fill_element`, and
+`computer` remain available for lower-level work. Real `computer` input brings
+the target tab and window to the foreground; screenshots and zoom remain
+background-capable. Use `frames_list` frame IDs with frame-aware flow steps for
+iframe interaction.
 
 Extraction defaults are intentionally compact for agent workflows:
 

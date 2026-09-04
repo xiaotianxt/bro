@@ -208,11 +208,30 @@ async function ensureAccessibilityScript(tabId: number): Promise<void> {
  * Evaluates arbitrary user code in the page via CDP Runtime.evaluate.
  * Returns JSON-stringified result or error details.
  */
+async function frameExecutionContext(
+  tabId: number,
+  frameId: string | undefined,
+): Promise<number | undefined> {
+  if (frameId === undefined) return undefined
+  const result = await cdpSession.send<{ executionContextId: number }>(
+    tabId,
+    'Page.createIsolatedWorld',
+    {
+      frameId,
+      worldName: 'bro',
+      grantUniveralAccess: false,
+    },
+  )
+  return result.executionContextId
+}
+
 async function evaluateInPage(
   tabId: number,
   code: string,
   awaitPromise: boolean,
+  frameId?: string,
 ): Promise<{ result: string; isError: boolean }> {
+  const contextId = await frameExecutionContext(tabId, frameId)
   if (awaitPromise) {
     // Async wrapper: await the eval result, then return {result, isError}.
     // CDP awaitPromise:true ensures the outer Promise (from async IIFE) is
@@ -222,6 +241,7 @@ async function evaluateInPage(
       expression,
       returnByValue: true,
       awaitPromise: true,
+      ...(contextId === undefined ? {} : { contextId }),
     })
     if (res.exceptionDetails) {
       return {
@@ -243,6 +263,7 @@ async function evaluateInPage(
     expression,
     returnByValue: true,
     awaitPromise: false,
+    ...(contextId === undefined ? {} : { contextId }),
   })
   if (res.exceptionDetails) {
     return {
@@ -939,6 +960,61 @@ async function executeFormInput(
 }
 
 // ---------------------------------------------------------------------------
+// frames_list
+// ---------------------------------------------------------------------------
+
+interface FrameTreeNode {
+  frame: {
+    id: string
+    parentId?: string
+    name?: string
+    url: string
+  }
+  childFrames?: FrameTreeNode[]
+}
+
+function flattenFrameTree(
+  node: FrameTreeNode,
+  frames: Array<{
+    frameId: string
+    parentFrameId: string | null
+    name: string
+    url: string
+  }>,
+): void {
+  frames.push({
+    frameId: node.frame.id,
+    parentFrameId: node.frame.parentId ?? null,
+    name: node.frame.name ?? '',
+    url: node.frame.url,
+  })
+  for (const child of node.childFrames ?? []) {
+    flattenFrameTree(child, frames)
+  }
+}
+
+async function executeFramesList(
+  tabId: number,
+  _rawArgs: unknown,
+): Promise<ToolResult> {
+  const result = await cdpSession.send<{ frameTree: FrameTreeNode }>(
+    tabId,
+    'Page.getFrameTree',
+    {},
+  )
+  const frames: Array<{
+    frameId: string
+    parentFrameId: string | null
+    name: string
+    url: string
+  }> = []
+  flattenFrameTree(result.frameTree, frames)
+  return {
+    content: [{ type: 'text', text: JSON.stringify(frames) }],
+  }
+}
+
+// ---------------------------------------------------------------------------
 // javascript_tool
 // ---------------------------------------------------------------------------
 
@@ -958,8 +1034,9 @@ async function executeJavaScriptTool(
 
   const awaitPromise =
     typeof args['awaitPromise'] === 'boolean' ? args['awaitPromise'] : false
+  const frameId = getString(args, 'frameId')
 
-  const { result, isError } = await evaluateInPage(tabId, code, awaitPromise)
+  const { result, isError } = await evaluateInPage(tabId, code, awaitPromise, frameId)
 
   if (isError) {
     return {
@@ -1613,6 +1690,7 @@ registerTool('find', executeFind)
 registerTool('get_page_text', executeGetPageText)
 registerTool('extract_page', executeExtractPage)
 registerTool('form_input', executeFormInput)
+registerTool('frames_list', executeFramesList)
 registerTool('javascript_tool', executeJavaScriptTool)
 registerTool('click_element', executeClickElement)
 registerTool('scroll_element', executeScrollElement)

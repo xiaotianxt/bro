@@ -57,6 +57,18 @@ interface CaptureScreenshotResult {
   data: string // base64
 }
 
+interface ViewportMetadata {
+  width: number
+  height: number
+  deviceScaleFactor: number
+  scrollX: number
+  scrollY: number
+}
+
+interface ViewportEvaluateResult {
+  result: { value?: ViewportMetadata }
+}
+
 const DEFAULT_SCREENSHOT_QUALITY = 55
 const DEFAULT_ZOOM_QUALITY = 70
 const MIN_SCREENSHOT_QUALITY = 10
@@ -181,7 +193,15 @@ async function dispatchMouseEvent(
   clickCount = 0,
   deltaX = 0,
   deltaY = 0,
+  buttons?: number,
 ): Promise<void> {
+  const resolvedButtons = buttons ?? (
+    type === 'mousePressed'
+      ? mouseButtonMask(button)
+      : type === 'mouseReleased'
+        ? 0
+        : undefined
+  )
   await cdpSession.send(tabId, 'Input.dispatchMouseEvent', {
     type,
     x,
@@ -190,8 +210,18 @@ async function dispatchMouseEvent(
     clickCount,
     deltaX,
     deltaY,
+    ...(resolvedButtons === undefined ? {} : { buttons: resolvedButtons }),
     modifiers: 0,
   })
+}
+
+function mouseButtonMask(button: 'none' | 'left' | 'middle' | 'right'): number {
+  switch (button) {
+    case 'left': return 1
+    case 'right': return 2
+    case 'middle': return 4
+    case 'none': return 0
+  }
 }
 
 /**
@@ -327,10 +357,29 @@ function parseKeyCombo(combo: string): {
 // Action implementations
 // ---------------------------------------------------------------------------
 
+async function readViewportMetadata(tabId: number): Promise<ViewportMetadata> {
+  const response = await cdpSession.send<ViewportEvaluateResult>(tabId, 'Runtime.evaluate', {
+    expression: '({width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio, scrollX, scrollY})',
+    returnByValue: true,
+  })
+  return response.result.value ?? {
+    width: 0,
+    height: 0,
+    deviceScaleFactor: 1,
+    scrollX: 0,
+    scrollY: 0,
+  }
+}
+
+function coordinateGuidance(viewport: ViewportMetadata): string {
+  return `Viewport ${viewport.width}x${viewport.height} CSS pixels; deviceScaleFactor ${viewport.deviceScaleFactor}. Computer coordinates use CSS pixels from top-left (0,0); divide image-pixel coordinates by ${viewport.deviceScaleFactor} when the screenshot is device-scaled.`
+}
+
 async function actionScreenshot(
   tabId: number,
   quality = DEFAULT_SCREENSHOT_QUALITY,
 ): Promise<ToolResult> {
+  const viewport = await readViewportMetadata(tabId)
   const result = await cdpSession.send<CaptureScreenshotResult>(
     tabId,
     'Page.captureScreenshot',
@@ -343,6 +392,7 @@ async function actionScreenshot(
 
   return {
     content: [
+      { type: 'text', text: coordinateGuidance(viewport) },
       {
         type: 'image',
         data: result.data,
@@ -357,6 +407,7 @@ async function actionZoom(
   region: [number, number, number, number],
   quality = DEFAULT_ZOOM_QUALITY,
 ): Promise<ToolResult> {
+  const viewport = await readViewportMetadata(tabId)
   const [x, y, width, height] = region
   const clippedResult = await cdpSession.send<CaptureScreenshotResult>(
     tabId,
@@ -371,6 +422,10 @@ async function actionZoom(
 
   return {
     content: [
+      {
+        type: 'text',
+        text: `${coordinateGuidance(viewport)} Zoom region: (${x},${y}) ${width}x${height} CSS pixels.`,
+      },
       {
         type: 'image',
         data: clippedResult.data,
@@ -451,6 +506,18 @@ async function actionScroll(
   }
 }
 
+async function dragMouseEvent(
+  stage: string,
+  operation: () => Promise<void>,
+): Promise<void> {
+  try {
+    await operation()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`computer drag ${stage} failed: ${message}`)
+  }
+}
+
 async function actionLeftClickDrag(
   tabId: number,
   startX: number,
@@ -460,25 +527,28 @@ async function actionLeftClickDrag(
 ): Promise<ToolResult> {
   const INTERMEDIATE_POINTS = 5
 
-  // Move to start position
-  await dispatchMouseEvent(tabId, 'mouseMoved', startX, startY)
+  await dragMouseEvent('move-to-start', () =>
+    dispatchMouseEvent(tabId, 'mouseMoved', startX, startY),
+  )
+  await dragMouseEvent('press', () =>
+    dispatchMouseEvent(tabId, 'mousePressed', startX, startY, 'left', 1),
+  )
 
-  // Press at start
-  await dispatchMouseEvent(tabId, 'mousePressed', startX, startY, 'left', 1)
-
-  // Move through intermediate points
   for (let i = 1; i <= INTERMEDIATE_POINTS; i++) {
     const ratio = i / (INTERMEDIATE_POINTS + 1)
     const ix = Math.round(startX + (endX - startX) * ratio)
     const iy = Math.round(startY + (endY - startY) * ratio)
-    await dispatchMouseEvent(tabId, 'mouseMoved', ix, iy)
+    await dragMouseEvent(`move-${i}`, () =>
+      dispatchMouseEvent(tabId, 'mouseMoved', ix, iy, 'left', 0, 0, 0, 1),
+    )
   }
 
-  // Move to final position
-  await dispatchMouseEvent(tabId, 'mouseMoved', endX, endY)
-
-  // Release at end
-  await dispatchMouseEvent(tabId, 'mouseReleased', endX, endY, 'left', 1)
+  await dragMouseEvent('move-to-end', () =>
+    dispatchMouseEvent(tabId, 'mouseMoved', endX, endY, 'left', 0, 0, 0, 1),
+  )
+  await dragMouseEvent('release', () =>
+    dispatchMouseEvent(tabId, 'mouseReleased', endX, endY, 'left', 1),
+  )
 
   return {
     content: [
@@ -598,11 +668,26 @@ async function actionKey(tabId: number, combo: string): Promise<ToolResult> {
 // Main dispatch
 // ---------------------------------------------------------------------------
 
+async function activateTabForInput(tabId: number): Promise<void> {
+  const tab = await chrome.tabs.update(tabId, { active: true })
+  if (!tab) throw new Error(`computer: tab ${tabId} disappeared while activating input`)
+  if (tab.windowId !== undefined) {
+    await chrome.windows.update(tab.windowId, { focused: true })
+  }
+}
+
 async function executeComputer(tabId: number, rawArgs: unknown): Promise<ToolResult> {
   const args = validateArgs(rawArgs)
 
-  // Ensure CDP is attached before any action
+  // Screenshots work in background tabs, but Chromium stalls real Input.*
+  // dispatch unless both the tab and its window are active.
+  if (args.action !== 'screenshot' && args.action !== 'zoom') {
+    await activateTabForInput(tabId)
+  }
   await cdpSession.ensure(tabId)
+  if (args.action !== 'screenshot' && args.action !== 'zoom') {
+    await cdpSession.send(tabId, 'Page.bringToFront', {})
+  }
 
   switch (args.action) {
     case 'screenshot':

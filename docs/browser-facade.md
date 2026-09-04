@@ -99,6 +99,24 @@ The extension includes the resolved `tabId` in the extraction payload when
 available, so the facade can still use fallback readers inside the same MCP
 tool call.
 
+## Console Capture
+
+`browser.console.capture` keeps console monitoring, trigger execution, message
+collection, and cleanup inside one MCP call. Use it when a click or evaluated
+expression is expected to emit a log or exception.
+
+```json
+{
+  "url": "https://example.com",
+  "code": "document.querySelector('#trigger').click()",
+  "timeoutMs": 5000
+}
+```
+
+The trigger may be an expression or a zero-argument function and returned
+Promises are awaited. Use raw `read_console_messages` only for deliberate
+interactive monitoring.
+
 ## Network Capture
 
 `browser.network.capture` keeps the whole debugging transaction inside one MCP
@@ -142,6 +160,11 @@ than using a top-level `return`.
 
 If a step fails, `browser.flow.act` stops at that step, returns prior results and
 the failure location, and marks the outer MCP result as an error.
+
+For iframes, call `frames_list` with the flow tab ID, then pass the returned
+`frameId` to eval, click, fill, select, or read_text steps. Frame execution uses
+an isolated CDP world scoped to the requested frame; omit `frameId` for the main
+frame.
 
 ## Design Rule
 
