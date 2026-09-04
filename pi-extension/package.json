@@ -1,6 +1,6 @@
 {
   "name": "@xiaotianxt/pi-bro",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Native Pi tools for the bro local browser MCP server",
   "license": "Apache-2.0",
   "type": "module",
