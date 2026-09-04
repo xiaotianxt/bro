@@ -86,7 +86,7 @@ The extraction-only default saves 656 initial input tokens. On the dynamic inter
 | Mini | 27.2 s / 3 / 8,989 | 194.9 s / 24 / 157,025 |
 | Sol | 37.3 s / 4 / 10,789 | 206.7 s / 31 / 138,576 |
 
-The saved schema tokens were overwhelmed by extra model turns. The current flow tools should remain initially active until dynamic loading can activate coherent workflow packs.
+The saved schema tokens were overwhelmed by extra model turns. After capability packs were added, the same extraction-only experiment improved to 27.7 s / 8 calls / 32,664 tokens for Spark, 52.9 s / 8 / 35,701 for Mini, and 32.4 s / 5 / 13,232 for Sol. This removes the catastrophic search behavior but still regresses Mini substantially versus the current default, so the four flow tools remain initially active.
 
 ### 2. Tool execution success is not task success
 
@@ -187,6 +187,30 @@ Decisive signals:
 
 This changes the next priority order: fix spatial input timeouts and debugger release, add frame-aware read/action APIs, load coherent capability packs, then add one-call console capture. Do not expose more raw primitives as a response to these failures.
 
+### 8. Spatial, frame, and console post-fix benchmark
+
+The four failed or high-tail Luna Max scenarios were rerun after the owner-layer fixes:
+
+| Scenario | Before | After | Calls | Billed tokens |
+|---|---:|---:|---:|---:|
+| HTML5 drag and drop | fail / 601.3 s | pass / 51.6 s | 44 → 8 | 923,944 → 60,493 |
+| Editable iframe form | fail / 601.3 s | pass / 31.8 s | 91 → 5 | 1,597,670 → 19,949 |
+| Canvas-only visual drag | fail / 601.3 s | pass / 236.6 s | 61 → 8 | 2,508,920 → 54,893 |
+| Async console capture | pass / 167.7 s | pass / 34.3 s | 29 → 2 | 215,311 → 11,183 |
+
+All four completed. The changes were:
+
+- extract every tab envelope through one tested invariant, fixing `extract_page`
+- bound CDP commands to five seconds and force detach on timeout
+- activate the tab and window before real `Input.*` actions
+- send held left-button state on drag movement
+- include CSS viewport and device-scale coordinate guidance with screenshots
+- publish `frames_list` and accept `frameId` in flow eval/click/fill/select/read steps
+- publish server-owned capability metadata consumed as coherent Pi tool packs
+- add `browser.console.capture` so monitor, trigger, collection, and cleanup share one call
+
+Each rerun required exactly one `bro_search_tools` call. The iframe workflow then used `frames_list` plus one frame-aware flow action. Canvas remains the slowest successful cell because visual reasoning took 236.6 seconds even though tool calls fell to eight.
+
 ## Resulting tool policy
 
 ### Keep active initially
@@ -202,28 +226,28 @@ This changes the next priority order: fix spatial input timeouts and debugger re
 - `browser.flow.finish`
 - `bro_search_tools`
 
-This is not the final smallest surface; it is the smallest tested surface that did not force models into expensive low-level reconstruction.
+This is not the final smallest surface; it is the smallest tested surface that did not force models into expensive low-level reconstruction. The MCP server publishes 48 tools. Pi registers 39 of them plus `bro_search_tools`, keeps these ten active initially, and leaves 30 available through capability-pack loading.
 
 ### Keep discoverable but inactive
 
-Keep these 27 model-facing capabilities available through dynamic loading:
+Keep these 30 model-facing capabilities available through dynamic loading:
 
 - browser selection and tabs: `browsers_context`, `tabs_context`, `tabs_create`,
-  `tabs_claim`, `tabs_activate`, `tabs_close`
+  `tabs_claim`, `tabs_finalize`, `tabs_activate`, `tabs_close`
 - advanced page work: `computer`, `navigate`, `resize_window`, `read_page`,
-  `find`, `javascript_tool`, `form_input`, `click_element`, `scroll_element`,
+  `find`, `frames_list`, `javascript_tool`, `form_input`, `click_element`, `scroll_element`,
   `fill_element`, `get_element_info`, `wait_for_element`
-- diagnostics and media: `read_console_messages`, `file_upload`, `upload_image`,
-  `gif_creator`, `shortcuts_list`, `shortcuts_execute`
+- diagnostics and media: `browser.console.capture`, `read_console_messages`,
+  `file_upload`, `upload_image`, `gif_creator`, `shortcuts_list`, `shortcuts_execute`
 - persistent scripts: `userscripts_register`, `userscripts_unregister`,
   `userscripts_list`
 
 ### Keep server-side but hide from Pi model discovery
 
-These ten names remain available to existing MCP clients or internal adapters,
+These nine names remain available to existing MCP clients or internal adapters,
 but do not need to be model-discoverable in Pi:
 
-- lifecycle internals: `agent_done`, `session_name`, `tabs_finalize`
+- lifecycle internals: `agent_done`, `session_name`
 - compatibility variants: `tabs_context_mcp`, `tabs_create_mcp`
 - facade internals: `get_page_text`, `extract_page`
 - superseded workflows: `browser.batch.run`, `read_network_requests`,
@@ -236,13 +260,10 @@ published migration window.
 
 ### Improve next
 
-1. Fix the missing `extract_page` tab envelope regression.
-2. Bound every CDP input command, make drag send correct held-button state, and force debugger detach after timeout or cancellation.
-3. Add frame enumeration plus `frameId` to read, find, fill, click, and flow operations.
-4. Replace individual keyword matches in `bro_search_tools` with server-owned capability packs for interaction, tabs, debugging, uploads, user scripts, frames, and visual input.
-5. Add one-call console capture and stable screenshot viewport/scale metadata; evaluate an outcome-level visual drag facade.
-6. Add generic readiness controls such as `waitForText` or `waitForSelector`, and consider refId actions inside `browser.flow.act`.
-7. Repeat failed and high-tail Luna cells before changing default exposure.
+1. Add generic readiness controls such as `waitForText` or `waitForSelector`, and consider refId actions inside `browser.flow.act`.
+2. Reduce the remaining canvas visual-reasoning time with bounded screenshot regions or an outcome-level visual drag facade.
+3. Compare removing only `browser.batch.flow` from the default set; the extraction-only default still regresses Mini even with capability packs.
+4. Repeat visual and high-tail workflows across model tiers before consolidating additional tools.
 
 ## Revisit the default tool count when
 

@@ -1,0 +1,61 @@
+{
+  "benchmarkVersion": 1,
+  "targetBroVersion": "1.0.3",
+  "baselineBroVersion": "1.0.2",
+  "date": "2026-09-03",
+  "model": "openai-codex/gpt-5.6-luna",
+  "thinking": "max",
+  "method": {
+    "runs": 4,
+    "execution": "sequential isolated Pi --print subagents under caffeinate",
+    "tools": "bro Pi extension only; no built-ins, skills, context files, or unrelated extensions",
+    "tasks": ["html5_drag", "iframe_editor", "canvas_drag", "console_capture"],
+    "rawSessionsCommitted": false
+  },
+  "comparison": {
+    "html5_drag": {
+      "before": {"success":false,"seconds":601.271,"toolCalls":44,"billedTokens":923944,"toolFailures":9},
+      "after": {"success":true,"seconds":51.617,"toolCalls":8,"billedTokens":60493,"toolFailures":0}
+    },
+    "iframe_editor": {
+      "before": {"success":false,"seconds":601.324,"toolCalls":91,"billedTokens":1597670,"toolFailures":10},
+      "after": {"success":true,"seconds":31.789,"toolCalls":5,"billedTokens":19949,"toolFailures":0}
+    },
+    "canvas_drag": {
+      "before": {"success":false,"seconds":601.342,"toolCalls":61,"billedTokens":2508920,"toolFailures":3},
+      "after": {"success":true,"seconds":236.556,"toolCalls":8,"billedTokens":54893,"toolFailures":1}
+    },
+    "console_capture": {
+      "before": {"success":true,"seconds":167.729,"toolCalls":29,"billedTokens":215311,"toolFailures":1},
+      "after": {"success":true,"seconds":34.269,"toolCalls":2,"billedTokens":11183,"toolFailures":0}
+    }
+  },
+  "capabilityPackExposure": {
+    "description": "Extraction-only default plus bro_search_tools after server-owned interaction packs.",
+    "dynamicLoading": [
+      {"model":"spark","success":true,"seconds":27.721,"toolCalls":8,"billedTokens":32664},
+      {"model":"mini","success":true,"seconds":52.932,"toolCalls":8,"billedTokens":35701},
+      {"model":"sol","success":true,"seconds":32.38,"toolCalls":5,"billedTokens":13232}
+    ],
+    "lunaMax": {
+      "currentDefault":{"success":true,"seconds":38.6,"toolCalls":6,"billedTokens":21179},
+      "extractionOnlyWithPacks":{"success":true,"seconds":38.1,"toolCalls":6,"billedTokens":19688}
+    },
+    "decision": "Capability packs remove catastrophic reconstruction, but Mini still regresses enough to keep the flow pack active initially."
+  },
+  "afterRuns": [
+    {"task":"html5_drag","success":true,"seconds":51.617,"toolCalls":8,"billedTokens":60493,"toolFailures":0,"costUsd":0.0083228,"tools":["bro_search_tools","bro_browsers_context","bro_browser_flow_start","bro_computer","bro_computer","bro_computer","bro_get_page_text","bro_browser_flow_finish"]},
+    {"task":"iframe_editor","success":true,"seconds":31.789,"toolCalls":5,"billedTokens":19949,"toolFailures":0,"costUsd":0.00296192,"tools":["bro_search_tools","bro_browser_flow_start","bro_frames_list","bro_browser_flow_act","bro_browser_flow_finish"]},
+    {"task":"canvas_drag","success":true,"seconds":236.556,"toolCalls":8,"billedTokens":54893,"toolFailures":1,"costUsd":0.0079466,"tools":["bro_search_tools","bro_browsers_context","bro_browser_flow_start","bro_browser_flow_start","bro_computer","bro_computer","bro_computer","bro_browser_flow_finish"]},
+    {"task":"console_capture","success":true,"seconds":34.269,"toolCalls":2,"billedTokens":11183,"toolFailures":0,"costUsd":0.0027548,"tools":["bro_search_tools","bro_browser_console_capture"]}
+  ],
+  "findings": [
+    "All four previously failed or high-tail Luna Max scenarios completed successfully.",
+    "Activating the target tab and window before Input.* dispatch eliminated background-tab mouse command hangs.",
+    "Held-button mouseMoved events made both pointer-canvas and HTML5 drag workflows effective.",
+    "frames_list plus frameId-aware flow steps reduced iframe editing from 91 calls to 5.",
+    "Server-owned capability metadata reduced tool search to one call per scenario.",
+    "One-call console capture reduced console work from 29 calls to 2.",
+    "Canvas visual reasoning remains the slowest successful scenario even though calls fell from 61 to 8."
+  ]
+}
