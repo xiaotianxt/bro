@@ -22,11 +22,11 @@ python3 benchmarks/pi-agent/run.py \
 ```
 
 Only aggregate metrics stripped of raw browser content belong in `results/`.
-The initial `v1.0.1` matrix, post-fix flow/network comparison, and hidden
-capability retention matrix are stored as separate summaries so regressions
-remain visible. The hidden-capability fixture is intentionally not retained in
-raw session output; its aggregate report records task contracts and required
-tool families.
+The initial `v1.0.1` matrix, post-fix flow/network comparison, hidden
+capability retention matrix, and GPT-5.6 Luna Max complex-workflow matrix are
+stored as separate summaries so regressions remain visible. Local fixtures are
+not retained in raw session output; aggregate reports record task contracts and
+required tool families.
 
 ## Models and tasks
 

@@ -1,0 +1,104 @@
+{
+  "benchmarkVersion": 1,
+  "broVersion": "1.0.2",
+  "date": "2026-09-03",
+  "model": "openai-codex/gpt-5.6-luna",
+  "thinking": "max",
+  "method": {
+    "validRuns": 14,
+    "execution": "sequential isolated Pi --print subagents with caffeinate for rerun cells",
+    "tools": "bro Pi extension only; no built-ins, skills, context files, or unrelated extensions",
+    "coverage": [
+      "dynamic release comparison",
+      "multi-site batch extraction plus result follow-up",
+      "TodoMVC SPA mutation/filter/cleanup",
+      "Sauce Demo login/cart/checkout rollback",
+      "HTML5 drag and drop",
+      "deterministic iframe form editing",
+      "AJAX page interaction plus network evidence",
+      "POST request and response-body capture",
+      "asynchronous console capture",
+      "nested shadow-DOM form interaction",
+      "canvas-only visual drag",
+      "base64 file upload and content verification",
+      "user-script persistence across navigation and removal",
+      "existing-tab claim/create/finalize lifecycle"
+    ],
+    "invalidRunsExcluded": [
+      "The first release comparison used an ambiguous repository prompt and was rerun with exact URLs.",
+      "The first iframe target was read-only; it was replaced by a deterministic editable local iframe and rerun.",
+      "Wall-clock cells affected by clamshell sleep were rerun under caffeinate."
+    ],
+    "rawSessionsCommitted": false
+  },
+  "summary": {
+    "successes": 11,
+    "runs": 14,
+    "successRate": 0.7857,
+    "totalToolCalls": 358,
+    "totalBilledTokens": 6297715,
+    "toolFailures": 28,
+    "totalCostUsd": 0.332415,
+    "successfulRuns": {
+      "meanSeconds": 94.9,
+      "medianSeconds": 72.0,
+      "meanToolCalls": 14.7,
+      "medianToolCalls": 11,
+      "meanBilledTokens": 115198,
+      "medianBilledTokens": 63916
+    },
+    "failedRuns": {
+      "meanSeconds": 601.3,
+      "medianSeconds": 601.3,
+      "meanToolCalls": 65.3,
+      "medianToolCalls": 61,
+      "meanBilledTokens": 1676845,
+      "medianBilledTokens": 1597670
+    }
+  },
+  "runs": [
+    {"task":"release_compare","success":true,"seconds":121.913,"toolCalls":14,"billedTokens":107241,"toolFailures":0,"costUsd":0.01517236},
+    {"task":"social_followup","success":true,"seconds":58.602,"toolCalls":5,"billedTokens":62111,"toolFailures":1,"costUsd":0.00637924},
+    {"task":"todo_spa","success":true,"seconds":223.431,"toolCalls":40,"billedTokens":454313,"toolFailures":1,"costUsd":0.0260106},
+    {"task":"sauce_checkout","success":true,"seconds":71.96,"toolCalls":12,"billedTokens":70403,"toolFailures":0,"costUsd":0.00773484},
+    {"task":"drag_drop","success":false,"seconds":601.271,"toolCalls":44,"billedTokens":923944,"toolFailures":9,"costUsd":0.0481316},
+    {"task":"iframe_editor","success":false,"seconds":601.324,"toolCalls":91,"billedTokens":1597670,"toolFailures":10,"costUsd":0.0766592},
+    {"task":"ajax_movies","success":true,"seconds":80.168,"toolCalls":9,"billedTokens":63916,"toolFailures":2,"costUsd":0.00657996},
+    {"task":"network_post","success":true,"seconds":22.584,"toolCalls":1,"billedTokens":6604,"toolFailures":0,"costUsd":0.0020768},
+    {"task":"console_async","success":true,"seconds":167.729,"toolCalls":29,"billedTokens":215311,"toolFailures":1,"costUsd":0.01514916},
+    {"task":"shadow_form","success":true,"seconds":145.247,"toolCalls":22,"billedTokens":139518,"toolFailures":1,"costUsd":0.0109862},
+    {"task":"canvas_drag","success":false,"seconds":601.342,"toolCalls":61,"billedTokens":2508920,"toolFailures":3,"costUsd":0.10045516},
+    {"task":"upload_content","success":true,"seconds":52.618,"toolCalls":11,"billedTokens":55240,"toolFailures":0,"costUsd":0.0060498},
+    {"task":"userscript_navigation","success":true,"seconds":50.849,"toolCalls":9,"billedTokens":42060,"toolFailures":0,"costUsd":0.0060778},
+    {"task":"tabs_lifecycle","success":true,"seconds":49.234,"toolCalls":10,"billedTokens":50464,"toolFailures":0,"costUsd":0.00495228}
+  ],
+  "selectedToolSignals": {
+    "bro_search_tools": {"calls":62,"failures":1},
+    "bro_computer": {"calls":89,"failures":10},
+    "bro_browser_flow_act": {"calls":32,"failures":5},
+    "bro_browser_flow_observe": {"calls":34,"failures":1},
+    "bro_read_page": {"calls":13,"failures":0},
+    "bro_click_element": {"calls":12,"failures":1},
+    "bro_read_console_messages": {"calls":5,"failures":1},
+    "bro_browser_network_capture": {"calls":3,"failures":1},
+    "bro_file_upload": {"calls":1,"failures":0},
+    "bro_userscripts_register": {"calls":1,"failures":0},
+    "bro_userscripts_unregister": {"calls":1,"failures":0},
+    "benchmarkTabsClosedByHarness": 2
+  },
+  "findings": [
+    "Outcome-level network capture remained the strongest interface: a complex POST/header/postData/body task completed in one call, 22.6 seconds, and 6,604 billed tokens.",
+    "Complex but DOM-addressable workflows succeeded, including checkout rollback, AJAX plus network evidence, nested shadow DOM, upload, user scripts, and tab lifecycle.",
+    "The three failures were spatial or frame-bound: HTML5 drag, canvas drag, and iframe editing.",
+    "left_click_drag repeatedly hit the 30-second bridge timeout and could leave a debugger attached, causing later tools to fail with another-debugger-attached errors.",
+    "The iframe workflow had no stable frameId-aware read/action surface and exhausted 91 calls across raw tools without completing.",
+    "The canvas workflow spent 89 computer calls across the suite; screenshots lacked enough stable coordinate/scale guidance for efficient drag targeting.",
+    "Individual keyword discovery remained too expensive: bro_search_tools accounted for 62 calls across 14 tasks.",
+    "Successful complex runs averaged 14.7 calls; failed runs entered catastrophic tails averaging 65.3 calls and 1.68 million billed tokens. Tool-level stop conditions are needed."
+  ],
+  "limitations": [
+    "One run per scenario; this evaluates API shape and failure modes rather than model ranking or small latency differences.",
+    "Public social and demo-site content can change, while deterministic local fixtures were used for iframe, shadow DOM, canvas, upload, console, user-script, and tab assertions.",
+    "The harness timeout was 600 active seconds per task."
+  ]
+}

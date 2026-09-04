@@ -153,6 +153,40 @@ The matrix called `bro_search_tools` 29 times. Dynamic discovery worked, but ind
 
 These results justify retaining unique hidden capabilities, not retaining every historical public name.
 
+### 7. Luna Max complex-workflow benchmark
+
+A broader matrix ran 14 sequential scenarios on GPT-5.6 Luna with max thinking. It covered ten public/demo domains plus deterministic local iframe, shadow-DOM, canvas, upload, console, user-script, and tab-lifecycle fixtures. Ambiguous, read-only, clamshell-sleep, and interrupted cells were discarded and rerun with exact targets under `caffeinate`.
+
+| Scenario | Result | Time | Calls | Billed tokens |
+|---|---:|---:|---:|---:|
+| POST/header/body network capture | pass | 22.6 s | 1 | 6,604 |
+| Tab claim/create/finalize lifecycle | pass | 49.2 s | 10 | 50,464 |
+| User script across navigation/removal | pass | 50.8 s | 9 | 42,060 |
+| File upload plus decoded content | pass | 52.6 s | 11 | 55,240 |
+| Four-site batch plus result follow-up | pass | 58.6 s | 5 | 62,111 |
+| Cart/checkout rollback | pass | 72.0 s | 12 | 70,403 |
+| AJAX UI plus network evidence | pass | 80.2 s | 9 | 63,916 |
+| Dynamic release comparison | pass | 121.9 s | 14 | 107,241 |
+| Nested shadow-DOM form | pass | 145.2 s | 22 | 139,518 |
+| Asynchronous console capture | pass | 167.7 s | 29 | 215,311 |
+| TodoMVC state/filter/cleanup | pass | 223.4 s | 40 | 454,313 |
+| HTML5 drag and drop | fail | 601.3 s | 44 | 923,944 |
+| Editable iframe form | fail | 601.3 s | 91 | 1,597,670 |
+| Canvas-only visual drag | fail | 601.3 s | 61 | 2,508,920 |
+
+Overall success was 11/14. Successful runs averaged 14.7 calls and 115,198 billed tokens. The three failed spatial/frame workflows averaged 65.3 calls and 1.68 million billed tokens, showing that a strong model increases persistence but cannot repair a missing mechanism.
+
+Decisive signals:
+
+- `browser.network.capture` again completed a complex POST, custom-header, post-data, and response-body task in one call.
+- `bro_search_tools` was called 62 times, so individual keyword discovery remains a major tax.
+- `computer` was called 89 times. `left_click_drag` repeatedly reached the 30-second bridge timeout and could leave CDP attached, causing later tools to report another debugger already attached.
+- iframe tools lacked stable frame enumeration and `frameId` targeting. The model exhausted 91 calls across flow, ref, tab, shortcut, and GIF tools without reaching the editable child frame.
+- canvas screenshots did not provide sufficiently stable coordinate/scale targeting for drag. Repeated screenshot, zoom, click, and drag loops consumed 2.51 million billed tokens.
+- `extract_page` rejected calls that supplied `tabId`, exposing a missing envelope entry in the raw forwarding catalog.
+
+This changes the next priority order: fix spatial input timeouts and debugger release, add frame-aware read/action APIs, load coherent capability packs, then add one-call console capture. Do not expose more raw primitives as a response to these failures.
+
 ## Resulting tool policy
 
 ### Keep active initially
@@ -202,10 +236,13 @@ published migration window.
 
 ### Improve next
 
-1. Replace individual keyword matches in `bro_search_tools` with server-owned capability groups such as interaction, tabs, debugging, uploads, and user scripts.
-2. Add generic readiness controls such as `waitForText` or `waitForSelector` to extraction/interaction facades for dynamic pages.
-3. Investigate whether flow observation and action can be consolidated without recreating the expensive minimal-tool behavior.
-4. Repeat decisive benchmark cells to measure variance and compare p50/p95 calls, billed tokens, and wall time.
+1. Fix the missing `extract_page` tab envelope regression.
+2. Bound every CDP input command, make drag send correct held-button state, and force debugger detach after timeout or cancellation.
+3. Add frame enumeration plus `frameId` to read, find, fill, click, and flow operations.
+4. Replace individual keyword matches in `bro_search_tools` with server-owned capability packs for interaction, tabs, debugging, uploads, user scripts, frames, and visual input.
+5. Add one-call console capture and stable screenshot viewport/scale metadata; evaluate an outcome-level visual drag facade.
+6. Add generic readiness controls such as `waitForText` or `waitForSelector`, and consider refId actions inside `browser.flow.act`.
+7. Repeat failed and high-tail Luna cells before changing default exposure.
 
 ## Revisit the default tool count when
 
