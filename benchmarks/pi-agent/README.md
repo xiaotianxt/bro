@@ -80,6 +80,39 @@ python3 benchmarks/pi-agent/analyze.py \
 
 The analyzer intentionally keeps only metrics, tool names, and task pass/fail state. Validators are task-specific and should be updated when release versions or external fixtures change.
 
+## Ref-only acceptance (v1.1.0+)
+
+`run-refs.py` uses the real adapter against the isolated environment provided by
+`scripts/live-refs.mjs --serve`. It permits only the four flow tools and blocks
+JS, CSS, and manual frame targeting. It checks observed fixture outcomes rather
+than trusting the model's success claim. The default model is Luna/max; optional
+model tiers require provider/account support, and provider rejection is not a
+browser failure.
+
+See [Frame-aware ref interaction](../../docs/ref-interaction.md) for exact setup,
+limits, and the opt-in test commands. `make check` never starts paid model calls.
+
+## Post-enhancement cross-tool comparison
+
+`compare-refs.py` runs two counterbalanced rounds of six ref-based tasks using
+Luna/max, normal bro native tools plus its installed skill, and agent-browser
+CLI plus its version-matched skill. Both arms use prepared headed Chrome for
+Testing with matching logical viewport/DPR. Run the isolated `live-refs.mjs
+--serve` environment first, then supply `--control`, `--output`, `--extension`
+and `--chrome`. Model calls are explicitly opt-in.
+
+Run-scoped fixture journals supplement raw tool traces. Per-cell `meta.json`
+contains provisional results; inspect `review.json` before publishing final
+verdicts, especially stale-ref ordering and image-only evidence. Browser and
+fixture startup, coordinator cleanup, intentional negative-test errors, and
+failed/censored tasks must not be silently conflated with completed-task latency.
+
+The audited pilot is recorded in
+[2026-09-09 comparison](results/2026-09-09-ref-tools-comparison.md). It identifies
+both agent-browser limitations and unresolved bro background-scroll/click
+signals; the earlier deterministic contract pass is not blanket evidence of
+healthy behavior in all lifecycle states.
+
 ## Interpreting metrics
 
 - **Task success** is stricter than tool execution success.

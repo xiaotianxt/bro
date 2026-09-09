@@ -1,0 +1,1029 @@
+{
+  "benchmarkVersion": 2,
+  "date": "2026-09-08",
+  "model": "openai-codex/gpt-5.6-luna",
+  "thinking": "max",
+  "versions": {
+    "agentBrowser": "0.37.0",
+    "bro": "1.0.3",
+    "agentBrowserChrome": "152.0.7977.82",
+    "broBrowser": "Helium 152.0.7977.82"
+  },
+  "method": {
+    "subagents": 22,
+    "agentBrowserTasks": 14,
+    "broContemporaneousTasks": 8,
+    "execution": "Sequential isolated Pi --print JSON subagents, alternating first product for paired tasks; caffeinate -di; 600-second deadline per cell. No coaching or code changes during runs.",
+    "agentInterface": "Homebrew CLI plus version-bundled official skill, bash/read tools only, separate named headless Chrome session per task. No bro tools, profile import, or alternative automation.",
+    "broInterface": "Native Pi extension plus official bro skill and read; no bash or other built-ins. Existing headed Helium browser with normal installed connector.",
+    "taskSource": "Recovered the prior Luna complex runner and local fixtures from Pi session 01a067ea-b184-7503-b5d7-aef99751f1e5. Added observer-only fixture telemetry shared by both products. Removed bro-specific tool names from common task wording.",
+    "adaptations": [
+      "Agent-browser upload uses an exactly prepared local text file; bro historical interface used base64.",
+      "Agent-browser session init scripts accepted as an equivalent only if persistence and removal are demonstrated. Restarting the browser does not count as runtime unregistration.",
+      "Agent-browser tabs task tests manually preserved ownership outcomes rather than nonexistent assumed claim/finalize commands.",
+      "TodoMVC cleanup removes only LUNA todos, then removes the remaining created task.",
+      "Canvas permits text-only final verification, but localization and drag must be visual/pointer based."
+    ],
+    "validation": "Coordinator audited tool arguments, raw results, intermediate/final states and cleanup, not model success claims. Local console/iframe/shadow/canvas/upload states additionally recorded by a mutation observer to a loopback collector. Tab preservation independently checked before coordinator teardown.",
+    "timeDefinition": "Monotonic duration of Pi subprocess, including skill loading, discovery, model latency, browser work and agent cleanup; excludes coordinator setup, teardown and analysis. Message wall spans checked for large sleep gaps; none found.",
+    "tokenDefinition": "Provider usage input + output + cacheRead + cacheWrite summed once per authoritative assistant message. Processed volume, not unique context or uniformly priced uncached tokens.",
+    "callDefinition": "Model-visible tool invocations. CLI process invocations separately counted from reviewed shell commands (including documented finite loops); flow steps are separate. Neither is an equal-unit browser action count, and one shell call can contain many CLI commands.",
+    "rawSessionsCommitted": false,
+    "allModelAndThinkingRecordsVerified": true
+  },
+  "summary": {
+    "runs": 22,
+    "taskSuccesses": 20,
+    "goalObserved": 22,
+    "seconds": 2211.828,
+    "medianSeconds": 80.791,
+    "toolCalls": 289,
+    "processedTokens": 3858547,
+    "rootToolErrorResults": 8,
+    "maskedShellErrorResults": 4,
+    "reportedCostUsd": 0.275315
+  },
+  "byProduct": {
+    "agent": {
+      "runs": 14,
+      "taskSuccesses": 13,
+      "goalObserved": 14,
+      "seconds": 1554.284,
+      "medianSeconds": 85.629,
+      "toolCalls": 198,
+      "processedTokens": 2946226,
+      "rootToolErrorResults": 6,
+      "maskedShellErrorResults": 4,
+      "reportedCostUsd": 0.19824784
+    },
+    "bro": {
+      "runs": 8,
+      "taskSuccesses": 7,
+      "goalObserved": 8,
+      "seconds": 657.544,
+      "medianSeconds": 69.401,
+      "toolCalls": 91,
+      "processedTokens": 912321,
+      "rootToolErrorResults": 2,
+      "maskedShellErrorResults": 0,
+      "reportedCostUsd": 0.07706716
+    }
+  },
+  "paired": {
+    "agent": {
+      "runs": 8,
+      "taskSuccesses": 7,
+      "goalObserved": 8,
+      "seconds": 1047.565,
+      "medianSeconds": 89.672,
+      "toolCalls": 128,
+      "processedTokens": 2100064,
+      "rootToolErrorResults": 6,
+      "maskedShellErrorResults": 3,
+      "reportedCostUsd": 0.13157552
+    },
+    "bro": {
+      "runs": 8,
+      "taskSuccesses": 7,
+      "goalObserved": 8,
+      "seconds": 657.544,
+      "medianSeconds": 69.401,
+      "toolCalls": 91,
+      "processedTokens": 912321,
+      "rootToolErrorResults": 2,
+      "maskedShellErrorResults": 0,
+      "reportedCostUsd": 0.07706716
+    }
+  },
+  "mutuallyCompliant": {
+    "tasks": [
+      "canvas_drag",
+      "console_async",
+      "drag_drop",
+      "iframe_editor",
+      "network_post",
+      "sauce_checkout"
+    ],
+    "agent": {
+      "runs": 6,
+      "taskSuccesses": 6,
+      "goalObserved": 6,
+      "seconds": 739.037,
+      "medianSeconds": 89.672,
+      "toolCalls": 96,
+      "processedTokens": 1454373,
+      "rootToolErrorResults": 4,
+      "maskedShellErrorResults": 1,
+      "reportedCostUsd": 0.0910248
+    },
+    "bro": {
+      "runs": 6,
+      "taskSuccesses": 6,
+      "goalObserved": 6,
+      "seconds": 411.175,
+      "medianSeconds": 66.649,
+      "toolCalls": 53,
+      "processedTokens": 498890,
+      "rootToolErrorResults": 0,
+      "maskedShellErrorResults": 0,
+      "reportedCostUsd": 0.05028016
+    }
+  },
+  "limitations": [
+    "One run per product/task; a workflow-discovery pilot, not a statistically powered performance ranking. Small timing differences are inconclusive.",
+    "This compares bro native Pi tools against agent-browser CLI+skill, NOT agent-browser native MCP or equal low-level browser backends.",
+    "Cold skill loading and command discovery are included. Reusing a warmed long-running agent context may change the comparison.",
+    "Headless clean Chrome versus existing headed Helium, different viewport/DPR and authentication state. Social extraction is supplemental only, not a fair auth-controlled pair.",
+    "Historical bro numbers used different tool/skill exposure and some changed fixtures; no historical percentage speedup is claimed.",
+    "The two outcome-only runs are NOT treated as task successes: agent runtime-script removal and bro ref-only shadow submission.",
+    "The adapted tab task passes its stated outcome contract but is not proof of native ownership lifecycle parity.",
+    "Social task browser outcomes passed, but its out-of-workdir scratch-file writes violated the runner environment policy; cleanup was performed by the coordinator.",
+    "Reported USD uses the Pi model catalog and is not an independently verified invoice."
+  ],
+  "runs": [
+    {
+      "product": "agent",
+      "task": "ajax_movies",
+      "paired": false,
+      "verdict": "pass",
+      "taskSuccess": true,
+      "goalObserved": true,
+      "environmentPolicyCompliant": true,
+      "seconds": 54.53,
+      "modelTurns": 10,
+      "toolCalls": 9,
+      "documentationCalls": 2,
+      "cliProcessInvocations": 14,
+      "flowStepsRequested": null,
+      "toolNames": {
+        "read": 1,
+        "bash": 8
+      },
+      "rootToolErrorResults": 0,
+      "maskedShellErrorResults": 0,
+      "usage": {
+        "input": 23541,
+        "output": 1342,
+        "cacheRead": 76288,
+        "cacheWrite": 0
+      },
+      "processedTokens": 101171,
+      "reportedCostUsd": 0.00784436,
+      "exitCode": 0,
+      "timedOut": false,
+      "modelMessageWallSpanSeconds": 43.536,
+      "independentFixtureObservation": false,
+      "cleanup": {
+        "harnessClosedLeakedBroTabs": 0,
+        "harnessCloseExitCode": 0
+      },
+      "notes": "",
+      "traceSha256": "7c862c11d5003ee637bebe8a5ea64e07e2cc20cb3213dc9e4e76576b6db88663"
+    },
+    {
+      "product": "agent",
+      "task": "canvas_drag",
+      "paired": true,
+      "verdict": "pass",
+      "taskSuccess": true,
+      "goalObserved": true,
+      "environmentPolicyCompliant": true,
+      "seconds": 100.085,
+      "modelTurns": 13,
+      "toolCalls": 12,
+      "documentationCalls": 3,
+      "cliProcessInvocations": 16,
+      "flowStepsRequested": null,
+      "toolNames": {
+        "read": 4,
+        "bash": 8
+      },
+      "rootToolErrorResults": 0,
+      "maskedShellErrorResults": 0,
+      "usage": {
+        "input": 36653,
+        "output": 1661,
+        "cacheRead": 96128,
+        "cacheWrite": 0
+      },
+      "processedTokens": 134442,
+      "reportedCostUsd": 0.01124636,
+      "exitCode": 0,
+      "timedOut": false,
+      "modelMessageWallSpanSeconds": 90.326,
+      "independentFixtureObservation": true,
+      "cleanup": {
+        "harnessClosedLeakedBroTabs": 0,
+        "harnessCloseExitCode": 0
+      },
+      "notes": "",
+      "traceSha256": "4cfe60cdddef02bb6f3a6206dae59252a4ef77ec78668c1024ca4e645f972619"
+    },
+    {
+      "product": "agent",
+      "task": "console_async",
+      "paired": true,
+      "verdict": "pass",
+      "taskSuccess": true,
+      "goalObserved": true,
+      "environmentPolicyCompliant": true,
+      "seconds": 70.776,
+      "modelTurns": 13,
+      "toolCalls": 13,
+      "documentationCalls": 5,
+      "cliProcessInvocations": 12,
+      "flowStepsRequested": null,
+      "toolNames": {
+        "read": 1,
+        "bash": 12
+      },
+      "rootToolErrorResults": 0,
+      "maskedShellErrorResults": 0,
+      "usage": {
+        "input": 38993,
+        "output": 1523,
+        "cacheRead": 131072,
+        "cacheWrite": 0
+      },
+      "processedTokens": 171588,
+      "reportedCostUsd": 0.01224764,
+      "exitCode": 0,
+      "timedOut": false,
+      "modelMessageWallSpanSeconds": 61.856,
+      "independentFixtureObservation": true,
+      "cleanup": {
+        "harnessClosedLeakedBroTabs": 0,
+        "harnessCloseExitCode": 0
+      },
+      "notes": "",
+      "traceSha256": "f3b79da2141ef36563756edf56bafc79402bdc372ca9289dc5a8cc4228b5c90d"
+    },
+    {
+      "product": "agent",
+      "task": "drag_drop",
+      "paired": true,
+      "verdict": "pass",
+      "taskSuccess": true,
+      "goalObserved": true,
+      "environmentPolicyCompliant": true,
+      "seconds": 79.259,
+      "modelTurns": 14,
+      "toolCalls": 13,
+      "documentationCalls": 3,
+      "cliProcessInvocations": 15,
+      "flowStepsRequested": null,
+      "toolNames": {
+        "read": 3,
+        "bash": 10
+      },
+      "rootToolErrorResults": 0,
+      "maskedShellErrorResults": 0,
+      "usage": {
+        "input": 35904,
+        "output": 1707,
+        "cacheRead": 110720,
+        "cacheWrite": 0
+      },
+      "processedTokens": 148331,
+      "reportedCostUsd": 0.0114436,
+      "exitCode": 0,
+      "timedOut": false,
+      "modelMessageWallSpanSeconds": 71.209,
+      "independentFixtureObservation": false,
+      "cleanup": {
+        "harnessClosedLeakedBroTabs": 0,
+        "harnessCloseExitCode": 0
+      },
+      "notes": "",
+      "traceSha256": "ed23101cce58292ef19ecaf69592747889423af876e4b5f27a585bab8bc779a8"
+    },
+    {
+      "product": "agent",
+      "task": "iframe_editor",
+      "paired": true,
+      "verdict": "pass",
+      "taskSuccess": true,
+      "goalObserved": true,
+      "environmentPolicyCompliant": true,
+      "seconds": 44.425,
+      "modelTurns": 9,
+      "toolCalls": 8,
+      "documentationCalls": 2,
+      "cliProcessInvocations": 8,
+      "flowStepsRequested": null,
+      "toolNames": {
+        "read": 1,
+        "bash": 7
+      },
+      "rootToolErrorResults": 0,
+      "maskedShellErrorResults": 0,
+      "usage": {
+        "input": 25699,
+        "output": 644,
+        "cacheRead": 45056,
+        "cacheWrite": 0
+      },
+      "processedTokens": 71399,
+      "reportedCostUsd": 0.00681372,
+      "exitCode": 0,
+      "timedOut": false,
+      "modelMessageWallSpanSeconds": 36.551,
+      "independentFixtureObservation": true,
+      "cleanup": {
+        "harnessClosedLeakedBroTabs": 0,
+        "harnessCloseExitCode": 0
+      },
+      "notes": "",
+      "traceSha256": "98d4ce7c6345a354ad6cde43c0c90cb5a25e7c1673f3385f9b449ca03bff5ad9"
+    },
+    {
+      "product": "agent",
+      "task": "network_post",
+      "paired": true,
+      "verdict": "pass",
+      "taskSuccess": true,
+      "goalObserved": true,
+      "environmentPolicyCompliant": true,
+      "seconds": 110.253,
+      "modelTurns": 13,
+      "toolCalls": 12,
+      "documentationCalls": 4,
+      "cliProcessInvocations": 15,
+      "flowStepsRequested": null,
+      "toolNames": {
+        "read": 1,
+        "bash": 11
+      },
+      "rootToolErrorResults": 1,
+      "maskedShellErrorResults": 0,
+      "usage": {
+        "input": 36506,
+        "output": 3668,
+        "cacheRead": 229376,
+        "cacheWrite": 0
+      },
+      "processedTokens": 269550,
+      "reportedCostUsd": 0.01629032,
+      "exitCode": 0,
+      "timedOut": false,
+      "modelMessageWallSpanSeconds": 92.47,
+      "independentFixtureObservation": false,
+      "cleanup": {
+        "harnessClosedLeakedBroTabs": 0,
+        "harnessCloseExitCode": 0
+      },
+      "notes": "Observed POST metadata and captured response body. Recovered from a top-level-await syntax error in eval. Full skill reference loading contributed context overhead.",
+      "traceSha256": "b178c4fa8e5b2c8337f73cf4898a49e6ecf4e140ace61aba50b28ea7b1840d20"
+    },
+    {
+      "product": "agent",
+      "task": "release_compare",
+      "paired": false,
+      "verdict": "pass",
+      "taskSuccess": true,
+      "goalObserved": true,
+      "environmentPolicyCompliant": true,
+      "seconds": 117.792,
+      "modelTurns": 9,
+      "toolCalls": 8,
+      "documentationCalls": 2,
+      "cliProcessInvocations": 12,
+      "flowStepsRequested": null,
+      "toolNames": {
+        "read": 1,
+        "bash": 7
+      },
+      "rootToolErrorResults": 0,
+      "maskedShellErrorResults": 0,
+      "usage": {
+        "input": 40861,
+        "output": 4442,
+        "cacheRead": 53760,
+        "cacheWrite": 0
+      },
+      "processedTokens": 99063,
+      "reportedCostUsd": 0.0145778,
+      "exitCode": 0,
+      "timedOut": false,
+      "modelMessageWallSpanSeconds": 97.158,
+      "independentFixtureObservation": false,
+      "cleanup": {
+        "harnessClosedLeakedBroTabs": 0,
+        "harnessCloseExitCode": 0
+      },
+      "notes": "",
+      "traceSha256": "e583d7b9c7f1fdda5593451802b61aa755edbe4532617053e010fd7bd8271b3b"
+    },
+    {
+      "product": "agent",
+      "task": "sauce_checkout",
+      "paired": true,
+      "verdict": "pass",
+      "taskSuccess": true,
+      "goalObserved": true,
+      "environmentPolicyCompliant": true,
+      "seconds": 334.239,
+      "modelTurns": 39,
+      "toolCalls": 38,
+      "documentationCalls": 2,
+      "cliProcessInvocations": 77,
+      "flowStepsRequested": null,
+      "toolNames": {
+        "read": 2,
+        "bash": 36
+      },
+      "rootToolErrorResults": 3,
+      "maskedShellErrorResults": 1,
+      "usage": {
+        "input": 76551,
+        "output": 5104,
+        "cacheRead": 577408,
+        "cacheWrite": 0
+      },
+      "processedTokens": 659063,
+      "reportedCostUsd": 0.03298316,
+      "exitCode": 0,
+      "timedOut": false,
+      "modelMessageWallSpanSeconds": 322.936,
+      "independentFixtureObservation": false,
+      "cleanup": {
+        "harnessClosedLeakedBroTabs": 0,
+        "harnessCloseExitCode": 0
+      },
+      "notes": "Correct cart/overview and rollback verified. Several native click commands returned success without the expected UI changes; page-side DOM .click() recovered. This task permitted DOM click evaluation, not direct React/app-state mutation. The cause of the no-op clicks was not isolated.",
+      "traceSha256": "e5b79c51fdcbea0e1097b4870e68b8f0380eafdbaaf756f4a52d3e6320af42a7"
+    },
+    {
+      "product": "agent",
+      "task": "shadow_form",
+      "paired": true,
+      "verdict": "pass",
+      "taskSuccess": true,
+      "goalObserved": true,
+      "environmentPolicyCompliant": true,
+      "seconds": 65.394,
+      "modelTurns": 11,
+      "toolCalls": 10,
+      "documentationCalls": 2,
+      "cliProcessInvocations": 11,
+      "flowStepsRequested": null,
+      "toolNames": {
+        "read": 1,
+        "bash": 9
+      },
+      "rootToolErrorResults": 0,
+      "maskedShellErrorResults": 0,
+      "usage": {
+        "input": 36953,
+        "output": 1026,
+        "cacheRead": 56832,
+        "cacheWrite": 0
+      },
+      "processedTokens": 94811,
+      "reportedCostUsd": 0.00975844,
+      "exitCode": 0,
+      "timedOut": false,
+      "modelMessageWallSpanSeconds": 57.88,
+      "independentFixtureObservation": true,
+      "cleanup": {
+        "harnessClosedLeakedBroTabs": 0,
+        "harnessCloseExitCode": 0
+      },
+      "notes": "",
+      "traceSha256": "c7e7b030e6f739f7f6a617c7f9dd852c81a05d83d47e9c5eae228d97cab12bed"
+    },
+    {
+      "product": "agent",
+      "task": "social_followup",
+      "paired": false,
+      "verdict": "pass",
+      "taskSuccess": true,
+      "goalObserved": true,
+      "environmentPolicyCompliant": false,
+      "seconds": 141.558,
+      "modelTurns": 18,
+      "toolCalls": 17,
+      "documentationCalls": 2,
+      "cliProcessInvocations": 68,
+      "flowStepsRequested": null,
+      "toolNames": {
+        "read": 1,
+        "bash": 16
+      },
+      "rootToolErrorResults": 0,
+      "maskedShellErrorResults": 1,
+      "usage": {
+        "input": 49021,
+        "output": 4347,
+        "cacheRead": 214528,
+        "cacheWrite": 0
+      },
+      "processedTokens": 267896,
+      "reportedCostUsd": 0.01931116,
+      "exitCode": 0,
+      "timedOut": false,
+      "modelMessageWallSpanSeconds": 128.241,
+      "independentFixtureObservation": false,
+      "cleanup": {
+        "harnessClosedLeakedBroTabs": 0,
+        "harnessCloseExitCode": 0
+      },
+      "notes": "Reddit was blocked; LinkedIn and X presented login walls; public Threads search and a post follow-up succeeded. Not paired with bro because authentication/headless state differs. The agent also wrote four command-output scratch files outside its allowed work directory; the coordinator deleted them.",
+      "traceSha256": "5d77b63df601ebef341d507059cebc1249ad49a126945de460f9c31de9f51cc0"
+    },
+    {
+      "product": "agent",
+      "task": "tabs_lifecycle",
+      "paired": false,
+      "verdict": "adapted_pass",
+      "taskSuccess": true,
+      "goalObserved": true,
+      "environmentPolicyCompliant": true,
+      "seconds": 52.946,
+      "modelTurns": 10,
+      "toolCalls": 9,
+      "documentationCalls": 3,
+      "cliProcessInvocations": 9,
+      "flowStepsRequested": null,
+      "toolNames": {
+        "read": 1,
+        "bash": 8
+      },
+      "rootToolErrorResults": 0,
+      "maskedShellErrorResults": 0,
+      "usage": {
+        "input": 18322,
+        "output": 1244,
+        "cacheRead": 69632,
+        "cacheWrite": 0
+      },
+      "processedTokens": 89198,
+      "reportedCostUsd": 0.00654984,
+      "exitCode": 0,
+      "timedOut": false,
+      "modelMessageWallSpanSeconds": 41.708,
+      "independentFixtureObservation": false,
+      "cleanup": {
+        "harnessClosedLeakedBroTabs": 0,
+        "harnessCloseExitCode": 0,
+        "preservedPreparedTabsBeforeHarnessTeardown": 3
+      },
+      "notes": "The outcome-equivalent task passed: target adopted, temporary tab closed, all three prepared tabs preserved. Ownership was tracked manually. This does not demonstrate native bro-style claim/finalize semantics.",
+      "traceSha256": "42dc4210b69da1a6880e8dcae7a03b922252a4459b5fa34dfb82dc1d368b185d"
+    },
+    {
+      "product": "agent",
+      "task": "todo_spa",
+      "paired": false,
+      "verdict": "pass",
+      "taskSuccess": true,
+      "goalObserved": true,
+      "environmentPolicyCompliant": true,
+      "seconds": 91.999,
+      "modelTurns": 20,
+      "toolCalls": 19,
+      "documentationCalls": 2,
+      "cliProcessInvocations": 34,
+      "flowStepsRequested": null,
+      "toolNames": {
+        "read": 1,
+        "bash": 18
+      },
+      "rootToolErrorResults": 0,
+      "maskedShellErrorResults": 0,
+      "usage": {
+        "input": 38473,
+        "output": 1717,
+        "cacheRead": 175616,
+        "cacheWrite": 0
+      },
+      "processedTokens": 215806,
+      "reportedCostUsd": 0.01326732,
+      "exitCode": 0,
+      "timedOut": false,
+      "modelMessageWallSpanSeconds": 83.402,
+      "independentFixtureObservation": false,
+      "cleanup": {
+        "harnessClosedLeakedBroTabs": 0,
+        "harnessCloseExitCode": 0
+      },
+      "notes": "",
+      "traceSha256": "2cdab64c6e940d7e050f53c7a94a6ba16ebd7d829fcda172ab69b3e9fe6404e1"
+    },
+    {
+      "product": "agent",
+      "task": "upload_content",
+      "paired": false,
+      "verdict": "pass",
+      "taskSuccess": true,
+      "goalObserved": true,
+      "environmentPolicyCompliant": true,
+      "seconds": 47.894,
+      "modelTurns": 9,
+      "toolCalls": 8,
+      "documentationCalls": 2,
+      "cliProcessInvocations": 7,
+      "flowStepsRequested": null,
+      "toolNames": {
+        "read": 1,
+        "bash": 7
+      },
+      "rootToolErrorResults": 0,
+      "maskedShellErrorResults": 0,
+      "usage": {
+        "input": 15450,
+        "output": 746,
+        "cacheRead": 56832,
+        "cacheWrite": 0
+      },
+      "processedTokens": 73028,
+      "reportedCostUsd": 0.00512184,
+      "exitCode": 0,
+      "timedOut": false,
+      "modelMessageWallSpanSeconds": 40.099,
+      "independentFixtureObservation": true,
+      "cleanup": {
+        "harnessClosedLeakedBroTabs": 0,
+        "harnessCloseExitCode": 0
+      },
+      "notes": "",
+      "traceSha256": "1e68aa1fc453fa176ddd1eade155d003e132648028dadabc6746e30586a1c43b"
+    },
+    {
+      "product": "agent",
+      "task": "userscript_navigation",
+      "paired": true,
+      "verdict": "outcome_only",
+      "taskSuccess": false,
+      "goalObserved": true,
+      "environmentPolicyCompliant": true,
+      "seconds": 243.134,
+      "modelTurns": 23,
+      "toolCalls": 22,
+      "documentationCalls": 7,
+      "cliProcessInvocations": 26,
+      "flowStepsRequested": null,
+      "toolNames": {
+        "read": 1,
+        "bash": 21
+      },
+      "rootToolErrorResults": 2,
+      "maskedShellErrorResults": 2,
+      "usage": {
+        "input": 61145,
+        "output": 7431,
+        "cacheRead": 482304,
+        "cacheWrite": 0
+      },
+      "processedTokens": 550880,
+      "reportedCostUsd": 0.03079228,
+      "exitCode": 0,
+      "timedOut": false,
+      "modelMessageWallSpanSeconds": 224.743,
+      "independentFixtureObservation": false,
+      "cleanup": {
+        "harnessClosedLeakedBroTabs": 0,
+        "harnessCloseExitCode": 0
+      },
+      "notes": "Two pages received the init-script marker and a third did not, but runtime unregistration was not demonstrated. The documented addinitscript command returned Unknown command. removeinitscript was passed a pathname instead of an identifier and returned Script not found. The agent closed/restarted its browser to obtain the absent marker, then reported success.",
+      "traceSha256": "424c1593a218448de9cacced26f62b23af15de1a51528c7a49b302f12c6d014a"
+    },
+    {
+      "product": "bro",
+      "task": "canvas_drag",
+      "paired": true,
+      "verdict": "pass",
+      "taskSuccess": true,
+      "goalObserved": true,
+      "environmentPolicyCompliant": true,
+      "seconds": 82.324,
+      "modelTurns": 11,
+      "toolCalls": 10,
+      "documentationCalls": 1,
+      "cliProcessInvocations": null,
+      "flowStepsRequested": 0,
+      "toolNames": {
+        "read": 1,
+        "bro_search_tools": 1,
+        "bro_browsers_context": 1,
+        "bro_browser_flow_start": 1,
+        "bro_computer": 4,
+        "bro_browser_flow_observe": 1,
+        "bro_browser_flow_finish": 1
+      },
+      "rootToolErrorResults": 0,
+      "maskedShellErrorResults": 0,
+      "usage": {
+        "input": 23019,
+        "output": 2390,
+        "cacheRead": 94720,
+        "cacheWrite": 0
+      },
+      "processedTokens": 120129,
+      "reportedCostUsd": 0.0093662,
+      "exitCode": 0,
+      "timedOut": false,
+      "modelMessageWallSpanSeconds": 73.383,
+      "independentFixtureObservation": true,
+      "cleanup": {
+        "harnessClosedLeakedBroTabs": 0
+      },
+      "notes": "",
+      "traceSha256": "91f8c834844b47302fae3a9d9104dd40b074292e86182a2312a1759dfe0c5053"
+    },
+    {
+      "product": "bro",
+      "task": "console_async",
+      "paired": true,
+      "verdict": "pass",
+      "taskSuccess": true,
+      "goalObserved": true,
+      "environmentPolicyCompliant": true,
+      "seconds": 45.791,
+      "modelTurns": 5,
+      "toolCalls": 4,
+      "documentationCalls": 1,
+      "cliProcessInvocations": null,
+      "flowStepsRequested": 0,
+      "toolNames": {
+        "read": 1,
+        "bro_search_tools": 1,
+        "bro_browser_extract": 1,
+        "bro_browser_console_capture": 1
+      },
+      "rootToolErrorResults": 0,
+      "maskedShellErrorResults": 0,
+      "usage": {
+        "input": 12586,
+        "output": 1452,
+        "cacheRead": 17920,
+        "cacheWrite": 0
+      },
+      "processedTokens": 31958,
+      "reportedCostUsd": 0.004618,
+      "exitCode": 0,
+      "timedOut": false,
+      "modelMessageWallSpanSeconds": 35.842,
+      "independentFixtureObservation": true,
+      "cleanup": {
+        "harnessClosedLeakedBroTabs": 0
+      },
+      "notes": "",
+      "traceSha256": "4562e426095454771f7a15589b01ea92ddf6de3cb6b594dec46e4b3c74a347f4"
+    },
+    {
+      "product": "bro",
+      "task": "drag_drop",
+      "paired": true,
+      "verdict": "pass",
+      "taskSuccess": true,
+      "goalObserved": true,
+      "environmentPolicyCompliant": true,
+      "seconds": 85.441,
+      "modelTurns": 9,
+      "toolCalls": 8,
+      "documentationCalls": 1,
+      "cliProcessInvocations": null,
+      "flowStepsRequested": 0,
+      "toolNames": {
+        "read": 1,
+        "bro_search_tools": 1,
+        "bro_browser_flow_start": 1,
+        "bro_computer": 3,
+        "bro_browser_flow_observe": 1,
+        "bro_browser_flow_finish": 1
+      },
+      "rootToolErrorResults": 0,
+      "maskedShellErrorResults": 0,
+      "usage": {
+        "input": 53843,
+        "output": 2201,
+        "cacheRead": 25088,
+        "cacheWrite": 0
+      },
+      "processedTokens": 81132,
+      "reportedCostUsd": 0.01391156,
+      "exitCode": 0,
+      "timedOut": false,
+      "modelMessageWallSpanSeconds": 74.827,
+      "independentFixtureObservation": false,
+      "cleanup": {
+        "harnessClosedLeakedBroTabs": 0
+      },
+      "notes": "",
+      "traceSha256": "b9c5d9da769bfb963468f7a730b12c713f40880513fbcbe9d7cbb432655ae3aa"
+    },
+    {
+      "product": "bro",
+      "task": "iframe_editor",
+      "paired": true,
+      "verdict": "pass",
+      "taskSuccess": true,
+      "goalObserved": true,
+      "environmentPolicyCompliant": true,
+      "seconds": 50.974,
+      "modelTurns": 9,
+      "toolCalls": 8,
+      "documentationCalls": 1,
+      "cliProcessInvocations": null,
+      "flowStepsRequested": 4,
+      "toolNames": {
+        "read": 1,
+        "bro_search_tools": 1,
+        "bro_browser_flow_start": 1,
+        "bro_frames_list": 1,
+        "bro_browser_flow_observe": 1,
+        "bro_browser_flow_act": 2,
+        "bro_browser_flow_finish": 1
+      },
+      "rootToolErrorResults": 0,
+      "maskedShellErrorResults": 0,
+      "usage": {
+        "input": 14932,
+        "output": 938,
+        "cacheRead": 42496,
+        "cacheWrite": 0
+      },
+      "processedTokens": 58366,
+      "reportedCostUsd": 0.00496192,
+      "exitCode": 0,
+      "timedOut": false,
+      "modelMessageWallSpanSeconds": 43.231,
+      "independentFixtureObservation": true,
+      "cleanup": {
+        "harnessClosedLeakedBroTabs": 0
+      },
+      "notes": "",
+      "traceSha256": "a7f7722bca94755afcfbaf3d3ce377bd4576333530933a02d4d61859ad79446c"
+    },
+    {
+      "product": "bro",
+      "task": "network_post",
+      "paired": true,
+      "verdict": "pass",
+      "taskSuccess": true,
+      "goalObserved": true,
+      "environmentPolicyCompliant": true,
+      "seconds": 33.162,
+      "modelTurns": 3,
+      "toolCalls": 2,
+      "documentationCalls": 1,
+      "cliProcessInvocations": null,
+      "flowStepsRequested": 0,
+      "toolNames": {
+        "read": 1,
+        "bro_browser_network_capture": 1
+      },
+      "rootToolErrorResults": 0,
+      "maskedShellErrorResults": 0,
+      "usage": {
+        "input": 8713,
+        "output": 1140,
+        "cacheRead": 8192,
+        "cacheWrite": 0
+      },
+      "processedTokens": 18045,
+      "reportedCostUsd": 0.00327444,
+      "exitCode": 0,
+      "timedOut": false,
+      "modelMessageWallSpanSeconds": 20.26,
+      "independentFixtureObservation": false,
+      "cleanup": {
+        "harnessClosedLeakedBroTabs": 0
+      },
+      "notes": "",
+      "traceSha256": "0df046f2201b45c99c4bfe92286484d91a96a8d88c747bef7308e1c3ed6a0aa5"
+    },
+    {
+      "product": "bro",
+      "task": "sauce_checkout",
+      "paired": true,
+      "verdict": "pass",
+      "taskSuccess": true,
+      "goalObserved": true,
+      "environmentPolicyCompliant": true,
+      "seconds": 113.483,
+      "modelTurns": 22,
+      "toolCalls": 21,
+      "documentationCalls": 1,
+      "cliProcessInvocations": null,
+      "flowStepsRequested": 27,
+      "toolNames": {
+        "read": 1,
+        "bro_browser_flow_start": 1,
+        "bro_browser_flow_observe": 9,
+        "bro_browser_flow_act": 9,
+        "bro_browser_flow_finish": 1
+      },
+      "rootToolErrorResults": 0,
+      "maskedShellErrorResults": 0,
+      "usage": {
+        "input": 43195,
+        "output": 2193,
+        "cacheRead": 143872,
+        "cacheWrite": 0
+      },
+      "processedTokens": 189260,
+      "reportedCostUsd": 0.01414804,
+      "exitCode": 0,
+      "timedOut": false,
+      "modelMessageWallSpanSeconds": 101.991,
+      "independentFixtureObservation": false,
+      "cleanup": {
+        "harnessClosedLeakedBroTabs": 0
+      },
+      "notes": "",
+      "traceSha256": "c9dceca3a2dd29c0c42332d7d67ea8f6a09c76ecb0e2a580229af0ba9f0768ee"
+    },
+    {
+      "product": "bro",
+      "task": "shadow_form",
+      "paired": true,
+      "verdict": "outcome_only",
+      "taskSuccess": false,
+      "goalObserved": true,
+      "environmentPolicyCompliant": true,
+      "seconds": 189.891,
+      "modelTurns": 32,
+      "toolCalls": 31,
+      "documentationCalls": 2,
+      "cliProcessInvocations": null,
+      "flowStepsRequested": 0,
+      "toolNames": {
+        "read": 2,
+        "bro_search_tools": 5,
+        "bro_browser_flow_start": 2,
+        "bro_read_page": 6,
+        "bro_form_input": 4,
+        "bro_click_element": 2,
+        "bro_find": 1,
+        "bro_browsers_context": 1,
+        "bro_tabs_context": 1,
+        "bro_browser_flow_finish": 2,
+        "bro_get_element_info": 1,
+        "bro_computer": 4
+      },
+      "rootToolErrorResults": 2,
+      "maskedShellErrorResults": 0,
+      "usage": {
+        "input": 55515,
+        "output": 4338,
+        "cacheRead": 296960,
+        "cacheWrite": 0
+      },
+      "processedTokens": 356813,
+      "reportedCostUsd": 0.0222478,
+      "exitCode": 0,
+      "timedOut": false,
+      "modelMessageWallSpanSeconds": 180.477,
+      "independentFixtureObservation": true,
+      "cleanup": {
+        "harnessClosedLeakedBroTabs": 0
+      },
+      "notes": "Correct output independently observed, but the requested ref-based submission path failed twice with Input.dispatchMouseEvent timeouts. Coordinate-based computer clicking recovered the outcome. No JavaScript evaluation was used; the narrower ref-only method contract was not met.",
+      "traceSha256": "c81d1977d0c5d311bba99ceeb963a30495fe0cc0d922cc2178b2b10e2ff533a7"
+    },
+    {
+      "product": "bro",
+      "task": "userscript_navigation",
+      "paired": true,
+      "verdict": "pass",
+      "taskSuccess": true,
+      "goalObserved": true,
+      "environmentPolicyCompliant": true,
+      "seconds": 56.478,
+      "modelTurns": 8,
+      "toolCalls": 7,
+      "documentationCalls": 1,
+      "cliProcessInvocations": null,
+      "flowStepsRequested": 6,
+      "toolNames": {
+        "read": 1,
+        "bro_search_tools": 1,
+        "bro_userscripts_register": 1,
+        "bro_browser_batch_flow": 2,
+        "bro_userscripts_unregister": 1,
+        "bro_userscripts_list": 1
+      },
+      "rootToolErrorResults": 0,
+      "maskedShellErrorResults": 0,
+      "usage": {
+        "input": 9028,
+        "output": 1510,
+        "cacheRead": 46080,
+        "cacheWrite": 0
+      },
+      "processedTokens": 56618,
+      "reportedCostUsd": 0.0045392,
+      "exitCode": 0,
+      "timedOut": false,
+      "modelMessageWallSpanSeconds": 44.583,
+      "independentFixtureObservation": false,
+      "cleanup": {
+        "harnessClosedLeakedBroTabs": 0
+      },
+      "notes": "",
+      "traceSha256": "f5c03a4e1642a09151776291a2891ef5a59ed8e9e98d2c48a0f2ec944e4da796"
+    }
+  ]
+}

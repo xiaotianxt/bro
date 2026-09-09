@@ -1,0 +1,398 @@
+{
+  "date": "2026-09-09",
+  "status": "implemented and locally verified; unreleased",
+  "sourceStudy": {
+    "repository": "https://github.com/vercel-labs/agent-browser",
+    "tag": "v0.37.0",
+    "commit": "471ab3852b47b98847f1d9c855c272bb62d0d50b",
+    "paths": [
+      "cli/src/native/interaction.rs",
+      "cli/src/native/actions.rs",
+      "cli/src/native/browser.rs",
+      "cli/src/native/cdp/chrome.rs",
+      "cli/src/commands.rs",
+      "cli/src/main.rs"
+    ],
+    "facts": [
+      "Element scroll uses DOM scrollBy, not wheel input.",
+      "Selected/foreground-page lifecycle and controlled-browser launch differ from bro background flows.",
+      "CLI batch --bail plus native text waits can complete the same workflow in one CLI invocation.",
+      "Unknown scroll direction can become a zero-delta operation yet return scrolled:true; bro rejects invalid directions instead."
+    ]
+  },
+  "fix": {
+    "owner": "ref input preparation and post-scroll rendering lifecycle; Rust flow composition",
+    "changes": [
+      "Reuse foreground/frame/target preparation without global browser suppression flags",
+      "One scroll, then rendering-frame synchronization; no synthetic scroll event or replay",
+      "Structured actual before/after/delta/extent/moved/boundary result, with null boundary for unsupported writing-mode origins",
+      "Measure range after scroll handlers, reject disconnected/non-scrollable targets",
+      "Ref-only flow scroll step plus read_text preserves refs and batches intermediate UI observations"
+    ]
+  },
+  "verification": {
+    "redSignal": "Fresh hidden tab: UI remained SCROLL_TOP:0 after offset change; regression failed.",
+    "greenSignal": "Same case observes SCROLL_TOP:100 immediately after return without screenshot or manual activation.",
+    "makeCheck": {
+      "pass": true,
+      "rust": 45,
+      "extension": 37,
+      "piAdapter": 20
+    },
+    "realBrowserContracts": {
+      "checks": [
+        {
+          "name": "fresh background scroll delivers its event-driven UI before returning",
+          "pass": true,
+          "seconds": 0.3532842079999998
+        },
+        {
+          "name": "flow batches background scroll and intermediate visible reads without replacing refs",
+          "pass": true,
+          "seconds": 12.666475125000002
+        },
+        {
+          "name": "inline same-site, cross-site and nested frame AX labels",
+          "pass": true,
+          "seconds": 0.0626588329999995
+        },
+        {
+          "name": "native ref input/select/click across frame and nested shadow boundaries",
+          "pass": true,
+          "seconds": 0.4987387920000001
+        },
+        {
+          "name": "snapshot refs cannot escape their tab or alias a later snapshot",
+          "pass": true,
+          "seconds": 0.11671541600000092
+        },
+        {
+          "name": "detached/clone replacement refs fail instead of silently retargeting",
+          "pass": true,
+          "seconds": 0.07652195799999936
+        },
+        {
+          "name": "covered/disabled clicks and invalid selects fail before action",
+          "pass": true,
+          "seconds": 0.1649592499999999
+        },
+        {
+          "name": "navigation invalidates refs to the old iframe document",
+          "pass": true,
+          "seconds": 0.08885854199999994
+        },
+        {
+          "name": "file upload uses the same cross-site document-bound refs",
+          "pass": true,
+          "seconds": 0.08701437500000066
+        },
+        {
+          "name": "default flow observation and ref steps work without frame IDs; failures stop the flow",
+          "pass": true,
+          "seconds": 0.18303158299999994
+        },
+        {
+          "name": "find, info, wait and scroll use the same refs and report actual scroll boundaries",
+          "pass": true,
+          "seconds": 0.350221125
+        }
+      ],
+      "pass": true
+    }
+  },
+  "modelComparison": {
+    "model": "openai-codex/gpt-5.6-luna",
+    "thinking": "max",
+    "validRuns": 8,
+    "normal": {
+      "bro": {
+        "passes": 2,
+        "runs": 2,
+        "meanSeconds": 43.6875,
+        "meanCalls": 7,
+        "meanProcessedTokens": 53776,
+        "trials": [
+          {
+            "product": "bro",
+            "round": 1,
+            "seconds": 41.43,
+            "toolCalls": 7,
+            "processedTokens": 53710,
+            "usage": {
+              "input": 12437,
+              "output": 825,
+              "cacheRead": 40448,
+              "cacheWrite": 0
+            },
+            "rootToolErrors": 0,
+            "maskedErrorResults": 0,
+            "markersObserved": {
+              "SCROLL_TOP:100": true,
+              "SCROLL_TOP:920": true
+            },
+            "policyFlags": [],
+            "exitCode": 0,
+            "timedOut": false,
+            "traceSha256": "221980615497b46441f96b53a13537170b9c99de78feb4be9455acd8b8f398c9",
+            "pass": true,
+            "audited": true
+          },
+          {
+            "product": "bro",
+            "round": 2,
+            "seconds": 45.945,
+            "toolCalls": 7,
+            "processedTokens": 53842,
+            "usage": {
+              "input": 12527,
+              "output": 867,
+              "cacheRead": 40448,
+              "cacheWrite": 0
+            },
+            "rootToolErrors": 0,
+            "maskedErrorResults": 0,
+            "markersObserved": {
+              "SCROLL_TOP:100": true,
+              "SCROLL_TOP:920": true
+            },
+            "policyFlags": [],
+            "exitCode": 0,
+            "timedOut": false,
+            "traceSha256": "cdab169ac0b6abda5ab79fd7b186bf7aa93e7694fc7e29fa53a9f48594f32136",
+            "pass": true,
+            "audited": true
+          }
+        ]
+      },
+      "agent": {
+        "passes": 2,
+        "runs": 2,
+        "meanSeconds": 60.548,
+        "meanCalls": 14,
+        "meanProcessedTokens": 162428.5,
+        "trials": [
+          {
+            "product": "agent",
+            "round": 1,
+            "seconds": 68.34,
+            "toolCalls": 14,
+            "processedTokens": 156542,
+            "usage": {
+              "input": 36403,
+              "output": 1867,
+              "cacheRead": 118272,
+              "cacheWrite": 0
+            },
+            "rootToolErrors": 0,
+            "maskedErrorResults": 0,
+            "markersObserved": {
+              "SCROLL_TOP:100": true,
+              "SCROLL_TOP:920": true
+            },
+            "policyFlags": [],
+            "exitCode": 0,
+            "timedOut": false,
+            "traceSha256": "54b0f760cd84ae65199cba68a3cd4a37f026f82e4d9cc5885d054b1caf7886e9",
+            "pass": true,
+            "audited": true
+          },
+          {
+            "product": "agent",
+            "round": 2,
+            "seconds": 52.756,
+            "toolCalls": 14,
+            "processedTokens": 168315,
+            "usage": {
+              "input": 21893,
+              "output": 1526,
+              "cacheRead": 144896,
+              "cacheWrite": 0
+            },
+            "rootToolErrors": 0,
+            "maskedErrorResults": 0,
+            "markersObserved": {
+              "SCROLL_TOP:100": true,
+              "SCROLL_TOP:920": true
+            },
+            "policyFlags": [],
+            "exitCode": 0,
+            "timedOut": false,
+            "traceSha256": "d3d73df1f18d87831b76aef30fed7600d49fdc21c5f8080ca11ac78e1b83e738",
+            "pass": true,
+            "audited": true
+          }
+        ]
+      }
+    },
+    "equalBatchGuidance": {
+      "bro": {
+        "passes": 2,
+        "runs": 2,
+        "meanSeconds": 38.6285,
+        "meanCalls": 5,
+        "meanProcessedTokens": 38537.5,
+        "trials": [
+          {
+            "product": "bro",
+            "round": 1,
+            "seconds": 37.342,
+            "toolCalls": 5,
+            "processedTokens": 38546,
+            "usage": {
+              "input": 17416,
+              "output": 650,
+              "cacheRead": 20480,
+              "cacheWrite": 0
+            },
+            "rootToolErrors": 0,
+            "maskedErrorResults": 0,
+            "markersObserved": {
+              "SCROLL_TOP:100": true,
+              "SCROLL_TOP:920": true
+            },
+            "policyFlags": [],
+            "exitCode": 0,
+            "timedOut": false,
+            "traceSha256": "9718eb78dac4ec769dab823169b963548a7a7c0d926304c7b37952d45e4df2fb",
+            "pass": true,
+            "audited": true
+          },
+          {
+            "product": "bro",
+            "round": 2,
+            "seconds": 39.915,
+            "toolCalls": 5,
+            "processedTokens": 38529,
+            "usage": {
+              "input": 22996,
+              "output": 685,
+              "cacheRead": 14848,
+              "cacheWrite": 0
+            },
+            "rootToolErrors": 0,
+            "maskedErrorResults": 0,
+            "markersObserved": {
+              "SCROLL_TOP:100": true,
+              "SCROLL_TOP:920": true
+            },
+            "policyFlags": [],
+            "exitCode": 0,
+            "timedOut": false,
+            "traceSha256": "f4d5a2191f79ad18dbe96a421986c1d85b4a161e75eabb9801cf3feb130f46ae",
+            "pass": true,
+            "audited": true
+          }
+        ]
+      },
+      "agent": {
+        "passes": 2,
+        "runs": 2,
+        "meanSeconds": 36.688,
+        "meanCalls": 8,
+        "meanProcessedTokens": 78081.5,
+        "trials": [
+          {
+            "product": "agent",
+            "round": 1,
+            "seconds": 38.823,
+            "toolCalls": 9,
+            "processedTokens": 91831,
+            "usage": {
+              "input": 30574,
+              "output": 1353,
+              "cacheRead": 59904,
+              "cacheWrite": 0
+            },
+            "rootToolErrors": 0,
+            "maskedErrorResults": 0,
+            "markersObserved": {
+              "SCROLL_TOP:100": true,
+              "SCROLL_TOP:920": true
+            },
+            "policyFlags": [],
+            "exitCode": 0,
+            "timedOut": false,
+            "traceSha256": "689e54496c386b12a9788eab7a0b95aa13d1e83ead484ba4f1a0c8ebcaa6b1fe",
+            "pass": true,
+            "audited": true
+          },
+          {
+            "product": "agent",
+            "round": 2,
+            "seconds": 34.553,
+            "toolCalls": 7,
+            "processedTokens": 64332,
+            "usage": {
+              "input": 17602,
+              "output": 1162,
+              "cacheRead": 45568,
+              "cacheWrite": 0
+            },
+            "rootToolErrors": 0,
+            "maskedErrorResults": 0,
+            "markersObserved": {
+              "SCROLL_TOP:100": true,
+              "SCROLL_TOP:920": true
+            },
+            "policyFlags": [],
+            "exitCode": 0,
+            "timedOut": false,
+            "traceSha256": "c2f336b7f8eb781c3b148998b508abbfc09d88c3d06dc46002b031c5f72736c6",
+            "pass": true,
+            "audited": true
+          }
+        ]
+      }
+    },
+    "excluded": [
+      {
+        "round": 1,
+        "activeSeconds": 169.775,
+        "messageWallSpanSeconds": 1014.675,
+        "reason": "Clamshell sleep and provider/network interruption; corroborated by pmset logs. Preserved and excluded, not scored as browser failure.",
+        "modelErrors": [
+          "fetch failed",
+          "terminated",
+          "fetch failed",
+          "fetch failed",
+          "fetch failed"
+        ],
+        "replacement": "batch-awake"
+      },
+      {
+        "round": 2,
+        "activeSeconds": 158.197,
+        "messageWallSpanSeconds": 1959.6,
+        "reason": "Clamshell sleep and provider/network interruption; corroborated by pmset logs. Preserved and excluded, not scored as browser failure.",
+        "modelErrors": [
+          "fetch failed",
+          "Codex SSE response headers timed out after 300000ms"
+        ],
+        "replacement": "batch-awake"
+      }
+    ],
+    "method": "Same local scroll fixture and visible 100/920/920 contract, headed Chrome for Testing 152.0.7977.82, logical viewport 1280x857 DPR2, official skills. No model JS/CSS/coordinate actions. Preparation excluded from model timing. All valid tool traces and UI output evidence audited.",
+    "limits": [
+      "Two runs per arm/configuration; not a powered latency ranking",
+      "Guided bro replacements ran after wake in a fresh environment; valid earlier agent runs retained",
+      "Normal and guided are separate prompt configurations and must not be pooled",
+      "Processed tokens include cache reads/writes and are not uniformly billed tokens",
+      "Bro remains slower in the observed guided time mean; no universal domination or engine-speed claim"
+    ]
+  },
+  "directAgentBrowserBatch": {
+    "seconds": 0.14500445799785666,
+    "cliInvocations": 1,
+    "commands": 8,
+    "pass": true,
+    "readStates": [
+      "100",
+      "920",
+      "920"
+    ],
+    "measurement": "No model, browser preparation or initial snapshot included. Not comparable to model end-to-end seconds."
+  },
+  "guide": "docs/scroll-interaction.md",
+  "rawSessionsCommitted": false,
+  "installedVersionChanged": false
+}

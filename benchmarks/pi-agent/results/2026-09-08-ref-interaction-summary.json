@@ -1,0 +1,170 @@
+{
+  "date": "2026-09-08",
+  "status": "implemented, locally verified, unreleased after 1.0.3",
+  "baseCommit": "90c07648372d215022bb29d7a1c9ca737ed42ce5",
+  "architecture": "Native AX trees; tab/snapshot/frame/document/backend-node refs; isolated frame worlds; trusted foreground input; ref-aware flow facade",
+  "verification": {
+    "makeCheck": {
+      "passed": true,
+      "rustTests": 44,
+      "extensionTests": 32,
+      "piAdapterTests": 20,
+      "note": "Two external live Rust tests and one opt-in Pi integration test remain opt-in; the dedicated real-browser suite below was run instead."
+    },
+    "realBrowser": {
+      "browser": "Chrome for Testing 152.0.7977.82",
+      "isolatedProfile": true,
+      "isolatedBrokerHomeAndToken": true,
+      "passed": true,
+      "checks": [
+        {
+          "name": "inline same-site, cross-site and nested frame AX labels",
+          "pass": true,
+          "seconds": 0.24894325000000025
+        },
+        {
+          "name": "native ref input/select/click across frame and nested shadow boundaries",
+          "pass": true,
+          "seconds": 0.7165879159999999
+        },
+        {
+          "name": "snapshot refs cannot escape their tab or alias a later snapshot",
+          "pass": true,
+          "seconds": 0.1397607499999999
+        },
+        {
+          "name": "detached/clone replacement refs fail instead of silently retargeting",
+          "pass": true,
+          "seconds": 0.10046308399999998
+        },
+        {
+          "name": "covered/disabled clicks and invalid selects fail before action",
+          "pass": true,
+          "seconds": 0.21848404200000004
+        },
+        {
+          "name": "navigation invalidates refs to the old iframe document",
+          "pass": true,
+          "seconds": 0.10061175000000003
+        },
+        {
+          "name": "file upload uses the same cross-site document-bound refs",
+          "pass": true,
+          "seconds": 0.10271450000000004
+        },
+        {
+          "name": "default flow observation and ref steps work without frame IDs; failures stop the flow",
+          "pass": true,
+          "seconds": 0.20344045800000005
+        },
+        {
+          "name": "find, info, wait and scroll use the same refs and report actual scroll boundaries",
+          "pass": true,
+          "seconds": 0.1053935419999998
+        }
+      ]
+    },
+    "baseline": {
+      "version": "1.0.3",
+      "checksRun": 8,
+      "passed": 0,
+      "note": "Eight earlier contract groups were run against the installed release and old extension; the ninth scroll group was added afterward. These are new-contract failures, not eight independently diagnosed old bugs.",
+      "failures": [
+        {
+          "name": "inline same-site, cross-site and nested frame AX labels",
+          "signal": "AssertionError [ERR_ASSERTION]: Missing textbox Same Name: Viewport: 1280x857"
+        },
+        {
+          "name": "native ref input/select/click across frame and nested shadow boundaries",
+          "signal": "AssertionError [ERR_ASSERTION]: Missing textbox Same Name: Viewport: 1280x857"
+        },
+        {
+          "name": "snapshot refs cannot escape their tab or alias a later snapshot",
+          "signal": "AssertionError [ERR_ASSERTION]: form_input should fail, not act on another node"
+        },
+        {
+          "name": "detached/clone replacement refs fail instead of silently retargeting",
+          "signal": "AssertionError [ERR_ASSERTION]: form_input should fail, not act on another node"
+        },
+        {
+          "name": "covered/disabled clicks and invalid selects fail before action",
+          "signal": "AssertionError [ERR_ASSERTION]: The input did not match the regular expression /disabled/i. Input:"
+        },
+        {
+          "name": "navigation invalidates refs to the old iframe document",
+          "signal": "AssertionError [ERR_ASSERTION]: Missing textbox Same Name: Viewport: 1280x857"
+        },
+        {
+          "name": "file upload uses the same cross-site document-bound refs",
+          "signal": "AssertionError [ERR_ASSERTION]: Missing button Cross File: Viewport: 1280x857"
+        },
+        {
+          "name": "default flow observation and ref steps work without frame IDs; failures stop the flow",
+          "signal": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:"
+        }
+      ]
+    },
+    "paddingRegression": {
+      "redSignal": "A 14px button in an iframe with 9px padding did not receive the click; both raw-ref and flow-ref assertions failed.",
+      "ownerFix": "Translate from the iframe content box, accounting for CSS padding as well as border and scale. No click retries.",
+      "verifiedGreen": true
+    }
+  },
+  "subagents": {
+    "validRuns": 1,
+    "passed": 1,
+    "runs": [
+      {
+        "model": "gpt-5.6-luna",
+        "thinking": "max",
+        "seconds": 35.033,
+        "toolCalls": 5,
+        "processedTokens": 18669,
+        "toolErrors": 0,
+        "violations": [],
+        "markersObserved": {
+          "Same": true,
+          "Cross": true,
+          "Nested": true
+        },
+        "finishCalled": true,
+        "exitCode": 0,
+        "timedOut": false,
+        "pass": true
+      }
+    ],
+    "excluded": [
+      {
+        "model": "gpt-5.4-mini",
+        "reason": "Provider rejected this model for the ChatGPT account before inference/tool use.",
+        "toolCalls": 0,
+        "processedTokens": 0
+      }
+    ],
+    "notRun": [
+      "gpt-5.3-codex-spark"
+    ],
+    "method": "Only four flow tools. JS, CSS, coordinates and manual frame targeting prohibited; actual tool outputs checked for all three trusted-click fixture markers.",
+    "limitation": "Pilot preceded final padding/tiny-target/scroll additions and harness credential-isolation cleanup. Final changes were verified with deterministic browser tests; timing is not a paired performance claim."
+  },
+  "artifacts": {
+    "guide": "docs/ref-interaction.md",
+    "liveTest": "scripts/live-refs.mjs",
+    "subagentRunner": "benchmarks/pi-agent/run-refs.py",
+    "rawSessionsCommitted": false,
+    "compiledServerSha256": "cf5126e495b36c36a7aa1a41620185318d11c28a94a2297a78fa89d7626fe677",
+    "compiledWorkerSha256": "7fff48f6a3fecbf8cf42420406c773c10af3c03d76d095ae148f4feacc8d5eb9"
+  },
+  "deployment": {
+    "published": false,
+    "installedVersionChanged": false,
+    "requires": "Matching server/extension release, Homebrew upgrade and installed skill synchronization"
+  },
+  "limits": [
+    "Chromium 125+; live verified on 152",
+    "64-frame discovery limit and bounded AX output",
+    "Refs protect node/document identity, not an atomic semantic transaction over concurrently mutating pages",
+    "Rotated/perspective/flipped iframe transforms are rejected",
+    "One valid model trial; unsupported Mini is not counted as a browser failure"
+  ]
+}

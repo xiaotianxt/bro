@@ -146,11 +146,17 @@ interactive diagnostics where losing extension-memory state is acceptable.
 
 Use `browser.flow.*` for sequential interaction with one leased tab.
 
+The following ref-first workflow is available in v1.1.0 and later; server and
+extension must be upgraded together.
+
 1. `browser.flow.start` opens a tab and returns `sessionId`.
-2. `browser.flow.act` runs ordered steps: `goto`, awaited `eval`, `click`,
-   `fill`, `select`, `wait`, and `read_text`.
-3. `browser.flow.observe` reads current text or accessibility tree.
-4. `browser.flow.finish` releases server state and closes the tab by default.
+2. `browser.flow.observe` defaults to a compact accessibility snapshot, including
+   iframe trees and Shadow DOM labels. `mode:text` explicitly reads main-frame text.
+3. `browser.flow.act` runs ordered `goto`, awaited `eval`, `click`, `fill`,
+   `select`, ref-only `scroll`, `wait`, and `read_text` steps. For click/fill/select, pass the exact
+   `refId` from the latest snapshot instead of manually locating frames.
+4. Observe application outcomes, then call `browser.flow.finish` to release
+   state and close the tab.
 
 `fill` uses the native input/textarea value setter and dispatches input and
 change events so controlled frameworks observe the update. `select` validates
@@ -158,13 +164,29 @@ the option value, uses the native select setter, and dispatches the same events.
 Eval code is a JavaScript expression; wrap multiple statements in an IIFE rather
 than using a top-level `return`.
 
+`scroll` requires a snapshot `refId`, accepts direction and 1–10000 CSS pixels,
+foregrounds the target, and waits for rendering before returning measured
+movement/boundary data. Combine it with `read_text` steps to verify intermediate
+visible UI without new model turns or invalidating refs. This does not wait for
+arbitrary network-loaded content; use explicit readiness conditions for that.
+See [Scroll interaction](scroll-interaction.md).
+
 If a step fails, `browser.flow.act` stops at that step, returns prior results and
 the failure location, and marks the outer MCP result as an error.
 
-For iframes, call `frames_list` with the flow tab ID, then pass the returned
-`frameId` to eval, click, fill, select, or read_text steps. Frame execution uses
-an isolated CDP world scoped to the requested frame; omit `frameId` for the main
-frame.
+A ref already identifies its tab, frame, document and node. Do not combine it
+with `css` or `frameId`. New snapshots replace previous refs; navigation or DOM
+replacement requires a fresh observation. Ref-based select accepts an option
+value or a unique visible label. Ref clicks use trusted input and foreground
+the tab/window; they do not fall back to JavaScript clicks.
+
+For deliberate CSS/eval workflows, `frames_list` and explicit `frameId` remain
+available, including out-of-process frames. `read_text` without a frame ID is
+still main-frame-only. `browser.batch.flow` creates new tabs and accepts CSS/eval
+templates, not refs obtained on another tab.
+
+See [Frame-aware ref interaction](ref-interaction.md) for identity/actionability
+contracts, limits, and the reproducible real-browser and subagent tests.
 
 ## Design Rule
 

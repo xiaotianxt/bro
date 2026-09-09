@@ -1,5 +1,10 @@
 # Page Interaction Engine
 
+> Historical proposal, not a description of the shipped implementation.
+> The smaller native-AX/ref implementation and its verified limits are recorded
+> in [Frame-aware ref interaction](ref-interaction.md). The DOMSnapshot and
+> interactive-HTML ideas below remain future options; do not treat them as done.
+
 ## Summary
 
 bro should add a browser-side Page Interaction Engine that improves page
@@ -71,9 +76,9 @@ is the generic browser mechanism inside the extension.
 - No persistent browsing trace storage by default.
 - No claim that every page can be automated without fallback or user help.
 
-## Source Facts
+## Source Facts at Proposal Time
 
-Current bro architecture:
+Architecture before the native-AX/ref implementation:
 
 - Rust owns MCP transport, auth, facade behavior, batching, cleanup, routing,
   and response limits.
