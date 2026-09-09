@@ -405,7 +405,7 @@ impl BrowserFacade {
                     .bridge
                     .dispatch(
                         "read_page",
-                        json!({}),
+                        json!({"filter":"all","maxChars":16000}),
                         Some(session.tab_id),
                         session.browser_id.clone(),
                     )
@@ -1064,6 +1064,37 @@ impl BrowserFacade {
                 fail_if_tool_error("javascript_tool", &result)?;
                 Ok(single_result(result.result))
             }
+            FlowStep::Ref { ref_id, action } => {
+                let (tool, args) = match action {
+                    RefAction::Click => ("click_element", json!({"refId":ref_id})),
+                    RefAction::Fill(value) | RefAction::Select(value) => {
+                        ("form_input", json!({"refId":ref_id,"value":value}))
+                    }
+                };
+                let result = self
+                    .bridge
+                    .dispatch(tool, args, Some(session.tab_id), session.browser_id.clone())
+                    .await?;
+                fail_if_tool_error(tool, &result)?;
+                Ok(single_result(result.result))
+            }
+            FlowStep::Scroll {
+                ref_id,
+                direction,
+                amount,
+            } => {
+                let result = self
+                    .bridge
+                    .dispatch(
+                        "scroll_element",
+                        json!({"refId":ref_id,"direction":direction,"amount":amount}),
+                        Some(session.tab_id),
+                        session.browser_id.clone(),
+                    )
+                    .await?;
+                fail_if_tool_error("scroll_element", &result)?;
+                Ok(single_result(result.result))
+            }
             FlowStep::Wait { ms } => {
                 let clamped = ms.min(MAX_WAIT_MS);
                 time::sleep(Duration::from_millis(clamped)).await;
@@ -1267,6 +1298,15 @@ impl BatchFlowArgs {
     fn parse(args: Map<String, Value>) -> Result<Self, FacadeError> {
         let raw = parse_args::<RawBatchFlowArgs>(args)?;
         let inputs = parse_batch_inputs(raw.urls, raw.inputs, "browser.batch.flow")?;
+        if raw
+            .steps
+            .iter()
+            .any(|step| matches!(step, FlowStep::Ref { .. } | FlowStep::Scroll { .. }))
+        {
+            return Err(FacadeError::InvalidInput(
+                "browser.batch.flow creates new tabs, so it cannot reuse snapshot refs; use CSS templates or browser.flow.act on the originating tab".to_string(),
+            ));
+        }
         if raw.steps.is_empty() {
             return Err(FacadeError::InvalidInput(
                 "browser.batch.flow requires at least one step".to_string(),
@@ -1859,8 +1899,8 @@ struct FlowObserveArgs {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 enum ObserveMode {
-    #[default]
     Text,
+    #[default]
     A11y,
 }
 
@@ -1872,7 +1912,7 @@ struct FlowActArgs {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(try_from = "RawFlowStep")]
 enum FlowStep {
     Goto {
         url: String,
@@ -1899,6 +1939,15 @@ enum FlowStep {
         #[serde(default, rename = "frameId")]
         frame_id: Option<String>,
     },
+    Ref {
+        ref_id: String,
+        action: RefAction,
+    },
+    Scroll {
+        ref_id: String,
+        direction: ScrollDirection,
+        amount: u32,
+    },
     Wait {
         ms: u64,
     },
@@ -1908,7 +1957,138 @@ enum FlowStep {
     },
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ScrollDirection {
+    Up,
+    #[default]
+    Down,
+    Left,
+    Right,
+}
+
+fn default_scroll_amount() -> u32 {
+    400
+}
+
+#[derive(Debug, Clone)]
+enum RefAction {
+    Click,
+    Fill(String),
+    Select(String),
+}
+
+// Deserialize the complete request before doing any browser work. In particular,
+// css+refId and refId+frameId must not turn into a partially executed flow.
+#[derive(Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+enum RawFlowStep {
+    Goto {
+        url: String,
+    },
+    Eval {
+        code: String,
+        frame_id: Option<String>,
+    },
+    Click {
+        css: Option<String>,
+        ref_id: Option<String>,
+        frame_id: Option<String>,
+    },
+    Fill {
+        css: Option<String>,
+        ref_id: Option<String>,
+        frame_id: Option<String>,
+        value: String,
+    },
+    Select {
+        css: Option<String>,
+        ref_id: Option<String>,
+        frame_id: Option<String>,
+        value: String,
+    },
+    Wait {
+        ms: u64,
+    },
+    ReadText {
+        frame_id: Option<String>,
+    },
+    Scroll {
+        ref_id: String,
+        #[serde(default)]
+        direction: ScrollDirection,
+        #[serde(default = "default_scroll_amount")]
+        amount: u32,
+    },
+}
+
+impl TryFrom<RawFlowStep> for FlowStep {
+    type Error = String;
+
+    fn try_from(raw: RawFlowStep) -> Result<Self, Self::Error> {
+        match raw {
+            RawFlowStep::Scroll {
+                ref_id,
+                direction,
+                amount,
+            } => {
+                if ref_id.trim().is_empty() || !(1..=10_000).contains(&amount) {
+                    return Err("scroll requires a nonempty refId and amount between 1 and 10000 CSS pixels".to_string());
+                }
+                Ok(Self::Scroll {
+                    ref_id,
+                    direction,
+                    amount,
+                })
+            }
+            RawFlowStep::Goto { url } => Ok(Self::Goto { url }),
+            RawFlowStep::Eval { code, frame_id } => Ok(Self::Eval { code, frame_id }),
+            RawFlowStep::Wait { ms } => Ok(Self::Wait { ms }),
+            RawFlowStep::ReadText { frame_id } => Ok(Self::ReadText { frame_id }),
+            RawFlowStep::Click {
+                css,
+                ref_id,
+                frame_id,
+            } => Self::from_target(css, ref_id, frame_id, RefAction::Click),
+            RawFlowStep::Fill {
+                css,
+                ref_id,
+                frame_id,
+                value,
+            } => Self::from_target(css, ref_id, frame_id, RefAction::Fill(value)),
+            RawFlowStep::Select {
+                css,
+                ref_id,
+                frame_id,
+                value,
+            } => Self::from_target(css, ref_id, frame_id, RefAction::Select(value)),
+        }
+    }
+}
+
 impl FlowStep {
+    fn from_target(
+        css: Option<String>,
+        ref_id: Option<String>,
+        frame_id: Option<String>,
+        action: RefAction,
+    ) -> Result<Self, String> {
+        match (css, ref_id) {
+            (Some(css), None) if !css.trim().is_empty() => Ok(match action {
+                RefAction::Click => Self::Click { css, frame_id },
+                RefAction::Fill(value) => Self::Fill { css, value, frame_id },
+                RefAction::Select(value) => Self::Select { css, value, frame_id },
+            }),
+            (None, Some(ref_id)) if !ref_id.trim().is_empty() && frame_id.is_none() => Ok(Self::Ref { ref_id, action }),
+            _ => Err("click/fill/select require exactly one nonempty css or refId; refId already identifies its frame and cannot be combined with frameId".to_string()),
+        }
+    }
+
     fn kind(&self) -> &'static str {
         match self {
             Self::Goto { .. } => "goto",
@@ -1916,6 +2096,12 @@ impl FlowStep {
             Self::Click { .. } => "click",
             Self::Fill { .. } => "fill",
             Self::Select { .. } => "select",
+            Self::Ref { action, .. } => match action {
+                RefAction::Click => "click",
+                RefAction::Fill(_) => "fill",
+                RefAction::Select(_) => "select",
+            },
+            Self::Scroll { .. } => "scroll",
             Self::Wait { .. } => "wait",
             Self::ReadText { .. } => "read_text",
         }
@@ -2588,6 +2774,58 @@ mod tests {
         assert!(args.include_response_bodies);
         assert!(args.cleanup);
         assert!(!args.active);
+    }
+
+    #[test]
+    fn flow_refs_are_parsed_before_any_step_can_execute() {
+        let valid = json!({"sessionId":"s","steps":[
+            {"type":"fill","refId":"ref_snapshot_1","value":"Luna"},
+            {"type":"select","refId":"ref_snapshot_2","value":"Gamma"},
+            {"type":"click","refId":"ref_snapshot_3"}
+        ]});
+        assert!(serde_json::from_value::<FlowActArgs>(valid).is_ok());
+        for invalid in [
+            json!({"type":"click"}),
+            json!({"type":"click","css":"button","refId":"ref_snapshot_1"}),
+            json!({"type":"click","refId":"ref_snapshot_1","frameId":"child"}),
+            json!({"type":"fill","refId":"ref_snapshot_1"}),
+            json!({"type":"click","refId":""}),
+            json!({"type":"click","refId":"ref_snapshot_1","extra":true}),
+        ] {
+            assert!(serde_json::from_value::<FlowActArgs>(json!({"sessionId":"s","steps":[{"type":"goto","url":"https://example.test"},invalid]})).is_err());
+        }
+        let observe: super::FlowObserveArgs =
+            serde_json::from_value(json!({"sessionId":"s"})).unwrap();
+        assert!(matches!(observe.mode, super::ObserveMode::A11y));
+        assert!(BatchFlowArgs::parse(json!({"urls":["https://example.test"],"steps":[{"type":"click","refId":"ref_snapshot_1"}]}).as_object().unwrap().clone()).is_err());
+    }
+
+    #[test]
+    fn flow_scroll_parses_and_rejects_invalid_requests_before_effects() {
+        let valid = json!({"sessionId":"s","steps":[
+            {"type":"scroll","refId":"ref_snapshot_1","direction":"down","amount":100},
+            {"type":"read_text"},
+            {"type":"scroll","refId":"ref_snapshot_1"}
+        ]});
+        assert!(serde_json::from_value::<FlowActArgs>(valid).is_ok());
+        for invalid in [
+            json!({"type":"scroll","refId":""}),
+            json!({"type":"scroll","css":"#panel"}),
+            json!({"type":"scroll","refId":"ref_x","frameId":"frame"}),
+            json!({"type":"scroll","refId":"ref_x","direction":"diagonal"}),
+            json!({"type":"scroll","refId":"ref_x","amount":0}),
+            json!({"type":"scroll","refId":"ref_x","amount":10001}),
+            json!({"type":"scroll","refId":"ref_x","amount":-1}),
+        ] {
+            assert!(serde_json::from_value::<FlowActArgs>(json!({"sessionId":"s","steps":[{"type":"goto","url":"https://example.test"},invalid]})).is_err());
+        }
+        assert!(BatchFlowArgs::parse(
+            json!({"urls":["https://example.test"],"steps":[{"type":"scroll","refId":"ref_x"}]})
+                .as_object()
+                .unwrap()
+                .clone()
+        )
+        .is_err());
     }
 
     #[test]

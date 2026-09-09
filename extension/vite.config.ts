@@ -4,6 +4,7 @@ import { copyFileSync, mkdirSync } from 'fs'
 
 const root = resolve(__dirname)
 const repoRoot = resolve(root, '..')
+let outputDirectory = resolve(root, 'dist')
 
 export default defineConfig({
   resolve: {
@@ -18,10 +19,6 @@ export default defineConfig({
     rollupOptions: {
       input: {
         'service-worker': resolve(root, 'src/background/service-worker.ts'),
-        'content/accessibility-tree': resolve(
-          root,
-          'src/content/accessibility-tree.ts',
-        ),
         'content/visual-indicator': resolve(
           root,
           'src/content/visual-indicator.ts',
@@ -46,8 +43,11 @@ export default defineConfig({
     {
       // Copy static assets (manifest, icons) from public/ and root to dist/
       name: 'copy-extension-assets',
+      configResolved(config) {
+        outputDirectory = resolve(config.root, config.build.outDir)
+      },
       closeBundle() {
-        const dist = resolve(root, 'dist')
+        const dist = outputDirectory
         mkdirSync(dist, { recursive: true })
 
         // Copy manifest.json

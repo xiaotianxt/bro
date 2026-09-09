@@ -80,11 +80,12 @@ function chromeUserScript(
 
 export async function restoreUserScripts(): Promise<void> {
   await restrictLocalStorageAccess()
+  const stored = await loadStoredUserScripts()
+  // A fresh profile has no scripts to restore and needs no optional permission.
+  // Still report a real inability to restore a nonempty saved registry.
+  if (!chrome.userScripts && (stored === null || stored.length === 0)) return
   const api = userScriptsApi()
-  const [stored, registered] = await Promise.all([
-    loadStoredUserScripts(),
-    api.getScripts(),
-  ])
+  const registered = await api.getScripts()
 
   if (stored === null) {
     await saveStoredUserScripts(registered)

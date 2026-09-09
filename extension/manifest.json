@@ -1,5 +1,6 @@
 {
   "manifest_version": 3,
+  "minimum_chrome_version": "125",
   "name": "bro",
   "version": "1.0.3",
   "background": {
@@ -31,12 +32,6 @@
   ],
   "host_permissions": ["<all_urls>"],
   "content_scripts": [
-    {
-      "js": ["content/accessibility-tree.js"],
-      "matches": ["<all_urls>"],
-      "run_at": "document_start",
-      "all_frames": true
-    },
     {
       "js": ["content/visual-indicator.js"],
       "matches": ["<all_urls>"],

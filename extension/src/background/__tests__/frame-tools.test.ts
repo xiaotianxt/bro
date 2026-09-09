@@ -38,7 +38,7 @@ function installChromeMock(): void {
       onEvent: { addListener: vi.fn() },
       onDetach: { addListener: vi.fn() },
     },
-    tabs: { get: vi.fn(async () => ({ id: 42, url: 'https://example.test' })) },
+    tabs: { get: vi.fn(async () => ({ id: 42, url: 'https://example.test' })), onRemoved: { addListener: vi.fn() } },
   })
 }
 

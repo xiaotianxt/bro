@@ -240,13 +240,13 @@ static SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "browser.flow.observe",
-        description: "Observe a browser flow session as text by default, or as an accessibility tree with mode a11y.",
+        description: "Observe a flow as a compact accessibility snapshot by default, including iframe and Shadow DOM controls with actionable refs. Each observation replaces this tab's previous refs. Use mode text only for plain main-frame text.",
         route: ToolRoute::FlowObserve,
         schema: "browser_flow_observe",
     },
     ToolSpec {
         name: "browser.flow.act",
-        description: "Run ordered steps on the owned tab: goto, eval, click, fill, select, wait, or read_text. Eval accepts a JavaScript expression and awaits returned Promises. Stops at the first failed step.",
+        description: "Run ordered steps on the owned tab. click/fill/select accept snapshot refId or css; scroll requires refId and optionally direction/amount (CSS pixels). Ref scrolling foregrounds its target and waits for rendering. Combine scroll and read_text steps to verify intermediate UI states in one call; read_text does not replace refs. Never combine refId with css/frameId. Eval is an awaited expression. Stops at the first failed step.",
         route: ToolRoute::FlowAct,
         schema: "browser_flow_act",
     },
@@ -345,7 +345,7 @@ static SPECS: &[ToolSpec] = &[
     ),
     forward(
         "read_page",
-        "Generate an accessibility tree for the current page.",
+        "Read a browser-native accessibility snapshot with inline frame trees and Shadow DOM labels. Refs are opaque, bound to this tab/snapshot/document, and replaced by the next read_page/find/a11y observation. Reobserve after navigation or DOM replacement; never guess refs.",
         "read_page",
     ),
     forward(
@@ -365,7 +365,7 @@ static SPECS: &[ToolSpec] = &[
     ),
     forward(
         "form_input",
-        "Set the value of a form element identified by refId.",
+        "Set and verify a form control value using an opaque ref from the latest snapshot, including iframe/Shadow DOM controls. For selects accept an option value or unique visible label. Disabled, read-only, hidden and stale controls fail.",
         "form_input",
     ),
     forward(
@@ -378,15 +378,15 @@ static SPECS: &[ToolSpec] = &[
         "Extract visible text and links after browser-side DOM quiet readiness.",
         "extract_page",
     ),
-    forward("click_element", "Click a page element by refId.", "ref_id"),
+    forward("click_element", "Dispatch a trusted click to the exact snapshot ref, including frame/Shadow DOM targets. Foregrounds the tab/window. Covered, disabled or stale targets fail; observe the application result after dispatch.", "ref_id"),
     forward(
         "scroll_element",
-        "Scroll within a page element by refId.",
+        "Scroll an exact snapshot ref by CSS pixels. Foregrounds the tab and target frame, then waits for rendering/scroll handlers. Returns before/after offsets, delta, extent, moved and boundary (null for unsupported writing modes). Does not synthesize events or retry. Use flow.act scroll + read_text for multi-step UI verification.",
         "scroll_element",
     ),
     forward(
         "fill_element",
-        "Clear and type text into an input or textarea by refId.",
+        "Set text in a form control or contenteditable using its latest opaque ref, with native setters and composed input/change events. Observe the application result.",
         "fill_element",
     ),
     forward(
@@ -639,7 +639,7 @@ fn schema(kind: &str) -> JsonObject {
             ),
             (
                 "steps",
-                flow_steps_schema("Ordered flow steps to run on every URL."),
+                flow_steps_schema("Ordered CSS/eval flow steps to run on each newly created tab. Snapshot refs from other tabs cannot be reused.", false),
             ),
             (
                 "concurrency",
@@ -663,14 +663,14 @@ fn schema(kind: &str) -> JsonObject {
             ("sessionId", json!({"type":"string","minLength":1})),
             (
                 "mode",
-                json!({"type":"string","enum":["text","a11y"],"default":"text"}),
+                json!({"type":"string","enum":["text","a11y"],"default":"a11y"}),
             ),
         ]),
         "browser_flow_act" => props(&[
             ("sessionId", json!({"type":"string","minLength":1})),
             (
                 "steps",
-                flow_steps_schema("Ordered steps. Combine related actions in one call when their selectors are known."),
+                flow_steps_schema("Ordered steps. Combine actions using refs from the latest accessibility observation, or known CSS selectors. Refs include their frame identity.", true),
             ),
         ]),
         "browser_flow_finish" => props(&[
@@ -799,10 +799,10 @@ fn schema(kind: &str) -> JsonObject {
                 "filter",
                 json!({"type":"string","enum":["all","interactive"],"default":"all"}),
             ),
-            ("depth", json!({"type":"integer","minimum":1})),
-            ("maxChars", json!({"type":"integer","minimum":1})),
-            ("refId", json!({"type":"string"})),
-            ("compact", json!({"type":"boolean"})),
+            ("depth", json!({"type":"integer","minimum":1,"maximum":100,"default":20})),
+            ("maxChars", json!({"type":"integer","minimum":1,"maximum":60000,"default":16000})),
+            ("refId", json!({"type":"string","description":"Optional latest ref to scope the AX subtree within its document. Omit to include all frames."})),
+            ("compact", json!({"type":"boolean","default":true})),
             ("tabId", tab_id_schema("Numeric tab ID to read.")),
             ("browserId", browser_id_schema()),
         ]),
@@ -843,7 +843,7 @@ fn schema(kind: &str) -> JsonObject {
                 "direction",
                 json!({"type":"string","enum":["up","down","left","right"],"default":"down"}),
             ),
-            ("amount", json!({"type":"integer","minimum":1})),
+            ("amount", json!({"type":"integer","minimum":1,"maximum":10000,"default":400,"description":"Scroll distance in CSS pixels."})),
             ("tabId", tab_id_schema("Numeric tab ID.")),
             ("browserId", browser_id_schema()),
         ]),
@@ -856,7 +856,7 @@ fn schema(kind: &str) -> JsonObject {
         "wait_for_element" => props(&[
             ("refId", json!({"type":"string"})),
             ("description", json!({"type":"string"})),
-            ("timeout", json!({"type":"integer","minimum":1})),
+            ("timeout", json!({"type":"integer","minimum":1,"maximum":20000,"default":10000})),
             ("tabId", tab_id_schema("Numeric tab ID.")),
             ("browserId", browser_id_schema()),
         ]),
@@ -1009,30 +1009,60 @@ fn required_fields(kind: &str) -> Option<&'static [&'static str]> {
     }
 }
 
-fn flow_steps_schema(description: &str) -> Value {
-    json!({
-        "type": "array",
-        "minItems": 1,
-        "description": description,
-        "items": {
-            "type": "object",
-            "required": ["type"],
-            "additionalProperties": false,
-            "properties": {
-                "type": {
-                    "type": "string",
-                    "enum": ["goto", "eval", "click", "fill", "select", "wait", "read_text"],
-                    "description": "Step operation. Required companion fields: goto=url, eval=code, click=css, fill/select=css+value, wait=ms; read_text has no companion fields."
-                },
-                "url": {"type": "string", "format": "uri", "description": "Destination for a goto step."},
-                "code": {"type": "string", "description": "JavaScript expression for an eval step. Returned Promises are awaited. Do not use a top-level return; wrap multi-statement code as (() => { ...; return value; })()."},
-                "css": {"type": "string", "minLength": 1, "description": "CSS selector for click, fill, or select."},
-                "frameId": {"type": "string", "minLength": 1, "description": "Optional child frameId from frames_list for eval, click, fill, select, or read_text. Omit for the main frame."},
-                "value": {"type": "string", "description": "Text for fill or option value for select."},
-                "ms": {"type": "integer", "minimum": 0, "maximum": 30000, "description": "Delay in milliseconds for wait."}
-            }
-        }
-    })
+fn flow_steps_schema(description: &str, allow_refs: bool) -> Value {
+    let companions = if allow_refs {
+        "Required companion fields: goto=url, eval=code, click=one of refId/css, fill/select=one of refId/css+value, scroll=refId (direction down, amount 400 CSS pixels by default), wait=ms. read_text reads visible main-frame text without invalidating refs. refId cannot be combined with css/frameId."
+    } else {
+        "Required companion fields: goto=url, eval=code, click=css, fill/select=css+value, wait=ms; read_text has none. These new tabs have no existing snapshot refs."
+    };
+    let mut operations = vec![
+        "goto",
+        "eval",
+        "click",
+        "fill",
+        "select",
+        "wait",
+        "read_text",
+    ];
+    if allow_refs {
+        operations.push("scroll");
+    }
+    let mut properties = props(&[
+        (
+            "type",
+            json!({"type":"string","enum":operations,"description":companions}),
+        ),
+        (
+            "url",
+            json!({"type":"string","format":"uri","description":"Destination for goto."}),
+        ),
+        (
+            "code",
+            json!({"type":"string","description":"JavaScript expression for eval. Returned Promises are awaited. Do not use top-level return; wrap statements in an IIFE."}),
+        ),
+        (
+            "css",
+            json!({"type":"string","minLength":1,"description":"CSS selector for click/fill/select. Mutually exclusive with refId when refs are supported."}),
+        ),
+        (
+            "frameId",
+            json!({"type":"string","minLength":1,"description":"Optional frameId for eval, CSS-based click/fill/select, or read_text. Not allowed with refId. Omit for the main frame."}),
+        ),
+        (
+            "value",
+            json!({"type":"string","description":"Text for fill; option value for CSS select, or option value/unique visible label for ref-based select."}),
+        ),
+        (
+            "ms",
+            json!({"type":"integer","minimum":0,"maximum":30000,"description":"Delay in milliseconds for wait."}),
+        ),
+    ]);
+    if allow_refs {
+        properties.insert("refId".to_string(), json!({"type":"string","minLength":1,"description":"Opaque latest-snapshot ref for click/fill/select/scroll. Identifies its frame. Do not combine with css/frameId. Remains valid across read_text, but not a new snapshot/navigation/replacement."}));
+        properties.insert("direction".to_string(), json!({"type":"string","enum":["up","down","left","right"],"default":"down","description":"Direction for scroll."}));
+        properties.insert("amount".to_string(), json!({"type":"integer","minimum":1,"maximum":10000,"default":400,"description":"CSS pixels for scroll; movement is clamped by the actual scroll range."}));
+    }
+    json!({"type":"array","minItems":1,"description":description,"items":{"type":"object","required":["type"],"additionalProperties":false,"properties":properties}})
 }
 
 fn props(entries: &[(&str, Value)]) -> Map<String, Value> {
@@ -1106,10 +1136,19 @@ mod tests {
             .expect("flow operations should be an array");
 
         assert!(operations.iter().any(|value| value == "select"));
+        assert!(operations.iter().any(|value| value == "scroll"));
+        assert_eq!(step["properties"]["amount"]["maximum"], 10000);
+        let batch = super::schema("browser_batch_flow");
+        assert!(batch["properties"]["steps"]["items"]["properties"]["amount"].is_null());
         assert!(step["properties"]["code"]["description"]
             .as_str()
             .is_some_and(|description| description.contains("expression")));
         assert_eq!(step["properties"]["frameId"]["type"], "string");
+        assert_eq!(step["properties"]["refId"]["type"], "string");
+        assert_eq!(
+            super::schema("browser_flow_observe")["properties"]["mode"]["default"],
+            "a11y"
+        );
     }
 
     #[test]

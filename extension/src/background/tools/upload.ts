@@ -3,6 +3,7 @@
 import type { ToolResult } from '@bro/shared'
 import { cdpSession } from '../cdp.js'
 import { registerTool } from '../tool-registry.js'
+import { withRef } from './accessibility.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,37 +53,21 @@ type FileInjectResult =
   | { success: false; error: string }
 
 function pageInjectFileIntoInput(
-  refId: number,
+  this: Element,
   fileName: string,
   mimeType: string,
   base64Data: string,
 ): FileInjectResult {
-  type WinWithRefId = Window &
-    typeof globalThis & {
-      __getElementByRefId?: (refId: number) => Element | null
-    }
-
-  const win = window as WinWithRefId
-  if (typeof win.__getElementByRefId !== 'function') {
-    return {
-      success: false,
-      error: 'file_upload: content script not loaded (__getElementByRefId not available)',
-    }
-  }
-
-  const el = win.__getElementByRefId(refId)
-  if (!el) {
-    return {
-      success: false,
-      error: `file_upload: element ref_${refId} not found`,
-    }
+  const el = this
+  for (let node: Element | null = el; node; node = node.parentElement ?? (node.getRootNode() instanceof ShadowRoot ? (node.getRootNode() as ShadowRoot).host : null)) {
+    if (node.matches(':disabled') || node.hasAttribute('inert')) return { success: false, error: 'File input is disabled or inert' }
   }
 
   const tag = el.tagName.toLowerCase()
   if (tag !== 'input') {
     return {
       success: false,
-      error: `file_upload: element ref_${refId} is a <${tag}>, expected <input>`,
+      error: `file_upload: element is a <${tag}>, expected <input>`,
     }
   }
 
@@ -90,7 +75,7 @@ function pageInjectFileIntoInput(
   if (inputEl.type.toLowerCase() !== 'file') {
     return {
       success: false,
-      error: `file_upload: element ref_${refId} is an <input type="${inputEl.type}">, expected type="file"`,
+      error: `file_upload: element is an <input type="${inputEl.type}">, expected type="file"`,
     }
   }
 
@@ -110,19 +95,17 @@ function pageInjectFileIntoInput(
     dataTransfer.items.add(file)
 
     // Assign to the input's files property
-    Object.defineProperty(inputEl, 'files', {
-      value: dataTransfer.files,
-      configurable: true,
-      writable: true,
-    })
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files')?.set
+    if (!setter) throw new Error('Native file input setter unavailable')
+    setter.call(inputEl, dataTransfer.files)
 
     // Dispatch change and input events so frameworks pick up the change
-    inputEl.dispatchEvent(new Event('change', { bubbles: true }))
-    inputEl.dispatchEvent(new Event('input', { bubbles: true }))
+    inputEl.dispatchEvent(new Event('change', { bubbles: true, composed: true }))
+    inputEl.dispatchEvent(new Event('input', { bubbles: true, composed: true }))
 
     return {
       success: true,
-      message: `File "${fileName}" injected into input ref_${refId}`,
+      message: `File "${fileName}" injected; observe the page's ingestion result.`,
     }
   } catch (err) {
     return {
@@ -130,30 +113,6 @@ function pageInjectFileIntoInput(
       error: `file_upload: failed to inject file — ${err instanceof Error ? err.message : String(err)}`,
     }
   }
-}
-
-// ---------------------------------------------------------------------------
-// Scripting helper — run function in MAIN world with 4 args
-// ---------------------------------------------------------------------------
-
-async function executeInPage4<A, B, C, D, T>(
-  tabId: number,
-  func: (a: A, b: B, c: C, d: D) => T,
-  args: [A, B, C, D],
-): Promise<T> {
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    world: 'MAIN',
-    func,
-    args,
-  })
-
-  const result = results[0]
-  if (!result) {
-    throw new Error('executeScript returned no results')
-  }
-
-  return result.result as T
 }
 
 // ---------------------------------------------------------------------------
@@ -167,19 +126,11 @@ async function injectFile(
   mimeType: string,
   base64Data: string,
 ): Promise<ToolResult> {
-  // Parse ref_X format
-  const match = refId.match(/^ref_(\d+)$/)
-  if (!match) {
-    throw new Error(
-      `"refId" must be in format "ref_X" (e.g., "ref_42"), got "${refId}"`,
-    )
-  }
-  const refIdNum = parseInt(match[1]!, 10)
-
-  const result = await executeInPage4(
+  const result = await withRef(
     tabId,
+    refId,
     pageInjectFileIntoInput,
-    [refIdNum, fileName, mimeType, base64Data],
+    [fileName, mimeType, base64Data],
   )
 
   if (!result.success) {

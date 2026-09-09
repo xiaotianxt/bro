@@ -41,6 +41,13 @@ describe('user scripts', () => {
     storage.setAccessLevel.mockClear()
   })
 
+  it('does not require user-script permission when there is nothing to restore', async () => {
+    vi.stubGlobal('chrome', { storage: { local: storage } })
+    await expect(restoreUserScripts()).resolves.toBeUndefined()
+    localStorage = { registeredUserScripts: [{ id: 'saved' }] }
+    await expect(restoreUserScripts()).rejects.toThrow('Allow User Scripts')
+  })
+
   it('builds a validated inline script from form values', () => {
     expect(createInlineUserScript({
       id: '  dismiss-cookie-banner  ',

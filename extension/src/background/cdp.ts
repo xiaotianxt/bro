@@ -15,6 +15,7 @@ const CDP_COMMAND_TIMEOUT_MS = 5_000
 export class CDPSession {
   // Tracks which tabIds currently have an active debugger attachment.
   private readonly attached = new Map<number, boolean>()
+  private readonly attaching = new Map<number, Promise<void>>()
 
   // Event subscribers: tabId → eventName → Set of callbacks
   private readonly eventListeners = new Map<
@@ -27,9 +28,10 @@ export class CDPSession {
   constructor() {
     // Route raw debugger events to registered callbacks.
     chrome.debugger.onEvent.addListener(
-      (source: chrome.debugger.Debuggee, method: string, params?: object) => {
+      (source: chrome.debugger.DebuggerSession, method: string, params?: object) => {
         const tabId = source.tabId
-        if (tabId === undefined) return
+        // Child-target events belong to the frame transport, not root monitors.
+        if (tabId === undefined || source.sessionId) return
         const tabListeners = this.eventListeners.get(tabId)
         if (!tabListeners) return
         const callbacks = tabListeners.get(method)
@@ -42,9 +44,9 @@ export class CDPSession {
 
     // Clean up state when the debugger is detached externally (e.g., DevTools opened).
     chrome.debugger.onDetach.addListener(
-      (source: chrome.debugger.Debuggee) => {
+      (source: chrome.debugger.DebuggerSession) => {
         const tabId = source.tabId
-        if (tabId === undefined) return
+        if (tabId === undefined || source.sessionId) return
         this.markDetached(tabId)
       },
     )
@@ -57,6 +59,18 @@ export class CDPSession {
   async ensure(tabId: number): Promise<void> {
     if (this.attached.get(tabId)) return
 
+    const pending = this.attaching.get(tabId)
+    if (pending) return pending
+    const operation = this.attach(tabId)
+    this.attaching.set(tabId, operation)
+    try {
+      await operation
+    } finally {
+      this.attaching.delete(tabId)
+    }
+  }
+
+  private async attach(tabId: number): Promise<void> {
     const blockReason = await getDebuggerTargetBlockReason(tabId)
     if (blockReason) {
       throw new Error(
@@ -139,10 +153,17 @@ export class CDPSession {
     }
   }
 
+  async sendToSession<T>(tabId: number, sessionId: string | undefined, method: string, params?: object): Promise<T> {
+    if (sessionId === undefined) return this.send<T>(tabId, method, params)
+    await this.ensure(tabId)
+    return this.sendAttached<T>(tabId, method, params, sessionId)
+  }
+
   private async sendAttached<T>(
     tabId: number,
     method: string,
     params?: object,
+    sessionId?: string,
   ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       let settled = false
@@ -159,7 +180,7 @@ export class CDPSession {
 
       void chrome.debugger
         .sendCommand(
-          { tabId },
+          { tabId, ...(sessionId === undefined ? {} : { sessionId }) },
           method,
           (params ?? {}) as Record<string, unknown>,
         )

@@ -1,5 +1,8 @@
 .PHONY: fmt clippy test extension pi-extension live-test check release release-build
 
+# Override for an isolated validation build without changing a loaded extension.
+EXTENSION_OUT_DIR ?= dist
+
 fmt:
 	cargo fmt --all
 
@@ -13,7 +16,7 @@ extension:
 	pnpm --filter @bro/shared build
 	pnpm --filter @bro/extension typecheck
 	pnpm --filter @bro/extension test
-	pnpm --filter @bro/extension build
+	pnpm --filter @bro/extension build --outDir "$(EXTENSION_OUT_DIR)"
 
 pi-extension:
 	pnpm --filter @xiaotianxt/pi-bro typecheck
@@ -31,7 +34,7 @@ check:
 	pnpm --filter @bro/shared build
 	pnpm --filter @bro/extension typecheck
 	pnpm --filter @bro/extension test
-	pnpm --filter @bro/extension build
+	pnpm --filter @bro/extension build --outDir "$(EXTENSION_OUT_DIR)"
 	pnpm --filter @xiaotianxt/pi-bro typecheck
 	pnpm --filter @xiaotianxt/pi-bro test
 
