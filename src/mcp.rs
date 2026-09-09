@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use rmcp::{
     model::{
-        CallToolRequestParams, CallToolResult, Content, ListToolsResult, PaginatedRequestParams,
-        ServerCapabilities, ServerInfo, Tool,
+        CallToolRequestParams, CallToolResult, Content, Implementation, ListToolsResult,
+        PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool,
     },
     service::{RequestContext, RoleServer},
     transport::streamable_http_server::{
@@ -50,6 +50,7 @@ pub fn streamable_http_service(
 impl ServerHandler for BrowserMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("bro", env!("CARGO_PKG_VERSION")))
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
@@ -201,6 +202,16 @@ mod tests {
     use serde_json::json;
 
     use super::facade_result;
+
+    #[test]
+    fn initialize_identifies_bro_not_the_protocol_sdk() {
+        let bridge = crate::bridge::BrowserBridge::new();
+        let facade = crate::facade::BrowserFacade::new(bridge.clone());
+        let server = super::BrowserMcpServer::new(bridge, facade);
+        let info = rmcp::ServerHandler::get_info(&server);
+        assert_eq!(info.server_info.name, "bro");
+        assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
+    }
 
     #[test]
     fn failed_facade_status_becomes_an_mcp_tool_error() {
