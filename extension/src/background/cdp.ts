@@ -16,6 +16,7 @@ export class CDPSession {
   // Tracks which tabIds currently have an active debugger attachment.
   private readonly attached = new Map<number, boolean>()
   private readonly attaching = new Map<number, Promise<void>>()
+  private readonly detaching = new Map<number, Promise<void>>()
 
   // Event subscribers: tabId → eventName → Set of callbacks
   private readonly eventListeners = new Map<
@@ -53,10 +54,10 @@ export class CDPSession {
   }
 
   /**
-   * Attaches the debugger to the given tab if not already attached.
-   * Gracefully ignores "Already attached" errors.
+   * Attaches the debugger after any previous attachment has finished detaching.
    */
   async ensure(tabId: number): Promise<void> {
+    await this.detaching.get(tabId)
     if (this.attached.get(tabId)) return
 
     const pending = this.attaching.get(tabId)
@@ -97,6 +98,22 @@ export class CDPSession {
    * Gracefully ignores "Not attached" errors.
    */
   async detach(tabId: number): Promise<void> {
+    const pending = this.detaching.get(tabId)
+    if (pending) return pending
+    const operation = this.detachAttachment(tabId)
+    this.detaching.set(tabId, operation)
+    try {
+      await operation
+    } finally {
+      this.detaching.delete(tabId)
+    }
+  }
+
+  private async detachAttachment(tabId: number): Promise<void> {
+    await this.attaching.get(tabId)
+    // Child-session IDs become unusable as soon as detachment starts, not when
+    // its callback happens to arrive. The next ensure waits for this operation.
+    this.markDetached(tabId)
     await new Promise<void>((resolve, reject) => {
       chrome.debugger.detach({ tabId }, () => {
         const err = chrome.runtime.lastError
@@ -113,7 +130,6 @@ export class CDPSession {
         }
       })
     })
-    this.markDetached(tabId)
   }
 
   /**
@@ -133,24 +149,7 @@ export class CDPSession {
    */
   async send<T>(tabId: number, method: string, params?: object): Promise<T> {
     await this.ensure(tabId)
-    try {
-      return await this.sendAttached<T>(tabId, method, params)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      if (!message.includes('Debugger is not attached')) {
-        throw error
-      }
-      if (this.hasEventListeners(tabId)) {
-        this.attached.delete(tabId)
-        this.eventListeners.delete(tabId)
-        throw new Error(
-          `CDP command "${method}" failed for tab ${tabId}: debugger detached while event listeners were active; re-enable monitoring and retry`,
-        )
-      }
-      this.attached.delete(tabId)
-      await this.ensure(tabId)
-      return await this.sendAttached<T>(tabId, method, params)
-    }
+    return this.sendAttached<T>(tabId, method, params)
   }
 
   async sendToSession<T>(tabId: number, sessionId: string | undefined, method: string, params?: object): Promise<T> {
@@ -212,6 +211,11 @@ export class CDPSession {
             settled = true
             clearTimeout(timeout)
             const message = error instanceof Error ? error.message : String(error)
+            if (message.includes('Debugger is not attached')) {
+              // Invalidate frame sessions and monitors together for root and
+              // child commands. Never replay input across a new attachment.
+              this.markDetached(tabId)
+            }
             reject(new Error(`CDP command "${method}" failed for tab ${tabId}: ${message}`))
           },
         )
@@ -219,9 +223,9 @@ export class CDPSession {
   }
 
   private forceDetach(tabId: number): void {
-    this.markDetached(tabId)
-    chrome.debugger.detach({ tabId }, () => {
-      void chrome.runtime.lastError
+    // Use the same lifecycle barrier as normal idle cleanup.
+    void this.detach(tabId).catch(() => {
+      // The original command timeout is reported to its caller.
     })
   }
 

@@ -49,14 +49,17 @@ This does not establish compatibility with every Chromium version or native UI.
 
 The existing live-ref suite validates cross-site/nested-frame input and background
 scrolling. Background-scroll tests now also require the target to return to
-`hidden` while the previously selected tab remains `visible`. Unit tests cover
+`hidden` while the previously selected tab remains active (checked through the tabs API,
+not page visibility, which also changes when the OS occludes a window). Unit tests cover
 same-tab overlap, failure cleanup, no replay, cleanup rejection/detachment and
 no reattachment after a timed-out input.
 
-An existing consecutive fill/select live test fails with a missing child CDP
-session in this environment; the same failure was reproduced using the unmodified
-HEAD extension. This is a separate frame/attachment lifecycle issue, not a passed
-contract. See the local validation report for exact results.
+The consecutive fill/select test initially exposed an existing attachment race:
+idle cleanup could detach the debugger while the next request reused its frame
+sessions. Attachment now waits for pending detachment, and frame state is
+invalidated when detachment starts. Missing-attachment errors invalidate state
+without replaying commands. All eleven live-ref contract groups passed after
+this lifecycle fix, including background input and visibility restoration.
 
 Use isolated builds from [ref-interaction.md](ref-interaction.md); do not overwrite
 the extension directory loaded in the user's daily browser while testing.

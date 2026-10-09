@@ -57,7 +57,10 @@ and structured movement/boundary results.
 
 The chosen owner is Chromium's `Accessibility.getFullAXTree` plus backend DOM nodes, rather than extending the handwritten DOM walker. This delegates accessible naming, implicit labels and Shadow DOM composition to the browser and avoids a second accessibility implementation.
 
-Same-process and out-of-process frames are enumerated through flat CDP child-target sessions, recursively attaching nested iframe targets. The extension now declares Chromium 125+ for this debugger-session API; live validation used Chromium 152. The transport session ID is not persisted in refs: actions re-resolve the frame and validate the document loader before resolving the backend node in an isolated world. Child events are not misrouted into root network/console listeners. Concurrent root attachment requests share one attachment operation.
+Same-process and out-of-process frames are enumerated through flat CDP child-target sessions, recursively attaching nested iframe targets. The extension now declares Chromium 125+ for this debugger-session API; live validation used Chromium 152. The transport session ID is not persisted in refs: actions re-resolve the frame and validate the document loader before resolving the backend node in an isolated world. Child events are not misrouted into root network/console listeners. Concurrent root attachment requests share one attachment operation. A new
+attachment waits for any pending detach to finish; child-frame transport state
+is invalidated at the start of detachment. Attachment-loss errors are reported
+without automatically replaying a command on a new connection.
 
 The old content-script walker, page-global lookup map and `data-obmcp-ref-id` identity path are removed. Existing tool names remain; old `ref_N` values must be replaced by a fresh snapshot after upgrade.
 

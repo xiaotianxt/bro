@@ -215,10 +215,10 @@ async function withBackgroundPanel(test) {
       '"hidden"',
       'background input must restore page visibility and must not activate its tab',
     )
-    assert.equal(
-      text(await tool('javascript_tool', { tabId: foreground.tabId, code: 'document.visibilityState' })),
-      '"visible"',
-      'the previously selected tab must remain visible',
+    assert.match(
+      text(await tool('tabs_context', { tabId: foreground.tabId, all: true })),
+      new RegExp(`Active tab: .*\\(ID: ${foreground.tabId}\\)`),
+      'input must preserve the selected tab even if its window is occluded',
     )
   } finally {
     await tool('browser.flow.finish', { sessionId: background.sessionId })
@@ -582,9 +582,9 @@ try {
             text(await tool('javascript_tool', { tabId, code: 'document.visibilityState' })),
             '"hidden"',
           )
-          assert.equal(
-            text(await tool('javascript_tool', { tabId: foreground.tabId, code: 'document.visibilityState' })),
-            '"visible"',
+          assert.match(
+            text(await tool('tabs_context', { tabId: foreground.tabId, all: true })),
+            new RegExp(`Active tab: .*\\(ID: ${foreground.tabId}\\)`),
           )
         }
       } finally {

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Serialize CDP attach/detach transitions and invalidate child frame sessions
+  before idle detachment. Consecutive flow steps no longer reuse a detaching
+  connection; attachment-loss errors are reported without replaying input.
+
 - Replace unconditional foregrounding for ref click/scroll and computer input
   with scoped page-focus emulation. Preserve the user's selected tab/window,
   serialize same-tab input, clear emulation on success/failure, and retain
