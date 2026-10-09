@@ -4,6 +4,8 @@ tag = false
 push = false
 pre-release-commit-message = "chore: bump {{crate_name}} version to {{version}}"
 pre-release-replacements = [
+  { file = "README.md", search = 'git:github.com/xiaotianxt/bro@v[0-9]+\.[0-9]+\.[0-9]+', replace = 'git:github.com/xiaotianxt/bro@v{{version}}', exactly = 1 },
+  { file = "pi-extension/README.md", search = 'git:github.com/xiaotianxt/bro@v[0-9]+\.[0-9]+\.[0-9]+', replace = 'git:github.com/xiaotianxt/bro@v{{version}}', exactly = 1 },
   { file = "extension/manifest.json", search = '"version": "[^"]+"', replace = '"version": "{{version}}"', exactly = 1 },
   { file = "package.json", search = '"version": "[^"]+"', replace = '"version": "{{version}}"', exactly = 1 },
   { file = "extension/package.json", search = '"version": "[^"]+"', replace = '"version": "{{version}}"', exactly = 1 },

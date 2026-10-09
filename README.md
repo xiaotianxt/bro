@@ -260,10 +260,12 @@ agent to start, act on, and finish many separate flow sessions.
 
 Raw browser primitives such as `tabs_create`, `tabs_close`, `read_page`,
 `frames_list`, `javascript_tool`, `click_element`, `fill_element`, and
-`computer` remain available for lower-level work. Real `computer` input brings
-the target tab and window to the foreground; screenshots and zoom remain
-background-capable. Use `frames_list` frame IDs with frame-aware flow steps for
-iframe interaction.
+`computer` remain available for lower-level work. Ref click/scroll and real
+`computer` input temporarily emulate page focus without selecting a tab or
+focusing its window; emulation is cleared before returning. Use `tabs_activate`
+only when a task genuinely needs physical foreground interaction. See
+[Input focus](docs/input-focus.md) for lifecycle and visibility semantics.
+Use `frames_list` frame IDs with frame-aware flow steps for iframe interaction.
 
 Extraction defaults are intentionally compact for agent workflows:
 

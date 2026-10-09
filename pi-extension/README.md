@@ -27,7 +27,11 @@ For development from a checkout:
 pi install /absolute/path/to/bro
 ```
 
-Then start a new Pi session or run `/reload`.
+Then start a new Pi session or run `/reload`. Upgrade the bro server and browser
+extension together and reload the browser extension as well. Tool descriptions
+come from the running server, not this adapter's package version. When switching
+from a development checkout to a tagged install, remove the old local package
+entry with `pi remove /absolute/path/to/bro` to avoid loading both copies.
 
 ## Behavior
 
@@ -36,6 +40,7 @@ Then start a new Pi session or run `/reload`.
 - Server-marked internal and compatibility tools remain available to other MCP clients but are not registered in Pi.
 - `bro_search_tools` enables server-owned capability packs through Pi's dynamic tool loading, so tabs, frames, accessibility, console, visual, upload, shortcut, and user-script workflows load coherently.
 - Pi's session ID is supplied to bro tab-lifecycle tools when the caller omits `sessionId`.
+- With bro v1.1.2+, ref click/scroll and computer input use temporary page-focus emulation without activating the user's tab/window. Reserve `tabs_activate` for genuinely necessary foreground work, not routine preparation or retries.
 - MCP errors become failed Pi tool results rather than successful text containing an error.
 - Text output is bounded to Pi's 50 KB / 2,000-line tool limit.
 - Session shutdown finalizes Pi-owned tabs and unfinished browser flows; `/reload` preserves them for the continuing session.

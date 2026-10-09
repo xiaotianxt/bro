@@ -165,11 +165,13 @@ Eval code is a JavaScript expression; wrap multiple statements in an IIFE rather
 than using a top-level `return`.
 
 `scroll` requires a snapshot `refId`, accepts direction and 1–10000 CSS pixels,
-foregrounds the target, and waits for rendering before returning measured
+temporarily emulates page focus without activating the tab/window, and waits
+for rendering before returning measured
 movement/boundary data. Combine it with `read_text` steps to verify intermediate
 visible UI without new model turns or invalidating refs. This does not wait for
 arbitrary network-loaded content; use explicit readiness conditions for that.
-See [Scroll interaction](scroll-interaction.md).
+See [Input focus](input-focus.md) for current behavior and
+[Scroll interaction](scroll-interaction.md) for the original rendering fix.
 
 If a step fails, `browser.flow.act` stops at that step, returns prior results and
 the failure location, and marks the outer MCP result as an error.
@@ -177,8 +179,9 @@ the failure location, and marks the outer MCP result as an error.
 A ref already identifies its tab, frame, document and node. Do not combine it
 with `css` or `frameId`. New snapshots replace previous refs; navigation or DOM
 replacement requires a fresh observation. Ref-based select accepts an option
-value or a unique visible label. Ref clicks use trusted input and foreground
-the tab/window; they do not fall back to JavaScript clicks.
+value or a unique visible label. Ref clicks use trusted input without activating
+the tab/window; they do not fall back to JavaScript clicks or automatically
+retry in the foreground.
 
 For deliberate CSS/eval workflows, `frames_list` and explicit `frameId` remain
 available, including out-of-process frames. `read_text` without a frame ID is

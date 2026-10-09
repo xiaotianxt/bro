@@ -1,6 +1,6 @@
 # Input without changing user focus
 
-Status: unreleased. Server tool descriptions and extension must be upgraded together.
+Introduced in v1.1.2. Server tool descriptions and extension must be upgraded together.
 
 ## Contract
 

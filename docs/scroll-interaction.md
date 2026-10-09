@@ -18,7 +18,7 @@ The decisive difference in the failed bro case was not the spelling of `scrollBy
 
 ## Chosen fix (v1.1.0 historical behavior)
 
-The unreleased [input focus change](input-focus.md) replaces physical foregrounding
+The v1.1.2 [input focus change](input-focus.md) replaces physical foregrounding
 below with scoped focus emulation. Rendering and result checks remain required.
 The measurements in this document describe the earlier implementation.
 
