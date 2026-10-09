@@ -210,6 +210,16 @@ async function withBackgroundPanel(test) {
     )
     const tree = text(await tool('read_page', { tabId: background.tabId }))
     await test(background, refFor(tree, 'region', 'Scroll panel'))
+    assert.equal(
+      text(await tool('javascript_tool', { tabId: background.tabId, code: 'document.visibilityState' })),
+      '"hidden"',
+      'background input must restore page visibility and must not activate its tab',
+    )
+    assert.equal(
+      text(await tool('javascript_tool', { tabId: foreground.tabId, code: 'document.visibilityState' })),
+      '"visible"',
+      'the previously selected tab must remain visible',
+    )
   } finally {
     await tool('browser.flow.finish', { sessionId: background.sessionId })
     await tool('browser.flow.finish', { sessionId: foreground.sessionId })
@@ -545,21 +555,40 @@ try {
   await check(
     'native ref input/select/click across frame and nested shadow boundaries',
     async () => {
-      for (const kind of ['Same', 'Cross', 'Nested']) {
-        snapshot = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
-        await tool('form_input', {
-          tabId,
-          refId: refFor(snapshot, 'textbox', `${kind} Name`),
-          value: 'Luna',
-        })
-        await tool('form_input', {
-          tabId,
-          refId: refFor(snapshot, 'combobox', `${kind} Mode`),
-          value: kind === 'Same' ? 'Gamma' : 'gamma',
-        })
-        await tool('click_element', { tabId, refId: refFor(snapshot, 'button', `${kind} Commit`) })
-        const observed = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
-        assert.match(observed, new RegExp(`${kind}_OK:Luna:gamma:trusted=true:input=2`))
+      const foreground = JSON.parse(
+        text(await tool('browser.flow.start', { url: rootUrl + '/blank', active: true })),
+      )
+      try {
+        assert.equal(
+          text(await tool('javascript_tool', { tabId, code: 'document.visibilityState' })),
+          '"hidden"',
+        )
+        for (const kind of ['Same', 'Cross', 'Nested']) {
+          snapshot = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
+          await tool('form_input', {
+            tabId,
+            refId: refFor(snapshot, 'textbox', `${kind} Name`),
+            value: 'Luna',
+          })
+          await tool('form_input', {
+            tabId,
+            refId: refFor(snapshot, 'combobox', `${kind} Mode`),
+            value: kind === 'Same' ? 'Gamma' : 'gamma',
+          })
+          await tool('click_element', { tabId, refId: refFor(snapshot, 'button', `${kind} Commit`) })
+          const observed = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
+          assert.match(observed, new RegExp(`${kind}_OK:Luna:gamma:trusted=true:input=2`))
+          assert.equal(
+            text(await tool('javascript_tool', { tabId, code: 'document.visibilityState' })),
+            '"hidden"',
+          )
+          assert.equal(
+            text(await tool('javascript_tool', { tabId: foreground.tabId, code: 'document.visibilityState' })),
+            '"visible"',
+          )
+        }
+      } finally {
+        await tool('browser.flow.finish', { sessionId: foreground.sessionId })
       }
     },
   )

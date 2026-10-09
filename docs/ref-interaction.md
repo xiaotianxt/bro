@@ -32,7 +32,7 @@ flow.start → flow.observe → flow.act(refs) → flow.observe → flow.finish
 
 Ref-only `scroll` steps are also supported in `flow.act`; pair them with
 `read_text` to verify intermediate UI states in one call without replacing refs.
-See [Scroll interaction](scroll-interaction.md) for foreground/rendering semantics
+See [Input focus](input-focus.md) for current focus/rendering semantics
 and structured movement/boundary results.
 
 `read_page`, `find`, `form_input`, `fill_element`, `click_element`, `scroll_element`, `get_element_info`, `wait_for_element`, `file_upload` and `upload_image` share the same ref identity/resolution mechanism. `read_page` defaults to `filter: all`, `compact: true`, `depth: 20`, and a shared 16,000-character budget. Use `filter: interactive` for a shorter controls-only view. `compact: false` retains unnamed structural nodes. Scope `refId` narrows to its AX subtree **within its owning document**; omit it for all frame trees.
@@ -46,7 +46,7 @@ and structured movement/boundary results.
 - Service-worker restart loses the volatile registry and yields an explicit stale/unknown-ref error. There is no attempt to resurrect uncertain identity.
 - `browser.batch.flow` creates new tabs and cannot reuse existing snapshot refs. It accepts CSS/eval templates; the server rejects ref steps before creating tabs.
 - Flow argument validation completes before any step executes. Invalid `css + refId`, `refId + frameId`, missing targets, or missing values cannot produce partially executed flows. Runtime failure still stops subsequent steps and propagates MCP failure.
-- Clicks foreground the tab/window, check actionability and occlusion, and dispatch trusted CDP input. There is **no JavaScript-click or coordinate-tool fallback**. Internally computed coordinates are part of the ref executor, not an agent-selected alternative target.
+- Clicks temporarily emulate page focus without activating the tab/window, check actionability and occlusion, and dispatch trusted CDP input. There is **no JavaScript-click or coordinate-tool fallback**. Internally computed coordinates are part of the ref executor, not an agent-selected alternative target.
 - Ancestor iframe geometry is transformed into top-level CSS coordinates. Rendering is synchronized after scrolling before hit testing and dispatch; clicks are never replayed as a timing workaround.
 - Form setters reject disabled, inert, read-only and hidden targets in their owning document; invalid select options fail. Clicks additionally check ancestor iframe hit surfaces. Form events are composed across Shadow DOM boundaries and use native setters for controlled-form compatibility. These checks are not a claim of atomic actionability across concurrently changing frame ancestors.
 - A click response proves dispatch, not the website's application-level postcondition. Observe the resulting state. Native coordinate input necessarily has a final hit-test/input race; this is not a transaction over a concurrently mutating page.

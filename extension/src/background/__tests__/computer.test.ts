@@ -80,9 +80,11 @@ describe('computer input', () => {
       coordinate: [400, 320],
     })
 
-    expect(activateTab).toHaveBeenCalledWith(42, { active: true })
-    expect(focusWindow).toHaveBeenCalledWith(7, { focused: true })
-    expect(commands[0]?.method).toBe('Page.bringToFront')
+    expect(activateTab).not.toHaveBeenCalled()
+    expect(focusWindow).not.toHaveBeenCalled()
+    expect(commands.some((c) => c.method === 'Page.bringToFront')).toBe(false)
+    expect(commands[0]).toEqual({ method: 'Emulation.setFocusEmulationEnabled', params: { enabled: true } })
+    expect(commands.at(-1)).toEqual({ method: 'Emulation.setFocusEmulationEnabled', params: { enabled: false } })
     const events = commands
       .filter((command) => command.method === 'Input.dispatchMouseEvent')
       .map((command) => command.params)
@@ -135,5 +137,23 @@ describe('computer input', () => {
 
     expect(await outcome).toBe('rejected')
     expect(detach).toHaveBeenCalled()
+    expect(chrome.debugger.attach).toHaveBeenCalledTimes(1)
+    expect(commands.filter((c) => c.method === 'Emulation.setFocusEmulationEnabled'))
+      .toEqual([{ method: 'Emulation.setFocusEmulationEnabled', params: { enabled: true } }])
+  })
+
+  it('detaches and reports failure if emulated focus cannot be cleared', async () => {
+    const send = vi.mocked(chrome.debugger.sendCommand).getMockImplementation()!
+    vi.mocked(chrome.debugger.sendCommand).mockImplementation(async (target, method, params) => {
+      if (method === 'Emulation.setFocusEmulationEnabled' && params?.['enabled'] === false) {
+        throw new Error('reset rejected')
+      }
+      return send(target, method, params)
+    })
+    await import('../tools/computer.js')
+    const { dispatchTool } = await import('../tool-registry.js')
+    await expect(dispatchTool('computer', 42, { action: 'type', text: 'test' }))
+      .rejects.toThrow('Focus cleanup failed; debugger detached')
+    expect(detach).toHaveBeenCalledTimes(1)
   })
 })

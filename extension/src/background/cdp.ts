@@ -159,6 +159,22 @@ export class CDPSession {
     return this.sendAttached<T>(tabId, method, params, sessionId)
   }
 
+  /** Clear temporary input emulation without reattaching a closed/detached tab. */
+  async resetInputFocus(tabId: number): Promise<void> {
+    if (!this.attached.get(tabId)) return // Detachment clears emulation itself.
+    try {
+      await this.sendAttached(tabId, 'Emulation.setFocusEmulationEnabled', { enabled: false })
+    } catch (error) {
+      // Do not leave a live page permanently reporting simulated focus.
+      try {
+        await this.detach(tabId)
+      } catch (detachError) {
+        throw new Error(`Focus cleanup failed: ${String(error)}; detach failed: ${String(detachError)}`)
+      }
+      throw new Error(`Focus cleanup failed; debugger detached: ${String(error)}`)
+    }
+  }
+
   private async sendAttached<T>(
     tabId: number,
     method: string,

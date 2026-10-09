@@ -16,7 +16,11 @@ Source pinned to agent-browser **v0.37.0**, commit
 
 The decisive difference in the failed bro case was not the spelling of `scrollBy`: bro changed `scrollTop` in a hidden tab without allowing the event-driven visible status to update. Copying the same assignment, adding a fixed sleep, or trusting the offset alone would not fix that owner layer.
 
-## Chosen fix
+## Chosen fix (v1.1.0 historical behavior)
+
+The unreleased [input focus change](input-focus.md) replaces physical foregrounding
+below with scoped focus emulation. Rendering and result checks remain required.
+The measurements in this document describe the earlier implementation.
 
 The existing ref-input preparation is shared by clicks and scrolling:
 

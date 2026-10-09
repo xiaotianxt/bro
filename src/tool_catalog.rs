@@ -246,7 +246,7 @@ static SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "browser.flow.act",
-        description: "Run ordered steps on the owned tab. click/fill/select accept snapshot refId or css; scroll requires refId and optionally direction/amount (CSS pixels). Ref scrolling foregrounds its target and waits for rendering. Combine scroll and read_text steps to verify intermediate UI states in one call; read_text does not replace refs. Never combine refId with css/frameId. Eval is an awaited expression. Stops at the first failed step.",
+        description: "Run ordered steps on the owned tab. click/fill/select accept snapshot refId or css; scroll requires refId and optionally direction/amount (CSS pixels). Ref click/scroll temporarily emulate page focus without activating the tab/window; scrolling waits for rendering. Combine scroll and read_text steps to verify intermediate UI states in one call; read_text does not replace refs. Never combine refId with css/frameId. Eval is an awaited expression. Stops at the first failed step.",
         route: ToolRoute::FlowAct,
         schema: "browser_flow_act",
     },
@@ -314,7 +314,7 @@ static SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "tabs_activate",
-        description: "Activate a browser tab by its numeric tab ID.",
+        description: "Explicitly activate a tab and focus its window. Changes user focus; reserve for tasks that genuinely need the foreground, not routine input or retries.",
         route: ToolRoute::Forward {
             tab_id_envelope: false,
         },
@@ -330,7 +330,7 @@ static SPECS: &[ToolSpec] = &[
     },
     forward(
         "computer",
-        "Interact with the browser by screenshot, click, type, scroll, drag, or key input. Real input actions bring the target tab to the foreground because Chromium can stall Input.* dispatch for background targets; screenshot and zoom remain background-capable.",
+        "Interact with the browser by screenshot, click, type, scroll, drag, or key input. Input temporarily emulates page focus without activating the tab/window, then restores it. No automatic foreground fallback or input replay. Use tabs_activate only when real foreground interaction is necessary.",
         "computer",
     ),
     forward(
@@ -378,10 +378,10 @@ static SPECS: &[ToolSpec] = &[
         "Extract visible text and links after browser-side DOM quiet readiness.",
         "extract_page",
     ),
-    forward("click_element", "Dispatch a trusted click to the exact snapshot ref, including frame/Shadow DOM targets. Foregrounds the tab/window. Covered, disabled or stale targets fail; observe the application result after dispatch.", "ref_id"),
+    forward("click_element", "Dispatch a trusted click to the exact snapshot ref, including frame/Shadow DOM targets. Temporarily emulates page focus without activating the tab/window. Covered, disabled or stale targets fail; observe the application result after dispatch.", "ref_id"),
     forward(
         "scroll_element",
-        "Scroll an exact snapshot ref by CSS pixels. Foregrounds the tab and target frame, then waits for rendering/scroll handlers. Returns before/after offsets, delta, extent, moved and boundary (null for unsupported writing modes). Does not synthesize events or retry. Use flow.act scroll + read_text for multi-step UI verification.",
+        "Scroll an exact snapshot ref by CSS pixels. Temporarily emulates page focus without activating the tab/window, then waits for rendering/scroll handlers. Returns before/after offsets, delta, extent, moved and boundary (null for unsupported writing modes). Does not synthesize events or retry. Use flow.act scroll + read_text for multi-step UI verification.",
         "scroll_element",
     ),
     forward(

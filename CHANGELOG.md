@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Replace unconditional foregrounding for ref click/scroll and computer input
+  with scoped page-focus emulation. Preserve the user's selected tab/window,
+  serialize same-tab input, clear emulation on success/failure, and retain
+  `tabs_activate` for deliberate foreground work. See `docs/input-focus.md`.
+
 - Add `browser.network.capture` to keep monitoring, trigger execution, matching
   request collection, bounded response bodies, and cleanup inside one MCP call.
 - Propagate nested browser errors through flow results, stop at the failed step,

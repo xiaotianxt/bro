@@ -2,7 +2,7 @@
 
 import type { ToolResult } from '@bro/shared'
 import { cdpSession } from '../cdp.js'
-import { prepareInput } from '../input.js'
+import { withInput } from '../input.js'
 import { registerTool } from '../tool-registry.js'
 
 // ---------------------------------------------------------------------------
@@ -672,13 +672,14 @@ async function actionKey(tabId: number, combo: string): Promise<ToolResult> {
 async function executeComputer(tabId: number, rawArgs: unknown): Promise<ToolResult> {
   const args = validateArgs(rawArgs)
 
-  // Screenshots work in background tabs, but Chromium stalls real Input.*
-  // dispatch unless both the tab and its window are active.
-  if (args.action !== 'screenshot' && args.action !== 'zoom') {
-    await prepareInput(tabId)
+  if (args.action === 'screenshot' || args.action === 'zoom') {
+    return dispatchComputer(tabId, args)
   }
-  await cdpSession.ensure(tabId)
+  return withInput(tabId, () => dispatchComputer(tabId, args))
+}
 
+async function dispatchComputer(tabId: number, args: ComputerArgs): Promise<ToolResult> {
+  await cdpSession.ensure(tabId)
   switch (args.action) {
     case 'screenshot':
       return actionScreenshot(tabId, args.quality)

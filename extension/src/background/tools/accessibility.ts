@@ -8,7 +8,7 @@ import {
 } from '../accessibility.js'
 import { cdpSession } from '../cdp.js'
 import { getBrowserFrames, sendToFrame, type BrowserFrame } from '../frames.js'
-import { prepareInput } from '../input.js'
+import { withInput } from '../input.js'
 import { scrollAndObserve } from '../scroll.js'
 
 const snapshots = new SnapshotStore()
@@ -295,8 +295,7 @@ async function parentPoint(this: Element, point: Point): Promise<Point> {
 }
 
 async function prepareRefInput(tabId: number, ref: string): Promise<Point> {
-  snapshots.resolve(tabId, ref) // Reject guessed/stale refs before foregrounding.
-  await prepareInput(tabId)
+  snapshots.resolve(tabId, ref)
   const localPoint = await withRef(tabId, ref, preparePoint)
   let point = localPoint
   const target = snapshots.resolve(tabId, ref)
@@ -350,6 +349,11 @@ async function prepareRefInput(tabId: number, ref: string): Promise<Point> {
 }
 
 async function clickRef(tabId: number, ref: string): Promise<ToolResult> {
+  snapshots.resolve(tabId, ref)
+  return withInput(tabId, () => dispatchRefClick(tabId, ref))
+}
+
+async function dispatchRefClick(tabId: number, ref: string): Promise<ToolResult> {
   const point = await prepareRefInput(tabId, ref)
   for (const event of [
     { type: 'mouseMoved', buttons: 0 },
@@ -490,9 +494,12 @@ export async function refTool(name: string, tabId: number, raw: unknown): Promis
     if (!['up', 'down', 'left', 'right'].includes(direction))
       throw new Error('Unknown scroll direction')
     const amount = integerArg(args, 'amount', 400, 1, 10000)
-    await prepareRefInput(tabId, ref)
-    const observation = await withRef(tabId, ref, scrollAndObserve, [direction, amount])
-    return textResult(JSON.stringify({ refId: ref, ...observation }))
+    snapshots.resolve(tabId, ref)
+    return withInput(tabId, async () => {
+      await prepareRefInput(tabId, ref)
+      const observation = await withRef(tabId, ref, scrollAndObserve, [direction, amount])
+      return textResult(JSON.stringify({ refId: ref, ...observation }))
+    })
   }
   throw new Error(`Unsupported ref operation ${name}`)
 }
