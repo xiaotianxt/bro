@@ -63,7 +63,7 @@ bro setup browser
 For native bro tools in Pi, install the bro-owned adapter and reload Pi:
 
 ```bash
-pi install git:github.com/xiaotianxt/bro@v1.0.1
+pi install git:github.com/xiaotianxt/bro@v1.1.2
 ```
 
 Install the optional Codex/agent skill for bro-specific browser workflows:
