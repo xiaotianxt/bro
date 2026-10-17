@@ -114,6 +114,7 @@ const CAPABILITY_ALIASES: Record<string, string[]> = {
   tabs: ["existing tab", "browser tab", "claim tab", "tabs"],
   accessibility: ["accessibility", "refid", "element reference", "shadow dom", "shadow"],
   frames: ["iframe", "child frame", "frame"],
+  extensions: ["cdp extension recovery", "cdp attach", "cdp_foreign_extension", "extension pause", "extensions_pause", "extensions_status", "extensions_resume", "debugger_diagnose", "password manager", "1password"],
   console: ["console", "page error", "javascript error", "logs"],
   network: ["network", "request body", "response body", "http request"],
   visual: ["visual", "canvas", "screenshot", "coordinate", "drag"],

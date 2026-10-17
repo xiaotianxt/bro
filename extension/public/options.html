@@ -440,6 +440,21 @@
         </div>
       </details>
 
+      <section class="scripts-panel" aria-labelledby="pause-heading">
+        <h2 id="pause-heading">Temporary extension pause</h2>
+        <p class="section-copy">Pauses one extension across every tab in this profile. Pages are not refreshed. bro attempts restoration after five minutes; if blocked, enable the extension in your browser’s extension manager.</p>
+        <div class="field">
+          <label for="pause-extension">Extension to pause</label>
+          <select id="pause-extension" disabled></select>
+        </div>
+        <div class="actions">
+          <button id="pause-extension-btn" type="button" disabled>Pause for 5 minutes — entire profile</button>
+          <button id="resume-extension-btn" type="button" hidden>Restore extension now</button>
+          <button id="refresh-extensions-btn" type="button">Refresh status</button>
+        </div>
+        <p id="pause-status" class="manager-status" role="status" aria-live="polite">Loading extension status…</p>
+      </section>
+
       <section class="scripts-panel" aria-labelledby="scripts-heading">
         <div class="panel-heading">
           <div>

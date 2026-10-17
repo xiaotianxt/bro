@@ -1,7 +1,7 @@
 // CDP (Chrome DevTools Protocol) abstraction layer for the extension service worker.
 // Manages debugger attachment state and event subscriptions per tab.
 
-import { getDebuggerTargetBlockReason } from './debug-target.js'
+import { formatDebuggerAttachError, getDebuggerTargetBlockReason } from './debug-target.js'
 
 type EventCallback = (params: unknown) => void
 type DetachCallback = (tabId: number) => void
@@ -84,7 +84,7 @@ export class CDPSession {
         const err = chrome.runtime.lastError
         if (err) {
           const msg = err.message ?? ''
-          reject(new Error(`CDP attach failed for tab ${tabId}: ${msg}`))
+          reject(new Error(formatDebuggerAttachError(tabId, msg)))
         } else {
           this.attached.set(tabId, true)
           resolve()

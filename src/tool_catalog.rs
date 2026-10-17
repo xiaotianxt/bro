@@ -10,6 +10,7 @@ const ENVELOPE_TAB_TOOLS: &[&str] = &[
     "read_page",
     "find",
     "frames_list",
+    "debugger_diagnose",
     "javascript_tool",
     "form_input",
     "get_page_text",
@@ -147,6 +148,9 @@ fn capability_for(name: &str) -> Option<&'static str> {
         "read_page" | "find" | "form_input" | "click_element" | "scroll_element"
         | "fill_element" | "get_element_info" | "wait_for_element" => Some("accessibility"),
         "frames_list" => Some("frames"),
+        "debugger_diagnose" | "extensions_status" | "extensions_pause" | "extensions_resume" => {
+            Some("extensions")
+        }
         "browser.console.capture" | "read_console_messages" => Some("console"),
         "browser.network.capture" | "read_network_requests" | "get_response_body" => {
             Some("network")
@@ -358,6 +362,29 @@ static SPECS: &[ToolSpec] = &[
         "List the main frame and child frames for a tab, including stable frameIds for frame-aware flow eval, click, fill, select, and read_text steps.",
         "frames_list",
     ),
+    forward(
+        "debugger_diagnose",
+        "Diagnose CDP attach failures / CDP_FOREIGN_EXTENSION without CDP. Inspect best-effort frame origins and foreign extension IDs. Empty inventory does not rule out blockers or identify a culprit. Does not read page contents. Frame IDs here are webNavigation IDs, not CDP frame refs.",
+        "frames_list",
+    ),
+    ToolSpec {
+        name: "extensions_status",
+        description: "Inspect installed extension IDs, enabled state and outstanding profile-wide pause/recovery without CDP. Use after CDP_FOREIGN_EXTENSION; installed does not mean responsible. If login needs a password manager, keep it enabled and complete login through the user or authorized native UI before retrying bro.",
+        route: ToolRoute::Forward { tab_id_envelope: false },
+        schema: "extensions_status",
+    },
+    ToolSpec {
+        name: "extensions_pause",
+        description: "Explicitly pause one user-approved extension across the ENTIRE browser profile for 30–900 seconds. Requires confirmProfileWide=true. Never use automatically on attach errors. Returns ownership token for extensions_resume. Only one outstanding pause is allowed. No refresh or input replay. Automatic restoration can require user intervention; verify extensions_status afterward.",
+        route: ToolRoute::Forward { tab_id_envelope: false },
+        schema: "extensions_pause",
+    },
+    ToolSpec {
+        name: "extensions_resume",
+        description: "Restore the extension disabled by a specific pause using its resumeToken. Verify enabled state before clearing recovery record. If blocked, manually enable in chrome://extensions then call again. Does not enable unrelated extensions.",
+        route: ToolRoute::Forward { tab_id_envelope: false },
+        schema: "extensions_resume",
+    },
     forward(
         "javascript_tool",
         "Execute JavaScript in the page context, optionally targeting a frameId from frames_list.",
@@ -812,6 +839,17 @@ fn schema(kind: &str) -> JsonObject {
             ("tabId", tab_id_schema("Numeric tab ID to search.")),
             ("browserId", browser_id_schema()),
         ]),
+        "extensions_status" => props(&[("browserId", browser_id_schema())]),
+        "extensions_pause" => props(&[
+            ("browserId", browser_id_schema()),
+            ("extensionId", json!({"type":"string","pattern":"^[a-p]{32}$"})),
+            ("confirmProfileWide", json!({"type":"boolean","const":true})),
+            ("durationSeconds", json!({"type":"integer","minimum":30,"maximum":900,"default":300})),
+        ]),
+        "extensions_resume" => props(&[
+            ("browserId", browser_id_schema()),
+            ("resumeToken", json!({"type":"string","minLength":1})),
+        ]),
         "frames_list" => props(&[
             ("tabId", tab_id_schema("Numeric tab ID whose frame tree should be listed.")),
             ("browserId", browser_id_schema()),
@@ -998,6 +1036,8 @@ fn schema(kind: &str) -> JsonObject {
 
 fn required_fields(kind: &str) -> Option<&'static [&'static str]> {
     match kind {
+        "extensions_pause" => Some(&["extensionId", "confirmProfileWide"]),
+        "extensions_resume" => Some(&["resumeToken"]),
         "agent_done" => Some(&["tabIds"]),
         "browser_extract" => Some(&["url"]),
         "browser_console_capture" | "browser_network_capture" => Some(&["url", "code"]),

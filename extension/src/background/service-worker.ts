@@ -16,6 +16,12 @@ import './tools/tabs.js'
 import './tools/upload.js'
 import './tools/misc.js'
 import './tools/userscripts.js'
+import './tools/extensions.js'
+import { PAUSE_ALARM, recoverPause } from './extension-pause.js'
+
+void recoverPause().catch((error: unknown) => {
+  console.error('[ExtensionPause] Recovery needs attention:', error)
+})
 
 void restoreUserScripts().catch((error: unknown) => {
   console.warn('[UserScripts] Failed to restore registered scripts:', error)
@@ -144,18 +150,20 @@ bridgeClient.onMessage(async (msg) => {
     // Determine the active tab if no tabId was specified.
     // This can fail if no Chrome window is focused — keep it inside try so
     // the error is returned as tool_error instead of causing a 30s timeout.
-    resolvedTabId = await resolveTabId(tabId)
-    if (!activeRequests.setResolvedTabId(requestId, resolvedTabId)) {
-      return
+    const profileTool = ['extensions_status', 'extensions_pause', 'extensions_resume'].includes(tool)
+    if (!profileTool) {
+      resolvedTabId = await resolveTabId(tabId)
+      if (!activeRequests.setResolvedTabId(requestId, resolvedTabId)) {
+        return
+      }
+
+      // Profile tools must work even with no active web tab.
+      cancelHideIndicatorForTab(resolvedTabId)
+      activeIndicatorTabs.add(resolvedTabId)
+      sendIndicatorMessage(resolvedTabId, 'INDICATOR_SHOW')
     }
 
-    // Show the visual indicator before executing the tool.
-    // Cancel any pending hide timer for this tab so the border stays visible.
-    cancelHideIndicatorForTab(resolvedTabId)
-    activeIndicatorTabs.add(resolvedTabId)
-    sendIndicatorMessage(resolvedTabId, 'INDICATOR_SHOW')
-
-    const result = await dispatchTool(tool, resolvedTabId, args)
+    const result = await dispatchTool(tool, resolvedTabId ?? 0, args)
 
     // Check if the tool was stopped by the user
     if (!activeRequests.isActive(requestId)) {
@@ -190,7 +198,7 @@ bridgeClient.onMessage(async (msg) => {
 
 // Handle messages from content scripts and the options page.
 chrome.runtime.onMessage.addListener(
-  (message: unknown, _sender, sendResponse) => {
+  (message: unknown, sender, sendResponse) => {
     if (
       typeof message !== 'object' ||
       message === null ||
@@ -200,6 +208,17 @@ chrome.runtime.onMessage.addListener(
     }
 
     const msgType = (message as { type: string }).type
+
+    if (msgType === 'EXTENSION_CONTROL') {
+      if (sender.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL('options.html')) return false
+      const { tool, args } = message as { tool?: unknown; args?: unknown }
+      if (typeof tool !== 'string' || !['extensions_status', 'extensions_pause', 'extensions_resume'].includes(tool)) return false
+      void dispatchTool(tool, 0, args).then(
+        result => sendResponse({ result }),
+        (error: unknown) => sendResponse({ error: error instanceof Error ? error.message : String(error) }),
+      )
+      return true
+    }
 
     // -----------------------------------------------------------------------
     // STOP_AGENT — content script stop button
@@ -258,6 +277,11 @@ addEventListener('beforeunload', () => {
 // suspended when idle, which kills setTimeout timers; alarms persist).
 // ---------------------------------------------------------------------------
 chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === PAUSE_ALARM) {
+    void recoverPause().catch((error: unknown) => {
+      console.error('[ExtensionPause] Restore needs attention:', error)
+    })
+  }
   if (alarm.name === ALARM_KEEPALIVE || alarm.name === ALARM_WS_RECONNECT) {
     void bridgeClient.onAlarm(alarm.name)
   }

@@ -34,6 +34,15 @@ Chrome requires **Allow User Scripts** to be enabled for the extension in
 `chrome://extensions`. File-backed scripts can be listed and deleted, but the
 Options page does not edit extension package files.
 
+## Temporary Extension Pause
+
+Settings and `extensions_status` / `extensions_pause` / `extensions_resume`
+provide an explicit, profile-wide pause with a recovery journal and alarm.
+The `management` permission is required. `debugger_diagnose` inspects best-effort
+frame origins without CDP; empty inventories are inconclusive. See
+[extension pause](extension-pause.md) for authorization, recovery limits and the
+isolated cross-extension regression test.
+
 ## Build
 
 ```bash

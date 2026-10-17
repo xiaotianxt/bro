@@ -35,6 +35,14 @@ export function getUnsupportedDebuggerTargetReason(
   return undefined
 }
 
+export function formatDebuggerAttachError(tabId: number, browserMessage: string): string {
+  const original = `CDP attach failed for tab ${tabId}: ${browserMessage}`
+  if (!browserMessage.includes('Cannot access a chrome-extension:// URL of different extension')) {
+    return original
+  }
+  return `${original}\n[CDP_FOREIGN_EXTENSION] Chromium rejected access to another extension's protected UI, possibly an embedded iframe. This is not an MCP disconnect; screenshots and coordinate input use the same blocked attach. The message does not identify the extension.\nNext: discover \"CDP extension recovery\" tools (Pi: bro_search_tools), then use debugger_diagnose on this tab and extensions_status on the same browserId. Frame inventory is best-effort; an empty result does not rule out a blocker.\nIf login needs the password manager, keep it enabled and let the user or an authorized native-UI workflow complete login first. Otherwise, only with explicit user authorization for the exact extension and profile-wide impact, use extensions_pause, then extensions_resume with the returned token and verify extensions_status. Do not automatically disable extensions, refresh unsaved pages, or replay input.\nIf these tools are unavailable, use bro Settings > Temporary extension pause or upgrade the matching server/extension; do not retry indefinitely.`
+}
+
 export async function getDebuggerTargetBlockReason(
   tabId: number,
 ): Promise<string | undefined> {

@@ -99,6 +99,17 @@ describe("bro tool catalog", () => {
     ]);
   });
 
+  it("discovers diagnosis and restoration together from the attach-error guidance", () => {
+    const names = ["debugger_diagnose", "extensions_status", "extensions_pause", "extensions_resume"];
+    const entries = names.map((name) => ({
+      ...tool(name), _meta: { "bro/capability": "extensions" },
+    })) as Tool[];
+    const catalog = buildBroCatalog([tool("javascript_tool", "CDP"), ...entries], []);
+    for (const query of ["CDP extension recovery", "CDP_FOREIGN_EXTENSION", "1password"]) {
+      expect(searchBroCatalog(catalog, query, 4).map((entry) => entry.upstream.name)).toEqual(names);
+    }
+  });
+
   it("searches names, descriptions, and parameter names", () => {
     const catalog = buildBroCatalog(
       [

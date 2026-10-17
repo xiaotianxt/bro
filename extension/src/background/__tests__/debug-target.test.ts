@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { getUnsupportedDebuggerTargetReason } from '../debug-target.js'
+import { formatDebuggerAttachError, getUnsupportedDebuggerTargetReason } from '../debug-target.js'
 
 describe('getUnsupportedDebuggerTargetReason', () => {
+  it('preserves unrelated attach errors without recommending extension changes', () => {
+    for (const message of ['Another debugger is already attached', 'No tab with given id', '']) {
+      expect(formatDebuggerAttachError(7, message)).toBe(`CDP attach failed for tab 7: ${message}`)
+    }
+  })
+
   const ownExtensionId = 'jpfhnnbdkolfgooefipkolbcehlpkinj'
 
   it('blocks pages from other extensions before CDP attach', () => {

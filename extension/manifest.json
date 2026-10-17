@@ -18,6 +18,7 @@
   },
   "permissions": [
     "storage",
+    "management",
     "activeTab",
     "scripting",
     "debugger",

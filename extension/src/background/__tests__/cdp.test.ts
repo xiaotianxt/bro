@@ -22,6 +22,28 @@ beforeEach(() => {
 })
 
 describe('CDP attachment lifecycle', () => {
+  it('guides cross-extension recovery at the attach boundary without sending or replaying input', async () => {
+    const { cdpSession } = await import('../cdp.js')
+    const browserMessage = 'Cannot access a chrome-extension:// URL of different extension'
+    vi.mocked(chrome.debugger.attach).mockImplementation((_target, _version, done) => {
+      Object.assign(chrome.runtime, { lastError: { message: browserMessage } })
+      done!()
+      Object.assign(chrome.runtime, { lastError: undefined })
+    })
+    let message = ''
+    try { await cdpSession.send(42, 'Input.dispatchMouseEvent') }
+    catch (error) { message = (error as Error).message }
+    expect(message).toContain(`CDP attach failed for tab 42: ${browserMessage}`)
+    expect(message).toContain('[CDP_FOREIGN_EXTENSION]')
+    expect(message).toContain('bro_search_tools')
+    expect(message).toContain('extensions_status')
+    expect(message).toContain('keep it enabled')
+    expect(message).toContain('explicit user authorization')
+    expect(message).toContain('extensions_resume')
+    expect(chrome.debugger.attach).toHaveBeenCalledTimes(1)
+    expect(chrome.debugger.sendCommand).not.toHaveBeenCalled()
+  })
+
   it('invalidates frame state before idle detach and blocks the next attach until cleanup finishes', async () => {
     const { cdpSession } = await import('../cdp.js')
     await cdpSession.ensure(1)

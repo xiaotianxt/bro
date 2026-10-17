@@ -1,3 +1,4 @@
+import './extension-pause.js'
 import {
   DEFAULT_SERVER_URL,
   loadServerUrl,
