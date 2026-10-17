@@ -40,7 +40,7 @@ entry with `pi remove /absolute/path/to/bro` to avoid loading both copies.
 - Server-marked internal and compatibility tools remain available to other MCP clients but are not registered in Pi.
 - `bro_search_tools` enables server-owned capability packs through Pi's dynamic tool loading, so tabs, frames, accessibility, console, visual, upload, shortcut, and user-script workflows load coherently.
 - With bro v1.2.0+, search `CDP extension recovery` to load diagnosis, extension status, explicit profile-wide pause, and verified resume together. `CDP_FOREIGN_EXTENSION` errors explain the decision path; they never automatically disable a password manager or refresh a page.
-- With bro v1.3.0+, search `1Password login` for exact-origin metadata discovery and private, non-CDP form inspection/filling. Configure/authorize the local `op` CLI first; filling never dispatches submit. See [security boundaries](../docs/onepassword-login.md).
+- With bro v1.3.0+, search `1Password login` for same-site (registrable-domain) metadata discovery and private, non-CDP form inspection/filling. Configure/authorize the local `op` CLI first; filling never dispatches submit. See [security boundaries](../docs/onepassword-login.md).
 - Pi's session ID is supplied to bro tab-lifecycle tools when the caller omits `sessionId`.
 - With bro v1.1.2+, ref click/scroll and computer input use temporary page-focus emulation without activating the user's tab/window. Reserve `tabs_activate` for genuinely necessary foreground work, not routine preparation or retries.
 - MCP errors become failed Pi tool results rather than successful text containing an error.

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Match 1Password logins by registrable domain (Public Suffix List) instead of
+  exact origin, like 1Password's default, so `secure.pnc.com` logins are found
+  from `www.pnc.com`. Candidates report `match: exact-origin|same-site`; fill
+  re-checks the same rule. `login_form_inspect` now reports `hiddenFields`,
+  text-free `accountSwitchers` and a remembered-account `hint`.
+
 - Serialize CDP attach/detach transitions and invalidate child frame sessions
   before idle detachment. Consecutive flow steps no longer reuse a detaching
   connection; attachment-loss errors are reported without replaying input.

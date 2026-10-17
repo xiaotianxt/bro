@@ -9,12 +9,16 @@ username/password workflow, not a passkey, CAPTCHA or MFA implementation.
 Discover the `login` capability pack (Pi search: `1Password login`):
 
 1. `login_form_inspect {browserId, tabId}` obtains the **actual main-frame origin**,
-   document ID, a 120-second form token, and visible input indices/types. No field
-   values are returned. It uses extension ISOLATED-world scripting, not CDP, so
+   document ID, a 120-second form token, fillable input indices/types,
+   `hiddenFields`, and `accountSwitchers`. No field values or control text are
+   returned. When only a password is fillable it adds a `hint`: the page is
+   showing a remembered account. Fill the password for that account, or apply an
+   `accountSwitchers` entry (`select` with `optionValue`, or click its `css`) and
+   inspect again, instead of debugging the username input's DOM. It uses extension ISOLATED-world scripting, not CDP, so
    a foreign-extension iframe need not be disabled to inspect/fill this form.
 2. `onepassword_find_logins {url, vault?, account?, confirmMetadataSearch:true}`
-   lists Login metadata locally and returns only exact-origin candidate
-   item/vault IDs and bounded titles. User authorization to search metadata is
+   lists Login metadata locally and returns only same-site candidate
+   item/vault IDs, bounded titles and `match: exact-origin|same-site`, exact first. User authorization to search metadata is
    required; narrow the vault/account when known. Without a vault scope the CLI
    may enumerate all accessible Login metadata locally, but unmatched entries
    are not returned. This does not fetch credential fields.
@@ -30,12 +34,23 @@ Discover the `login` capability pack (Pi search: `1Password login`):
    bro never calls submit in the fill tool; website input handlers can still act
    on values. Never repeat an uncertain fill/submit automatically.
 
-Only HTTPS is accepted except on literal localhost/127.0.0.1/[::1]. Matching is
-exact scheme/host/effective-port after URL normalization, not a substring or
-registrable-domain match. Paths/queries are not authorization boundaries.
-Saved `https://example.com` does not authorize `https://login.example.com` or an
-SSO provider. A zero-match result does not prove no related account exists.
-Do not silently relax matching or update the saved item's URL.
+Only HTTPS is accepted except on literal localhost/127.0.0.1/[::1]. Matching
+follows 1Password's default "Fill anywhere on this website": a saved website
+matches when scheme and effective port are equal and the registrable domain
+(eTLD+1 from the Public Suffix List, private section included) is the same.
+Saved `https://secure.example.com` therefore matches `https://www.example.com`,
+while `evilexample.com`, `example.com.evil.test`, `a.co.uk`/`b.co.uk` and
+`alice.github.io`/`bob.github.io` do not. Loopback and IP hosts match only
+exactly. Bare saved hosts such as `example.com` are read as HTTPS. Paths/queries
+are not authorization boundaries. Discovery and fill use the same rule, and fill
+re-checks it on the freshly read item.
+
+1Password's per-URL "Only fill on this exact host" and "Never fill" settings
+are not present in the CLI fields bro reads, so bro cannot honor them; an item
+restricted that way can still be offered on a sibling host. Associated-domain
+groups (one organization on several registrable domains) and SSO providers are
+not matched. A zero-match result does not prove no related account exists. Do
+not update the saved item's URL.
 
 ## Private data path
 
@@ -105,6 +120,8 @@ An isolated Chrome profile and local HTTP fixture verify:
 
 - A protected extension iframe blocks CDP but not form inspection/private fill.
 - Exact-origin metadata matching, and refusal of an item whose saved origin changed.
+- Remembered-account state: hidden username, visible password and an "other user"
+  select produce `hiddenFields`, `accountSwitchers` and a `hint`.
 - Provider failure (including canaries in stdout/stderr) does not expose output.
 - Changed document/DOM node, tokenized new-password, expired and nonempty fields fail.
 - Stop during delayed provider retrieval leaves the form empty; consumed tokens refuse replay.
@@ -114,7 +131,8 @@ An isolated Chrome profile and local HTTP fixture verify:
   broker/browser process log with RUST_LOG=trace. These are the scanned surfaces,
   not a claim that all OS storage or destination-site state was scanned.
 
-Unit tests additionally check canonical origins, fixed error projection, redacted
+Unit tests additionally check registrable-domain matching (public and private
+suffixes, ports, schemes, bare hosts), canonical origins, fixed error projection, redacted
 Debug, and browser/session-bound responses. An independent source review found
 and drove the Stop-during-provider and autocomplete-token fixes.
 

@@ -8,7 +8,7 @@ use std::{
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use tokio::{io::AsyncReadExt, process::Command};
-use url::Url;
+use url::{Host, Url};
 
 use crate::bridge::BrowserBridge;
 
@@ -84,7 +84,7 @@ fn parse<T: serde::de::DeserializeOwned>(args: Map<String, Value>) -> Result<T> 
     serde_json::from_value(Value::Object(args)).map_err(|_| "Invalid login tool arguments")
 }
 
-fn origin(input: &str) -> Result<String> {
+fn checked_url(input: &str) -> Result<Url> {
     let url = Url::parse(input).map_err(|_| "Expected an absolute HTTPS URL")?;
     if !url.username().is_empty() || url.password().is_some() {
         return Err("URL must not contain credentials");
@@ -96,13 +96,61 @@ fn origin(input: &str) -> Result<String> {
     if url.host_str().is_none() {
         return Err("URL has no hostname");
     }
-    Ok(url.origin().ascii_serialization())
+    Ok(url)
 }
 
-fn matches_origin(item: &Item, expected: &str) -> bool {
+fn origin(input: &str) -> Result<String> {
+    Ok(checked_url(input)?.origin().ascii_serialization())
+}
+
+/// Ordered best first: an exact origin outranks a sibling host.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Match {
+    Exact,
+    SameSite,
+}
+
+impl Match {
+    fn label(self) -> &'static str {
+        match self {
+            Match::Exact => "exact-origin",
+            Match::SameSite => "same-site",
+        }
+    }
+}
+
+/// Registrable domain (eTLD+1) from the Public Suffix List, private section
+/// included, so `a.github.io` and `b.github.io` are different sites. IP
+/// addresses and bare public suffixes have none and only match exactly.
+fn site(url: &Url) -> Option<&str> {
+    match url.host()? {
+        Host::Domain(domain) => psl::domain_str(domain),
+        Host::Ipv4(_) | Host::Ipv6(_) => None,
+    }
+}
+
+/// Mirrors 1Password's default "Fill anywhere on this website": the saved and
+/// page URLs share scheme, effective port and registrable domain. The CLI
+/// fields bro reads carry no per-URL "exact host only" behavior to honor.
+fn website_match(href: &str, page: &Url) -> Option<Match> {
+    // 1Password stores bare hosts such as `pnc.com` and treats them as HTTPS.
+    let saved = checked_url(href)
+        .or_else(|_| checked_url(&format!("https://{href}")))
+        .ok()?;
+    if saved.origin() == page.origin() {
+        return Some(Match::Exact);
+    }
+    let same_site = saved.scheme() == page.scheme()
+        && saved.port_or_known_default() == page.port_or_known_default()
+        && site(&saved).is_some_and(|value| Some(value) == site(page));
+    same_site.then_some(Match::SameSite)
+}
+
+fn item_match(item: &Item, page: &Url) -> Option<Match> {
     item.urls
         .iter()
-        .any(|website| origin(&website.href).is_ok_and(|value| value == expected))
+        .filter_map(|website| website_match(&website.href, page))
+        .min()
 }
 
 fn identifier(value: &str) -> bool {
@@ -192,7 +240,7 @@ pub async fn find(args: Map<String, Value>) -> Result<Value> {
     if !args.confirm_metadata_search {
         return Err("Explicit confirmMetadataSearch is required to search login metadata locally");
     }
-    let expected = origin(&args.url)?;
+    let page = checked_url(&args.url)?;
     scope(&args.vault)?;
     let mut command = vec!["item", "list", "--categories", "Login"];
     if let Some(vault) = &args.vault {
@@ -201,11 +249,21 @@ pub async fn find(args: Map<String, Value>) -> Result<Value> {
     let output = provider(&command, &args.account, 4 * 1024 * 1024).await?;
     let items: Vec<Item> =
         serde_json::from_slice(&output).map_err(|_| "Invalid 1Password metadata response")?;
-    let candidates: Vec<_> = items.iter().filter(|item| matches_origin(item, &expected))
-        .map(|item| json!({"itemId": item.id, "vaultId": item.vault.id, "title": item.title.chars().take(120).collect::<String>()}))
+    let mut matched: Vec<_> = items
+        .iter()
+        .filter_map(|item| Some((item_match(item, &page)?, item)))
+        .collect();
+    matched.sort_by_key(|(kind, _)| *kind);
+    let candidates: Vec<_> = matched
+        .iter()
+        .map(|(kind, item)| {
+            json!({"itemId": item.id, "vaultId": item.vault.id,
+            "title": item.title.chars().take(120).collect::<String>(), "match": kind.label()})
+        })
         .collect();
     Ok(
-        json!({"origin": expected, "candidates": candidates, "matching": "exact-origin", "credentialsRead": false}),
+        json!({"origin": page.origin().ascii_serialization(), "site": site(&page), "candidates": candidates,
+        "matching": "same-site", "credentialsRead": false}),
     )
 }
 
@@ -293,24 +351,65 @@ pub async fn inspect(bridge: &BrowserBridge, args: Map<String, Value>) -> Result
         .get("formToken")
         .and_then(Value::as_str)
         .ok_or("Missing form token")?;
-    let fields: Vec<_> = value
-        .get("fields")
+    let fields = text_fields(&value, "fields").ok_or("Missing login controls")?;
+    let hidden = text_fields(&value, "hiddenFields").unwrap_or_default();
+    let switchers: Vec<_> = value
+        .get("accountSwitchers")
         .and_then(Value::as_array)
-        .ok_or("Missing login controls")?
-        .iter()
-        .filter_map(|field| {
-            let index = field.get("index")?.as_u64()?;
-            let kind = field.get("type")?.as_str()?;
-            if !["text", "email", "tel", "password"].contains(&kind) {
+        .into_iter()
+        .flatten()
+        .take(5)
+        .filter_map(|switcher| {
+            let kind = switcher.get("kind")?.as_str()?;
+            if !["select", "button"].contains(&kind) {
                 return None;
             }
-            // Do not expose arbitrary labels, names, values or autocomplete text.
-            Some(json!({"index": index, "type": kind}))
+            // Page-authored strings pass only in the token shapes the extension emits.
+            let css = switcher.get("css").and_then(Value::as_str).filter(|css| {
+                css.strip_prefix('#').is_some_and(|id| {
+                    (1..=100).contains(&id.len())
+                        && id
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                })
+            });
+            let option = switcher
+                .get("optionValue")
+                .and_then(Value::as_str)
+                .filter(|v| {
+                    (1..=100).contains(&v.len())
+                        && v.bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                });
+            Some(json!({"kind": kind, "css": css, "optionValue": option}))
         })
         .collect();
-    Ok(
-        json!({"origin": expected, "documentId": document, "formToken": token, "fields": fields,
-        "expiresInSeconds": 120, "scope": "main-frame", "valuesRead": false}),
+    let has =
+        |list: &[Value], password: bool| list.iter().any(|f| (f["type"] == "password") == password);
+    let mut result = json!({"origin": expected, "documentId": document, "formToken": token, "fields": fields,
+        "hiddenFields": hidden, "accountSwitchers": switchers,
+        "expiresInSeconds": 120, "scope": "main-frame", "valuesRead": false});
+    if has(&fields, true) && !has(&fields, false) && (has(&hidden, false) || !switchers.is_empty())
+    {
+        result["hint"] = json!("Username input is hidden: the page likely shows a remembered account. Fill the password alone for that account, or use an accountSwitchers control (select optionValue / click) to choose another user, then inspect again. Do not debug the DOM first.");
+    }
+    Ok(result)
+}
+
+/// Only index/type cross the boundary: never labels, names, values or autocomplete text.
+fn text_fields(value: &Value, key: &str) -> Option<Vec<Value>> {
+    let fields = value.get(key)?.as_array()?;
+    Some(
+        fields
+            .iter()
+            .filter_map(|field| {
+                let index = field.get("index")?.as_u64()?;
+                let kind = field.get("type")?.as_str()?;
+                ["text", "email", "tel", "password"]
+                    .contains(&kind)
+                    .then(|| json!({"index": index, "type": kind}))
+            })
+            .collect(),
     )
 }
 
@@ -332,7 +431,8 @@ pub async fn fill(bridge: &BrowserBridge, args: Map<String, Value>) -> Result<Va
     if args.username_index.is_none() && args.password_index.is_none() {
         return Err("Select at least one input index from login_form_inspect");
     }
-    let expected = origin(&args.expected_origin)?;
+    let page = checked_url(&args.expected_origin)?;
+    let expected = page.origin().ascii_serialization();
     if expected != args.expected_origin {
         return Err("expectedOrigin must be a canonical origin without a path or query");
     }
@@ -372,15 +472,12 @@ pub async fn fill(bridge: &BrowserBridge, args: Map<String, Value>) -> Result<Va
     .await?;
     let item: Item =
         serde_json::from_slice(&output).map_err(|_| "Invalid 1Password item response")?;
-    if item.id != args.item_id
-        || item.vault.id != args.vault_id
-        || item.category != "LOGIN"
-        || !matches_origin(&item, &expected)
-    {
-        return Err(
-            "Selected login does not match the exact HTTPS origin, item or vault; refusing to fill",
-        );
+    if item.id != args.item_id || item.vault.id != args.vault_id || item.category != "LOGIN" {
+        return Err("Selected login does not match the requested item or vault; refusing to fill");
     }
+    // Re-checked on the freshly read item: its saved URLs may have changed since discovery.
+    let matched = item_match(&item, &page)
+        .ok_or("Selected login's saved websites are not on this page's site; refusing to fill")?;
     for (index, id) in [
         (args.username_index, "username"),
         (args.password_index, "password"),
@@ -412,8 +509,10 @@ pub async fn fill(bridge: &BrowserBridge, args: Map<String, Value>) -> Result<Va
     if safe_status(&result)? != "filled" {
         return Err("Unexpected fill result; inspect state before any retry");
     }
-    Ok(json!({"filled": true, "submitDispatched": false,
-        "note": "No submit was dispatched by bro. The destination site can read and react to filled values. Do not inspect values or capture secret-bearing logs/screenshots; verify navigation before submitting separately."}))
+    Ok(
+        json!({"filled": true, "submitDispatched": false, "match": matched.label(),
+        "note": "No submit was dispatched by bro. The destination site can read and react to filled values. Do not inspect values or capture secret-bearing logs/screenshots; verify navigation before submitting separately."}),
+    )
 }
 
 #[cfg(test)]
@@ -421,26 +520,54 @@ mod tests {
     use super::*;
 
     #[test]
-    fn origin_matching_is_exact_not_substring_or_registrable_domain() {
+    fn origin_is_canonical_and_https_only() {
         assert_eq!(
             origin("https://EXAMPLE.com/a?q=1"),
             Ok("https://example.com".into())
         );
-        assert_ne!(
-            origin("https://example.com.evil.test/"),
-            origin("https://example.com/")
-        );
-        assert_ne!(
-            origin("https://login.example.com/"),
-            origin("https://example.com/")
-        );
-        assert_ne!(
-            origin("https://example.com:444/"),
-            origin("https://example.com/")
-        );
         assert!(origin("https://user:password@example.com/").is_err());
         assert!(origin("http://example.com/").is_err());
         assert!(origin("http://localhost:1234/").is_ok());
+    }
+
+    #[test]
+    fn websites_match_by_registrable_domain_not_substring() {
+        let page = |url: &str| Url::parse(url).unwrap();
+        let pnc = page("https://www.pnc.com/en/personal-banking.html");
+        assert_eq!(
+            website_match("https://www.pnc.com/login", &pnc),
+            Some(Match::Exact)
+        );
+        assert_eq!(
+            website_match("https://secure.pnc.com", &pnc),
+            Some(Match::SameSite)
+        );
+        assert_eq!(website_match("pnc.com", &pnc), Some(Match::SameSite));
+        assert_eq!(website_match("https://evilpnc.com", &pnc), None);
+        assert_eq!(website_match("https://pnc.com.evil.test", &pnc), None);
+        assert_eq!(website_match("http://secure.pnc.com", &pnc), None);
+        assert_eq!(website_match("https://secure.pnc.com:444", &pnc), None);
+        // Public suffixes, including the private section, are not one site.
+        let uk = page("https://a.co.uk/");
+        assert_eq!(website_match("https://b.co.uk", &uk), None);
+        let gh = page("https://alice.github.io/");
+        assert_eq!(website_match("https://bob.github.io", &gh), None);
+        // IP and loopback hosts only match exactly.
+        let local = page("http://localhost:8080/");
+        assert_eq!(
+            website_match("http://localhost:8080/x", &local),
+            Some(Match::Exact)
+        );
+        assert_eq!(website_match("http://127.0.0.1:8080", &local), None);
+    }
+
+    #[test]
+    fn item_match_prefers_exact_origin() {
+        let item: Item = serde_json::from_value(json!({"id": "a", "vault": {"id": "v"},
+            "urls": [{"href": "https://pnc.com"}, {"href": "https://secure.pnc.com"}]}))
+        .unwrap();
+        let page = Url::parse("https://secure.pnc.com/web-auth").unwrap();
+        assert_eq!(item_match(&item, &page), Some(Match::Exact));
     }
 
     #[test]

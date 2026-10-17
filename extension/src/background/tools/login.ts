@@ -39,19 +39,47 @@ export function authorizeLoginFill(tabId: number, documentId: string, token: unk
   return true
 }
 
+// Serialized into the page by executeScript: must stay self-contained.
 export function inspectLoginForm() {
   if (window !== window.top) return { status: 'wrong_frame' }
   const token = crypto.randomUUID()
   const inputs = [...document.querySelectorAll('input')]
   const state: LoginState = { token, expiresAt: Date.now() + 120_000, inputs }
   ;(globalThis as typeof globalThis & { __broLoginState?: LoginState }).__broLoginState = state
-  const fields = inputs.flatMap((input, index) => {
-    const rect = input.getBoundingClientRect()
-    if (rect.width <= 0 || rect.height <= 0 || input.disabled || input.readOnly ||
-        !['text', 'email', 'tel', 'password'].includes(input.type)) return []
-    return [{ index, type: input.type, autocomplete: input.autocomplete }]
+  // Same predicate as fillLoginForm, so a reported field is one fill accepts.
+  const shown = (node: Element) => {
+    const rect = node.getBoundingClientRect()
+    const style = getComputedStyle(node)
+    return rect.width > 0 && rect.height > 0 && style.visibility === 'visible' &&
+      style.display !== 'none' && style.opacity !== '0'
+  }
+  const fields: { index: number; type: string }[] = []
+  const hiddenFields: { index: number; type: string }[] = []
+  inputs.forEach((input, index) => {
+    if (!['text', 'email', 'tel', 'password'].includes(input.type)) return
+    const usable = shown(input) && !input.disabled && !input.readOnly
+    ;(usable ? fields : hiddenFields).push({ index, type: input.type })
   })
-  return { status: 'ready', origin: location.origin, formToken: token, fields }
+  // Remembered-account pages hide the username input until "other user" is
+  // chosen. Report the switch control, never its or other options' text: a
+  // "Not jane@example.com?" link or remembered option contains the username.
+  const switchText = /\b(other|different|another|new|switch|change)\b.{0,20}\b(users?|accounts?|ids?|usernames?)\b|\bnot you\b/i
+  const simpleId = (node: Element) => /^[A-Za-z][\w-]{0,99}$/.test(node.id) ? `#${node.id}` : null
+  const accountSwitchers: { kind: string; css: string | null; optionValue?: string | undefined }[] = []
+  for (const select of document.querySelectorAll('select')) {
+    if (!shown(select) || select.disabled) continue
+    const option = [...select.options].find(o => switchText.test(o.textContent ?? ''))
+    if (!option || option.selected) continue
+    const value = /^[\w-]{1,100}$/.test(option.value) ? option.value : undefined
+    accountSwitchers.push({ kind: 'select', css: simpleId(select), optionValue: value })
+  }
+  for (const control of document.querySelectorAll('button, a, [role=button]')) {
+    if (shown(control) && switchText.test(control.textContent ?? '')) {
+      accountSwitchers.push({ kind: 'button', css: simpleId(control) })
+    }
+  }
+  return { status: 'ready', origin: location.origin, formToken: token, fields, hiddenFields,
+    accountSwitchers: accountSwitchers.slice(0, 5) }
 }
 
 export async function fillLoginForm(input: LoginInput) {
