@@ -6,7 +6,9 @@
   exact origin, like 1Password's default, so `secure.pnc.com` logins are found
   from `www.pnc.com`. Candidates report `match: exact-origin|same-site`; fill
   re-checks the same rule. `login_form_inspect` now reports `hiddenFields`,
-  text-free `accountSwitchers` and a remembered-account `hint`.
+  text-free `accountSwitchers` and a remembered-account `hint`. Candidates
+  include the username; an empty search says how to proceed instead of leaving
+  agents to work around it with raw `op` output.
 
 - Serialize CDP attach/detach transitions and invalidate child frame sessions
   before idle detachment. Consecutive flow steps no longer reuse a detaching

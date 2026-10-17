@@ -18,7 +18,11 @@ Discover the `login` capability pack (Pi search: `1Password login`):
    a foreign-extension iframe need not be disabled to inspect/fill this form.
 2. `onepassword_find_logins {url, vault?, account?, confirmMetadataSearch:true}`
    lists Login metadata locally and returns only same-site candidate
-   item/vault IDs, bounded titles and `match: exact-origin|same-site`, exact first. User authorization to search metadata is
+   item/vault IDs, bounded titles and usernames, and `match: exact-origin|same-site`,
+   exact first. Zero candidates returns a `next` instruction: tell the user and
+   have them add this site's URL to the intended item. Running `op` directly,
+   searching by title or driving the 1Password UI is not a substitute, because
+   fill re-checks the same site rule and would refuse that item anyway. User authorization to search metadata is
    required; narrow the vault/account when known. Without a vault scope the CLI
    may enumerate all accessible Login metadata locally, but unmatched entries
    are not returned. This does not fetch credential fields.

@@ -57,6 +57,9 @@ struct Item {
     id: String,
     #[serde(default)]
     title: String,
+    /// `op item list` puts a Login's username here; absent from `op item get`.
+    #[serde(default)]
+    additional_information: String,
     vault: Vault,
     #[serde(default)]
     urls: Vec<Website>,
@@ -257,14 +260,20 @@ pub async fn find(args: Map<String, Value>) -> Result<Value> {
     let candidates: Vec<_> = matched
         .iter()
         .map(|(kind, item)| {
+            // Username lets the user pick an account by name; it is metadata, not a secret.
             json!({"itemId": item.id, "vaultId": item.vault.id,
-            "title": item.title.chars().take(120).collect::<String>(), "match": kind.label()})
+            "title": item.title.chars().take(120).collect::<String>(),
+            "username": item.additional_information.chars().take(120).collect::<String>(),
+            "match": kind.label()})
         })
         .collect();
-    Ok(
-        json!({"origin": page.origin().ascii_serialization(), "site": site(&page), "candidates": candidates,
-        "matching": "same-site", "credentialsRead": false}),
-    )
+    let mut result = json!({"origin": page.origin().ascii_serialization(), "site": site(&page),
+        "candidates": candidates, "matching": "same-site", "credentialsRead": false});
+    if matched.is_empty() {
+        // Without this, agents fall back to raw `op` output or native-UI automation.
+        result["next"] = json!("No saved website is on this site, so no item can be filled here. Do not run op directly, list items by title, or drive the 1Password UI as a workaround. Tell the user, and ask them to add this site's URL to the intended item in 1Password (or fill it themselves), then search again.");
+    }
+    Ok(result)
 }
 
 fn connection(bridge: &BrowserBridge, browser_id: &str, tab_id: i64) -> Result<String> {

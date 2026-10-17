@@ -370,7 +370,7 @@ static SPECS: &[ToolSpec] = &[
     ),
     ToolSpec {
         name: "onepassword_find_logins",
-        description: "Search 1Password Login metadata locally through op CLI, matching like 1Password's default: same scheme/port on the same registrable domain (Public Suffix List), so a secure.example.com login is found from www.example.com. Requires user-authorized confirmMetadataSearch. Optional vault/account scope; unmatched metadata is not returned and no credential fields are read. Returns itemId/vaultId/title candidates with match exact-origin|same-site, exact first. Multiple candidates require explicit selection; no substring or cross-site SSO matching.",
+        description: "Search 1Password Login metadata locally through op CLI, matching like 1Password's default: same scheme/port on the same registrable domain (Public Suffix List), so a secure.example.com login is found from www.example.com. Requires user-authorized confirmMetadataSearch. Optional vault/account scope; unmatched metadata is not returned and no credential fields are read. Returns itemId/vaultId/title/username candidates with match exact-origin|same-site, exact first; pick by username when the user names an account. Zero candidates means nothing can be filled here: never work around it with raw op, title search or 1Password UI automation. Multiple candidates require explicit selection; no substring or cross-site SSO matching.",
         route: ToolRoute::FindLogins,
         schema: "onepassword_find_logins",
     },
