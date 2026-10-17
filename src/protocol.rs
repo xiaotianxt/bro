@@ -77,7 +77,7 @@ pub struct ConnectedMessage {
     pub session_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolCallMessage {
     pub request_id: String,
@@ -86,6 +86,17 @@ pub struct ToolCallMessage {
     pub args: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tab_id: Option<i64>,
+}
+
+impl std::fmt::Debug for ToolCallMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolCallMessage")
+            .field("request_id", &self.request_id)
+            .field("tool", &self.tool)
+            .field("tab_id", &self.tab_id)
+            .field("args", &"[redacted]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -139,6 +150,20 @@ mod tests {
     use serde_json::json;
 
     use super::{ExtensionToServer, ServerToExtension, ToolCallMessage};
+
+    #[test]
+    fn tool_debug_redacts_arguments_but_private_wire_payload_remains_serializable() {
+        let message = ToolCallMessage {
+            request_id: "id".into(),
+            tool: "__bro_login_fill".into(),
+            args: json!({"password":"canary-secret"}),
+            tab_id: Some(1),
+        };
+        assert!(!format!("{message:?}").contains("canary-secret"));
+        assert!(serde_json::to_string(&message)
+            .unwrap()
+            .contains("canary-secret"));
+    }
 
     #[test]
     fn parses_connect_json() {

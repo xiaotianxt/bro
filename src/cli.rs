@@ -9,11 +9,15 @@ use clap::{Parser, Subcommand};
 use crate::{bridge::BrowserBridge, client, http, output, settings::Settings, setup};
 
 const DEFAULT_PORT: u16 = 3500;
+#[cfg(feature = "credential-test-provider")]
+const CLI_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+credential-test-provider");
+#[cfg(not(feature = "credential-test-provider"))]
+const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Parser)]
 #[command(name = "bro")]
 #[command(about = "Rust-native local MCP core for browser automation")]
-#[command(version)]
+#[command(version = CLI_VERSION)]
 pub struct Args {
     #[command(subcommand)]
     command: Option<Command>,
@@ -241,10 +245,24 @@ fn loopback_addr(port: u16) -> SocketAddr {
 }
 
 fn init_tracing() {
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Layer};
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .with_writer(std::io::stderr)
+    // WebSocket DEBUG/TRACE can dump complete frames, including credentials.
+    // This confidentiality boundary must not be overridable by RUST_LOG.
+    let payload_safe = tracing_subscriber::filter::filter_fn(|metadata| {
+        !(metadata.target().contains("tungstenite")
+            && matches!(
+                *metadata.level(),
+                tracing::Level::DEBUG | tracing::Level::TRACE
+            ))
+    });
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_filter(payload_safe),
+        )
         .init();
 }

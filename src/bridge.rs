@@ -116,7 +116,23 @@ impl BrowserBridge {
         tab_id: Option<i64>,
         browser_id: Option<String>,
     ) -> Result<BridgeToolResult, BridgeError> {
+        self.dispatch_bound(tool_name, args, tab_id, browser_id, None)
+            .await
+    }
+
+    /// Pin credential operations to the same authenticated extension connection.
+    pub async fn dispatch_bound(
+        &self,
+        tool_name: impl Into<String>,
+        args: Value,
+        tab_id: Option<i64>,
+        browser_id: Option<String>,
+        expected_session: Option<&str>,
+    ) -> Result<BridgeToolResult, BridgeError> {
         let target = self.resolve_browser(browser_id).await?;
+        if expected_session.is_some_and(|session| session != target.session_id) {
+            return Err(BridgeError::BrowserDisconnected);
+        }
         let request_id = Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel();
 
@@ -347,6 +363,8 @@ impl BrowserBridge {
             Ok(ExtensionToServer::ToolResult(message)) => {
                 self.complete_pending(
                     &message.request_id,
+                    browser_id,
+                    session_id,
                     Ok(BridgeToolResult {
                         is_error: embedded_tool_error(&message.result),
                         result: message.result,
@@ -358,6 +376,8 @@ impl BrowserBridge {
             Ok(ExtensionToServer::ToolError(message)) => {
                 self.complete_pending(
                     &message.request_id,
+                    browser_id,
+                    session_id,
                     Ok(BridgeToolResult {
                         result: serde_json::json!({ "message": message.error.message }),
                         is_error: true,
@@ -376,9 +396,18 @@ impl BrowserBridge {
     async fn complete_pending(
         &self,
         request_id: &str,
+        browser_id: &str,
+        session_id: &str,
         result: Result<BridgeToolResult, BridgeError>,
     ) {
-        if let Some(call) = self.inner.pending.lock().await.remove(request_id) {
+        let mut pending = self.inner.pending.lock().await;
+        if !pending
+            .get(request_id)
+            .is_some_and(|call| call.browser_id == browser_id && call.session_id == session_id)
+        {
+            return;
+        }
+        if let Some(call) = pending.remove(request_id) {
             let _ignored = call.tx.send(result);
         }
     }
@@ -479,6 +508,40 @@ mod tests {
         assert_eq!(status.extension_count, 0);
         assert_eq!(status.default_browser_id, None);
         assert!(status.extensions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn replies_must_match_both_browser_and_connection_before_consuming_pending_call() {
+        let bridge = BrowserBridge::new();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        bridge.inner.pending.lock().await.insert(
+            "request".into(),
+            super::PendingCall {
+                browser_id: "browser".into(),
+                session_id: "session".into(),
+                tx,
+            },
+        );
+        let result = || {
+            Ok(super::BridgeToolResult {
+                result: json!({"status":"ready"}),
+                is_error: false,
+            })
+        };
+        bridge
+            .complete_pending("request", "other", "session", result())
+            .await;
+        bridge
+            .complete_pending("request", "browser", "old-session", result())
+            .await;
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        bridge
+            .complete_pending("request", "browser", "session", result())
+            .await;
+        assert!(rx.await.unwrap().is_ok());
     }
 
     #[test]

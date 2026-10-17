@@ -17,6 +17,9 @@ import './tools/upload.js'
 import './tools/misc.js'
 import './tools/userscripts.js'
 import './tools/extensions.js'
+import { authorizeLoginFill, revokeLoginForms } from './tools/login.js'
+
+chrome.tabs.onRemoved.addListener((tabId) => revokeLoginForms([tabId]))
 import { PAUSE_ALARM, recoverPause } from './extension-pause.js'
 
 void recoverPause().catch((error: unknown) => {
@@ -121,6 +124,7 @@ void bridgeClient.connect().catch((error: unknown) => {
 bridgeClient.onMessage(async (msg) => {
   // Agent explicitly signals it's done — hide indicators for specified tabs immediately.
   if (isAgentDoneMessage(msg)) {
+    revokeLoginForms(msg.tabIds)
     const canceledRequests = activeRequests.cancelForTabs(msg.tabIds)
     for (const request of canceledRequests) {
       sendStoppedError(
@@ -209,6 +213,15 @@ chrome.runtime.onMessage.addListener(
 
     const msgType = (message as { type: string }).type
 
+    if (msgType === 'BRO_LOGIN_AUTHORIZE') {
+      const { formToken, nonce } = message as { formToken?: unknown; nonce?: unknown }
+      const authorized = sender.id === chrome.runtime.id && sender.tab?.id !== undefined &&
+        sender.frameId === 0 && typeof sender.documentId === 'string' &&
+        authorizeLoginFill(sender.tab.id, sender.documentId, formToken, nonce)
+      sendResponse({ authorized })
+      return false
+    }
+
     if (msgType === 'EXTENSION_CONTROL') {
       if (sender.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL('options.html')) return false
       const { tool, args } = message as { tool?: unknown; args?: unknown }
@@ -224,6 +237,7 @@ chrome.runtime.onMessage.addListener(
     // STOP_AGENT — content script stop button
     // -----------------------------------------------------------------------
     if (msgType === 'STOP_AGENT') {
+      revokeLoginForms()
       const stoppedRequests = activeRequests.cancelAll()
       for (const request of stoppedRequests) {
         sendStoppedError(request.requestId, 'Tool execution stopped by user')

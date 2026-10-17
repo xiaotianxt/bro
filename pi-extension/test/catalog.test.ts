@@ -110,6 +110,12 @@ describe("bro tool catalog", () => {
     }
   });
 
+  it("discovers private login tools as a complete server-owned pack", () => {
+    const names = ["onepassword_find_logins", "login_form_inspect", "onepassword_fill_login"];
+    const catalog = buildBroCatalog(names.map((name) => ({ ...tool(name), _meta: { "bro/capability": "login" } })) as Tool[], []);
+    expect(searchBroCatalog(catalog, "1Password login", 8).map((entry) => entry.upstream.name)).toEqual(names);
+  });
+
   it("searches names, descriptions, and parameter names", () => {
     const catalog = buildBroCatalog(
       [

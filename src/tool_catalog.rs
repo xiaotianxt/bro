@@ -32,6 +32,9 @@ const ENVELOPE_TAB_TOOLS: &[&str] = &[
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolRoute {
+    FindLogins,
+    InspectLogin,
+    FillLogin,
     BrowsersContext,
     BatchRun,
     BatchFlow,
@@ -147,6 +150,9 @@ fn capability_for(name: &str) -> Option<&'static str> {
         | "tabs_activate" | "tabs_close" => Some("tabs"),
         "read_page" | "find" | "form_input" | "click_element" | "scroll_element"
         | "fill_element" | "get_element_info" | "wait_for_element" => Some("accessibility"),
+        "onepassword_find_logins" | "login_form_inspect" | "onepassword_fill_login" => {
+            Some("login")
+        }
         "frames_list" => Some("frames"),
         "debugger_diagnose" | "extensions_status" | "extensions_pause" | "extensions_resume" => {
             Some("extensions")
@@ -362,6 +368,24 @@ static SPECS: &[ToolSpec] = &[
         "List the main frame and child frames for a tab, including stable frameIds for frame-aware flow eval, click, fill, select, and read_text steps.",
         "frames_list",
     ),
+    ToolSpec {
+        name: "onepassword_find_logins",
+        description: "Search 1Password Login metadata locally by exact URL origin through op CLI. Requires user-authorized confirmMetadataSearch. Optional vault/account scope; unmatched metadata is not returned and no credential fields are read. Returns itemId/vaultId/title candidates only. Multiple candidates require explicit selection; no fuzzy domain or SSO matching.",
+        route: ToolRoute::FindLogins,
+        schema: "onepassword_find_logins",
+    },
+    ToolSpec {
+        name: "login_form_inspect",
+        description: "Inspect visible main-frame login input types and indices without CDP or reading field values. Returns origin/documentId/formToken for onepassword_fill_login, valid for 120 seconds. Can work while a password-manager iframe blocks CDP; does not require pausing it. No iframe, Shadow DOM or passkey support. Pin browserId/tabId. Never treat controls as account-selection evidence.",
+        route: ToolRoute::InspectLogin,
+        schema: "login_form_inspect",
+    },
+    ToolSpec {
+        name: "onepassword_fill_login",
+        description: "Read only the explicitly selected 1Password Login via local op CLI and privately fill selected empty main-frame input indices. Requires confirmFill for this login/origin. Credentials are not public tool arguments/results. Verify exact saved origin and fresh document/form token; refuse changed forms, nonempty fields, OTP/new-password targets. No submit, automatic refresh, extension pause or replay. The destination page can read/react to values; avoid subsequent value reads or secret-bearing capture. Use native UI for passkeys/MFA. If the result is uncertain, inspect navigation without replaying.",
+        route: ToolRoute::FillLogin,
+        schema: "onepassword_fill_login",
+    },
     forward(
         "debugger_diagnose",
         "Diagnose CDP attach failures / CDP_FOREIGN_EXTENSION without CDP. Inspect best-effort frame origins and foreign extension IDs. Empty inventory does not rule out blockers or identify a culprit. Does not read page contents. Frame IDs here are webNavigation IDs, not CDP frame refs.",
@@ -839,6 +863,29 @@ fn schema(kind: &str) -> JsonObject {
             ("tabId", tab_id_schema("Numeric tab ID to search.")),
             ("browserId", browser_id_schema()),
         ]),
+        "onepassword_find_logins" => props(&[
+            ("url", json!({"type":"string","format":"uri","description":"HTTPS URL to match by exact origin; HTTP only on literal loopback hosts."})),
+            ("vault", json!({"type":"string","minLength":1,"description":"Optional vault name/ID to narrow local metadata search."})),
+            ("account", json!({"type":"string","minLength":1})),
+            ("confirmMetadataSearch", json!({"type":"boolean","const":true})),
+        ]),
+        "login_form_inspect" => props(&[
+            ("browserId", browser_id_schema()),
+            ("tabId", tab_id_schema("Explicit login tab ID.")),
+        ]),
+        "onepassword_fill_login" => props(&[
+            ("browserId", browser_id_schema()),
+            ("tabId", tab_id_schema("Explicit login tab ID.")),
+            ("documentId", json!({"type":"string","minLength":1})),
+            ("formToken", json!({"type":"string","minLength":1})),
+            ("expectedOrigin", json!({"type":"string","description":"Exact canonical origin from login_form_inspect."})),
+            ("itemId", json!({"type":"string","pattern":"^[a-z0-9]{26}$"})),
+            ("vaultId", json!({"type":"string","pattern":"^[a-z0-9]{26}$"})),
+            ("account", json!({"type":"string","minLength":1})),
+            ("usernameIndex", json!({"type":"integer","minimum":0})),
+            ("passwordIndex", json!({"type":"integer","minimum":0})),
+            ("confirmFill", json!({"type":"boolean","const":true})),
+        ]),
         "extensions_status" => props(&[("browserId", browser_id_schema())]),
         "extensions_pause" => props(&[
             ("browserId", browser_id_schema()),
@@ -1036,6 +1083,18 @@ fn schema(kind: &str) -> JsonObject {
 
 fn required_fields(kind: &str) -> Option<&'static [&'static str]> {
     match kind {
+        "onepassword_find_logins" => Some(&["url", "confirmMetadataSearch"]),
+        "login_form_inspect" => Some(&["browserId", "tabId"]),
+        "onepassword_fill_login" => Some(&[
+            "browserId",
+            "tabId",
+            "documentId",
+            "formToken",
+            "expectedOrigin",
+            "itemId",
+            "vaultId",
+            "confirmFill",
+        ]),
         "extensions_pause" => Some(&["extensionId", "confirmProfileWide"]),
         "extensions_resume" => Some(&["resumeToken"]),
         "agent_done" => Some(&["tabIds"]),
@@ -1200,6 +1259,28 @@ mod tests {
 
         assert_eq!(meta.0["bro/capability"], "userscripts");
         assert_eq!(internal_meta.0["bro/piVisibility"], "internal");
+    }
+
+    #[test]
+    fn login_routes_are_server_owned_and_do_not_expose_plaintext_handlers_or_fields() {
+        assert_eq!(
+            route_for("onepassword_find_logins"),
+            Some(ToolRoute::FindLogins)
+        );
+        assert_eq!(
+            route_for("login_form_inspect"),
+            Some(ToolRoute::InspectLogin)
+        );
+        assert_eq!(
+            route_for("onepassword_fill_login"),
+            Some(ToolRoute::FillLogin)
+        );
+        assert_eq!(route_for("__bro_login_fill"), None);
+        assert_eq!(route_for("__bro_login_inspect"), None);
+        let schema = schema("onepassword_fill_login");
+        assert!(schema["properties"].get("password").is_none());
+        assert!(schema["properties"].get("username").is_none());
+        assert_eq!(schema["properties"]["confirmFill"]["const"], true);
     }
 
     #[test]

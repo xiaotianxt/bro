@@ -1,6 +1,7 @@
 pub mod bridge;
 pub mod cli;
 pub mod client;
+mod credentials;
 pub mod facade;
 pub mod http;
 pub mod mcp;

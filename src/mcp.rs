@@ -81,6 +81,13 @@ impl ServerHandler for BrowserMcpServer {
         };
 
         match route {
+            ToolRoute::FindLogins => Ok(login_result(crate::credentials::find(args).await)),
+            ToolRoute::InspectLogin => Ok(login_result(
+                crate::credentials::inspect(&self.bridge, args).await,
+            )),
+            ToolRoute::FillLogin => Ok(login_result(
+                crate::credentials::fill(&self.bridge, args).await,
+            )),
             ToolRoute::BrowsersContext => Ok(browsers_context(&self.bridge).await),
             ToolRoute::BatchRun => Ok(facade_result(self.facade.batch_run(args).await)),
             ToolRoute::BatchFlow => Ok(facade_result(self.facade.batch_flow(args).await)),
@@ -120,6 +127,13 @@ impl ServerHandler for BrowserMcpServer {
                 ))
             }
         }
+    }
+}
+
+fn login_result(result: Result<serde_json::Value, &'static str>) -> CallToolResult {
+    match result {
+        Ok(value) => CallToolResult::structured(value),
+        Err(message) => tool_error(message),
     }
 }
 

@@ -179,6 +179,17 @@ For development from this checkout:
 pi install /absolute/path/to/bro
 ```
 
+## Scoped 1Password Login
+
+With a configured local `op` CLI, use `login_form_inspect`,
+`onepassword_find_logins`, and `onepassword_fill_login` (Pi search: `1Password login`).
+Login metadata is matched locally by exact origin; a selected password is passed
+privately to empty, document-bound main-frame inputs, not model-visible tool
+arguments or results. Inspect/fill does not require CDP or pausing the password
+manager. Filling and submitting are separate. See [workflow, security boundaries,
+and reproducible tests](docs/onepassword-login.md), including real CLI setup and
+passkey/iframe limitations.
+
 ## Browser Extension
 
 Homebrew installs the unpacked bro extension under `share/bro/extension`.

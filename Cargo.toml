@@ -10,6 +10,10 @@ readme = "README.md"
 keywords = ["mcp", "browser", "automation", "chromium", "rust"]
 categories = ["command-line-utilities", "development-tools"]
 
+[features]
+# Isolated credential transport regression only; never enabled in releases.
+credential-test-provider = []
+
 [dependencies]
 anyhow = "1"
 axum = { version = "0.8", features = ["ws"] }
@@ -20,12 +24,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "macros"] }
-tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "signal", "sync", "time", "process", "io-util"] }
 tokio-util = "0.7"
 toml_edit = "0.25.12"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
+url = "2"
 
 [dev-dependencies]
 tokio-tungstenite = "0.29"
