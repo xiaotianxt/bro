@@ -14,7 +14,9 @@ Discover the `login` capability pack (Pi search: `1Password login`):
    returned. When only a password is fillable it adds a `hint`: the page is
    showing a remembered account. Fill the password for that account, or apply an
    `accountSwitchers` entry (`select` with `optionValue`, or click its `css`) and
-   inspect again, instead of debugging the username input's DOM. It uses extension ISOLATED-world scripting, not CDP, so
+   inspect again, instead of debugging the username input's DOM. With no
+   fillable inputs but visible iframes, the hint says the form is embedded: open
+   the site's top-level sign-in page in the tab and inspect again. It uses extension ISOLATED-world scripting, not CDP, so
    a foreign-extension iframe need not be disabled to inspect/fill this form.
 2. `onepassword_find_logins {url, vault?, account?, confirmMetadataSearch:true}`
    lists Login metadata locally and returns only same-site candidate

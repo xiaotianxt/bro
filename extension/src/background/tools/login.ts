@@ -78,8 +78,10 @@ export function inspectLoginForm() {
       accountSwitchers.push({ kind: 'button', css: simpleId(control) })
     }
   }
+  // Count only: frame URLs can carry session parameters.
+  const frames = [...document.querySelectorAll('iframe')].filter(shown).length
   return { status: 'ready', origin: location.origin, formToken: token, fields, hiddenFields,
-    accountSwitchers: accountSwitchers.slice(0, 5) }
+    accountSwitchers: accountSwitchers.slice(0, 5), frames }
 }
 
 export async function fillLoginForm(input: LoginInput) {

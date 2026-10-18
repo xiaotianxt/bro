@@ -402,6 +402,11 @@ pub async fn inspect(bridge: &BrowserBridge, args: Map<String, Value>) -> Result
     {
         result["hint"] = json!("Username input is hidden: the page likely shows a remembered account. Fill the password alone for that account, or use an accountSwitchers control (select optionValue / click) to choose another user, then inspect again. Do not debug the DOM first.");
     }
+    let frames = value.get("frames").and_then(Value::as_u64).unwrap_or(0);
+    if fields.is_empty() && frames > 0 {
+        result["frames"] = json!(frames);
+        result["hint"] = json!("No fillable main-frame inputs, but the page has visible iframes: the login form is likely embedded (fill does not reach iframes). Navigate this tab to the site's top-level sign-in page and inspect again.");
+    }
     Ok(result)
 }
 
