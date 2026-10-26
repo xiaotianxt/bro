@@ -9,6 +9,7 @@ import {
   createInlineUserScript,
   listUserScripts,
   registerUserScripts,
+  setUserScriptEnabled,
   unregisterUserScripts,
   updateUserScripts,
 } from '../userscripts.js'
@@ -203,6 +204,7 @@ function renderScripts(): void {
     const meta = document.createElement('div')
     meta.className = 'script-meta'
     const values = [
+      script.enabled === false ? 'Disabled' : 'Enabled',
       script.runAt ?? 'document_idle',
       script.world ?? 'USER_SCRIPT',
       script.allFrames ? 'all frames' : 'top frame',
@@ -223,7 +225,9 @@ function renderScripts(): void {
       edit.disabled = true
       edit.title = 'File-backed scripts cannot be edited here.'
     }
-    actions.append(edit, actionButton('Delete', 'delete', script.id, 'button-text danger'))
+    const toggle = actionButton(script.enabled === false ? 'Enable' : 'Disable', 'toggle', script.id)
+    toggle.setAttribute('aria-label', `${toggle.textContent} ${script.id}`)
+    actions.append(toggle, edit, actionButton('Delete', 'delete', script.id, 'button-text danger'))
     row.append(summary, actions)
 
     if (pendingDeleteId === script.id) {
@@ -363,6 +367,25 @@ scriptListEl.addEventListener('click', (event) => {
   if (!button || !scriptId || scriptOperationPending) return
 
   switch (button.dataset.action) {
+    case 'toggle':
+      void (async () => {
+        const script = scripts.find((item) => item.id === scriptId)
+        if (!script) return
+        const enabled = script.enabled === false
+        scriptOperationPending = true
+        renderScripts()
+        setScriptStatus(`${enabled ? 'Enabling' : 'Disabling'} ${scriptId}…`)
+        try {
+          await setUserScriptEnabled(scriptId, enabled)
+          await refreshScripts(`${enabled ? 'Enabled' : 'Disabled'} ${scriptId}. Reload matching pages to apply the change.`)
+        } catch (error) {
+          setScriptStatus(errorMessage(error), 'error')
+        } finally {
+          scriptOperationPending = false
+          renderScripts()
+        }
+      })()
+      break
     case 'edit':
       openEditEditor(scriptId)
       break

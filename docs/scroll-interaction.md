@@ -53,6 +53,33 @@ A boundary call reports `moved:false`, not a fictitious movement. Ranges are mea
 
 Rendering synchronization does **not** promise that arbitrary asynchronous network loads have completed. Those still need a task-specific visible readiness condition.
 
+## Raw wheel input fix in v1.3.2
+
+`computer` with `action: "scroll"` dispatches a real mouse wheel at the given
+coordinates (120 CSS pixels per amount unit). Unlike ref scrolling, the browser
+chooses the scroll target and page wheel handlers may consume the event.
+
+The v1.1.2 implementation disabled focus emulation immediately after CDP
+acknowledged dispatch, before asynchronous wheel scrolling/rendering completed.
+A fresh hidden panel reproduced zero movement. The fix keeps the existing input
+scope alive through two animation frames after dispatch, then clears emulation.
+It does not foreground the tab, sleep a guessed duration, replay the wheel, or
+fall back to DOM scrolling. The existing CDP timeout bounds the rendering wait.
+
+The result now says **Dispatched wheel**, not **Scrolled**. Rendering is
+synchronized, but a boundary, canceled wheel, snap point or ongoing animation
+can still affect movement. Read the application's resulting state; use
+`scroll_element` for measured ref-based offsets and boundary results. A failed
+rendering barrier explicitly reports that the wheel was already dispatched.
+This does not wait for arbitrary network loads or promise that every child-frame
+animation has completed.
+
+Regression evidence: fresh background panels and whole pages move 120px and
+update scroll-event-driven text before the next read; canceling the wheel leaves
+them unchanged. The selected tab stays selected and target visibility returns
+to hidden. A separate isolated check of the originally failing MDN
+`Document.visibilityState` article moved from 0 to 960px while staying hidden.
+
 ## Efficient bro usage
 
 No new MCP tools are added. The existing `browser.flow.act` accepts a ref-only `scroll` step:

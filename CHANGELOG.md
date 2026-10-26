@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Fix Pi MCP shared-connection ownership: request cancellation and ordinary
+  request failures do not disconnect sibling calls; expired sessions reconnect
+  on the next request without replay. Bound setup and shutdown deadlines.
+
+- Add one-click Enable/Disable actions to the extension's user-script list.
+  Disabled scripts retain their source and stay disabled across restarts and
+  extension updates; editing does not re-enable them. Reload matching pages
+  to apply changes; disabling cannot undo code that has already run.
+
 - Match 1Password logins by registrable domain (Public Suffix List) instead of
   exact origin, like 1Password's default, so `secure.pnc.com` logins are found
   from `www.pnc.com`. Candidates report `match: exact-origin|same-site`; fill
@@ -9,6 +18,11 @@
   text-free `accountSwitchers` and a remembered-account `hint`. Candidates
   include the username; an empty search says how to proceed instead of leaving
   agents to work around it with raw `op` output.
+
+- Keep focus emulation alive through rendering after `computer.scroll` wheel
+  dispatch so fresh background pages actually process the scroll. Report dispatch
+  rather than claiming movement; do not foreground, replay, or override canceled
+  wheels. Add real-browser panel/page regressions and rendering-failure coverage.
 
 - Serialize CDP attach/detach transitions and invalidate child frame sessions
   before idle detachment. Consecutive flow steps no longer reuse a detaching

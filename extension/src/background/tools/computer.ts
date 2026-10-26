@@ -497,11 +497,26 @@ async function actionScroll(
   }
 
   await dispatchMouseEvent(tabId, 'mouseWheel', x, y, 'none', 0, deltaX, deltaY)
+  // CDP acknowledges wheel dispatch before asynchronous scrolling/rendering.
+  // Keep focus emulation alive until the page has processed rendering frames.
+  try {
+    const rendered = await cdpSession.send<{
+      exceptionDetails?: { text: string; exception?: { description?: string } }
+    }>(tabId, 'Runtime.evaluate', {
+      expression: 'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))',
+      awaitPromise: true,
+      returnByValue: true,
+    })
+    if (rendered.exceptionDetails)
+      throw new Error(rendered.exceptionDetails.exception?.description ?? rendered.exceptionDetails.text)
+  } catch (error) {
+    throw new Error(`Wheel was dispatched, but rendering synchronization failed: ${String(error)}. Inspect the page before further input; no retry was performed.`)
+  }
   return {
     content: [
       {
         type: 'text',
-        text: `Scrolled ${direction} by ${amount} at (${x}, ${y})`,
+        text: `Dispatched wheel ${direction} by ${amount} at (${x}, ${y}); rendering synchronized. Observe actual movement; boundaries and wheel handlers can prevent scrolling. No retry was performed.`,
       },
     ],
   }

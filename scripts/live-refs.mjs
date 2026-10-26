@@ -104,6 +104,10 @@ const fixture = (req, res) => {
     </script>`)
     return
   }
+  if (url.pathname === '/scroll-page') {
+    res.end('<!doctype html><title>Page wheel contract</title><main role="region" aria-label="Scroll panel" style="height:3000px">Long document</main><output id="scroll-state" style="position:fixed;top:0;right:0">SCROLL_TOP:0</output><script>document.addEventListener("scroll",()=>document.querySelector("#scroll-state").textContent="SCROLL_TOP:"+Math.round(scrollY));</script>')
+    return
+  }
   if (url.pathname === '/scroll') {
     send(
       '<!doctype html><title>Scroll contract</title><div id="panel" role="region" aria-label="Scroll panel" style="width:300px;height:80px;overflow:auto"><div style="height:1000px">Scrollable content</div></div><output id="scroll-state">SCROLL_TOP:0</output><script>document.querySelector("#panel").addEventListener("scroll",e=>document.querySelector("#scroll-state").textContent="SCROLL_TOP:"+Math.round(e.target.scrollTop));</script>',
@@ -184,12 +188,12 @@ const refFor = (snapshot, role, name) => {
   assert.ok(line, `Missing ${role} ${name}: ${snapshot}`)
   return line.match(/\[(ref_[\w]+)\]/)[1]
 }
-async function withBackgroundPanel(test) {
+async function withBackgroundPanel(test, path = '/scroll') {
   const foreground = JSON.parse(
     text(await tool('browser.flow.start', { url: rootUrl + '/blank', active: true })),
   )
   const background = JSON.parse(
-    text(await tool('browser.flow.start', { url: rootUrl + '/scroll', active: false })),
+    text(await tool('browser.flow.start', { url: rootUrl + path, active: false })),
   )
   try {
     await waitUntil(
@@ -209,16 +213,20 @@ async function withBackgroundPanel(test) {
       '"hidden"',
     )
     const tree = text(await tool('read_page', { tabId: background.tabId }))
+    const initialTabs = text(await tool('tabs_context', { tabId: foreground.tabId, all: true }))
+    assert.match(initialTabs, new RegExp(`Active tab: .*\\(ID: ${foreground.tabId}\\)`),
+      `foreground fixture must be selected before input: ${initialTabs}`)
     await test(background, refFor(tree, 'region', 'Scroll panel'))
     assert.equal(
       text(await tool('javascript_tool', { tabId: background.tabId, code: 'document.visibilityState' })),
       '"hidden"',
       'background input must restore page visibility and must not activate its tab',
     )
+    const finalTabs = text(await tool('tabs_context', { tabId: foreground.tabId, all: true }))
     assert.match(
-      text(await tool('tabs_context', { tabId: foreground.tabId, all: true })),
+      finalTabs,
       new RegExp(`Active tab: .*\\(ID: ${foreground.tabId}\\)`),
-      'input must preserve the selected tab even if its window is occluded',
+      `input must preserve the selected tab even if its window is occluded: ${finalTabs}`,
     )
   } finally {
     await tool('browser.flow.finish', { sessionId: background.sessionId })
@@ -479,6 +487,33 @@ try {
     'fixture frames',
   )
   let snapshot
+  await check('computer wheel scroll renders background panels and pages without activation', async () => {
+    for (const path of ['/scroll', '/scroll-page']) {
+      await withBackgroundPanel(async (background) => {
+        const wheel = () => tool('computer', {
+          tabId: background.tabId, action: 'scroll',
+          coordinate: [100, 40], direction: 'down', amount: 1,
+        })
+        const state = async () => JSON.parse(text(await tool('javascript_tool', {
+          tabId: background.tabId,
+          code: '({top: (document.querySelector("#panel") || document.scrollingElement).scrollTop, text: document.querySelector("#scroll-state").textContent})',
+        })))
+        await wheel()
+        const moved = await state()
+        assert.equal(moved.top, 120, `${path}: wheel must actually move the background scroller`)
+        assert.equal(moved.text, 'SCROLL_TOP:120')
+        // A page may intentionally consume the wheel. Dispatch is not a claim
+        // of movement, and must never fall back to DOM scrolling or replay.
+        await tool('javascript_tool', {
+          tabId: background.tabId,
+          code: 'document.addEventListener("wheel", e => e.preventDefault(), {passive:false})',
+        })
+        assert.match(text(await wheel()), /Dispatched wheel/)
+        assert.deepEqual(await state(), moved)
+      }, path)
+    }
+  })
+
   await check('fresh background scroll delivers its event-driven UI before returning', () =>
     withBackgroundPanel(async (background, refId) => {
       const result = JSON.parse(

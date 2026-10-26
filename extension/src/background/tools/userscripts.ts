@@ -197,7 +197,7 @@ async function executeUserscriptsList(
     return { content: [{ type: 'text', text: 'No user scripts registered.' }] }
   }
   const summary = scripts
-    .map((s) => `${s.id}: description=${JSON.stringify(s.description ?? '')}, matches=${JSON.stringify(s.matches)}, runAt=${s.runAt ?? 'document_idle'}`)
+    .map((s) => `${s.id}: enabled=${s.enabled !== false}, description=${JSON.stringify(s.description ?? '')}, matches=${JSON.stringify(s.matches)}, runAt=${s.runAt ?? 'document_idle'}`)
     .join('\n')
   return { content: [{ type: 'text', text: summary }] }
 }

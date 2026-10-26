@@ -1,12 +1,13 @@
 import { readFileSync } from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import { DEFAULT_BRO_MCP_URL, defaultBroSettingsPath, readBroToken } from "./settings.ts";
 
 const CONNECT_TIMEOUT_MS = 3_000;
 const LIST_TIMEOUT_MS = 5_000;
+const CLOSE_TIMEOUT_MS = 1_000;
 const TOOL_TIMEOUT_MS = 120_000;
 
 interface BroMcpClientOptions {
@@ -37,6 +38,8 @@ export class BroMcpClient implements BroToolClient {
   private connection: Connection | undefined;
   private connecting: Promise<Connection> | undefined;
   private closed = false;
+  private opening: Connection | undefined;
+  private closing: Promise<void> | undefined;
 
   constructor(options: BroMcpClientOptions = {}) {
     this.endpoint = new URL(options.endpoint?.toString() ?? DEFAULT_BRO_MCP_URL.toString());
@@ -49,7 +52,8 @@ export class BroMcpClient implements BroToolClient {
   }
 
   async listTools(signal?: AbortSignal): Promise<Tool[]> {
-    const { client } = await this.ensureConnected(signal);
+    const connection = await this.ensureConnected(signal);
+    const { client } = connection;
     const tools: Tool[] = [];
     let cursor: string | undefined;
 
@@ -57,7 +61,11 @@ export class BroMcpClient implements BroToolClient {
       const result = await client.listTools(
         cursor ? { cursor } : undefined,
         requestOptions(LIST_TIMEOUT_MS, signal),
-      );
+      ).catch(async (error: unknown) => {
+        if (signal?.aborted) throw signal.reason;
+        await this.invalidateExpiredSession(connection, error);
+        throw error;
+      });
       tools.push(...result.tools);
       cursor = result.nextCursor;
     } while (cursor);
@@ -80,28 +88,33 @@ export class BroMcpClient implements BroToolClient {
         requestOptions(timeoutMs, signal),
       )) as CallToolResult;
     } catch (error) {
-      await this.invalidate(connection);
       if (signal?.aborted) throw signal.reason ?? error;
+      await this.invalidateExpiredSession(connection, error);
       throw new Error(`bro MCP call failed for ${name}: ${errorMessage(error)}`, { cause: error });
     }
   }
 
-  async close(): Promise<void> {
-    if (this.closed) return;
+  close(): Promise<void> {
+    if (this.closing) return this.closing;
     this.closed = true;
-
-    if (this.connecting) {
-      await this.connecting.catch(() => undefined);
-    }
-
+    const opening = this.opening;
     const connection = this.connection;
     this.connection = undefined;
-    if (!connection) return;
-
-    if (connection.transport.sessionId) {
-      await connection.transport.terminateSession().catch(() => undefined);
-    }
-    await connection.client.close().catch(() => undefined);
+    this.closing = (async () => {
+      if (opening) await opening.client.close().catch(() => undefined);
+      if (!connection) return;
+      try {
+        if (connection.transport.sessionId) {
+          await withDeadline(connection.transport.terminateSession(), CLOSE_TIMEOUT_MS,
+            () => { void connection.client.close().catch(() => undefined); });
+        }
+      } catch {
+        // Best-effort server cleanup; closing below aborts the actual pending HTTP work.
+      } finally {
+        await connection.client.close().catch(() => undefined);
+      }
+    })();
+    return this.closing;
   }
 
   private async ensureConnected(signal?: AbortSignal): Promise<Connection> {
@@ -115,13 +128,15 @@ export class BroMcpClient implements BroToolClient {
       });
     }
 
-    const connection = await this.connecting;
+    const connection = await waitForConnection(this.connecting, signal);
     signal?.throwIfAborted();
+    if (this.closed || this.connection !== connection) throw new Error("bro MCP connection closed");
     return connection;
   }
 
   private async openConnection(): Promise<Connection> {
     const token = await readBroToken(this.settingsPath);
+    if (this.closed) throw new Error("bro MCP client is closed");
     const transport = new StreamableHTTPClientTransport(this.endpoint, {
       requestInit: {
         headers: { Authorization: `Bearer ${token}` },
@@ -132,33 +147,70 @@ export class BroMcpClient implements BroToolClient {
       { capabilities: {} },
     );
 
+    const connection = { client, transport };
+    this.opening = connection;
+    let disconnected = false;
+    client.onclose = () => {
+      disconnected = true;
+      if (this.connection === connection) this.connection = undefined;
+    };
     try {
       // The SDK transport getter returns `string | undefined` while its Transport
       // interface spells the same state as an optional string. They are runtime-
       // compatible but differ under exactOptionalPropertyTypes.
-      await client.connect(transport as unknown as Transport, { timeout: CONNECT_TIMEOUT_MS });
+      await withDeadline(client.connect(transport as unknown as Transport, { timeout: CONNECT_TIMEOUT_MS }),
+        CONNECT_TIMEOUT_MS, () => { void client.close().catch(() => undefined); });
     } catch (error) {
       await client.close().catch(() => undefined);
       throw new Error(
         `Unable to connect to bro at ${this.endpoint.origin}: ${errorMessage(error)}`,
         { cause: error },
       );
+    } finally {
+      if (this.opening === connection) this.opening = undefined;
     }
 
-    if (this.closed) {
+    if (this.closed || disconnected) {
       await client.close().catch(() => undefined);
       throw new Error("bro MCP client was closed while connecting");
     }
 
-    const connection = { client, transport };
     this.connection = connection;
     return connection;
   }
 
-  private async invalidate(connection: Connection): Promise<void> {
+  private async invalidateExpiredSession(connection: Connection, error: unknown): Promise<void> {
+    // Request cancellation, timeout, JSON-RPC errors and transient HTTP failures
+    // are not evidence that the shared transport is dead. Never replay actions.
+    if (!(error instanceof StreamableHTTPError) || error.code !== 404 || !connection.transport.sessionId) return;
     if (this.connection !== connection) return;
     this.connection = undefined;
     await connection.client.close().catch(() => undefined);
+  }
+}
+
+async function withDeadline<T>(work: Promise<T>, milliseconds: number, cancel: () => void): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([work, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { cancel(); reject(new Error("bro MCP lifecycle deadline exceeded")); }, milliseconds);
+    })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function waitForConnection(work: Promise<Connection>, signal?: AbortSignal): Promise<Connection> {
+  if (!signal) return work;
+  signal.throwIfAborted();
+  let onAbort: () => void = () => {};
+  try {
+    return await Promise.race([work, new Promise<never>((_, reject) => {
+      onAbort = () => reject(signal.reason);
+      signal.addEventListener("abort", onAbort, { once: true });
+    })]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
   }
 }
 

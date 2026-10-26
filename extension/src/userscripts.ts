@@ -13,6 +13,7 @@ export type InlineUserScriptInput = {
 
 export type ManagedUserScript = chrome.userScripts.RegisteredUserScript & {
   description?: string
+  enabled?: boolean
 }
 
 // Chrome persists dynamic user scripts across browser restarts, but extension
@@ -73,8 +74,9 @@ function mergeUserScripts(
 function chromeUserScript(
   script: ManagedUserScript,
 ): chrome.userScripts.RegisteredUserScript {
-  const { description, ...registered } = script
+  const { description, enabled, ...registered } = script
   void description
+  void enabled
   return registered
 }
 
@@ -93,7 +95,11 @@ export async function restoreUserScripts(): Promise<void> {
   }
 
   const registeredIds = new Set(registered.map((script) => script.id))
-  const missing = stored.filter((script) => !registeredIds.has(script.id))
+  const disabledIds = stored
+    .filter((script) => script.enabled === false && registeredIds.has(script.id))
+    .map((script) => script.id)
+  if (disabledIds.length > 0) await api.unregister({ ids: disabledIds })
+  const missing = stored.filter((script) => script.enabled !== false && !registeredIds.has(script.id))
   if (missing.length === 0) return
 
   try {
@@ -143,18 +149,27 @@ export async function listUserScripts(
   const descriptions = new Map(
     (stored ?? []).map((script) => [script.id, script.description]),
   )
-  return registered.map((script) => {
-    const description = descriptions.get(script.id)
-    return description === undefined ? script : { ...script, description }
-  })
+  return [
+    ...registered.map((script) => {
+      const description = descriptions.get(script.id)
+      return description === undefined ? script : { ...script, description }
+    }),
+    ...(stored ?? []).filter((script) => script.enabled === false && (ids === undefined || ids.includes(script.id))),
+  ]
 }
 
 export async function registerUserScripts(
   scripts: ManagedUserScript[],
 ): Promise<void> {
   await restoreUserScripts()
-  await userScriptsApi().register(scripts.map(chromeUserScript))
   const stored = await loadStoredUserScripts()
+  for (const script of scripts) {
+    if (stored?.some((saved) => saved.id === script.id && saved.enabled === false)) {
+      throw new Error(`Script already exists: ${script.id}`)
+    }
+  }
+  const active = scripts.filter((script) => script.enabled !== false)
+  if (active.length > 0) await userScriptsApi().register(active.map(chromeUserScript))
   await saveStoredUserScripts(mergeUserScripts(stored ?? [], scripts))
 }
 
@@ -162,9 +177,37 @@ export async function updateUserScripts(
   scripts: ManagedUserScript[],
 ): Promise<void> {
   await restoreUserScripts()
-  await userScriptsApi().update(scripts.map(chromeUserScript))
   const stored = await loadStoredUserScripts()
-  await saveStoredUserScripts(mergeUserScripts(stored ?? [], scripts))
+  const updates = scripts.map((script) => {
+    const previous = stored?.find((saved) => saved.id === script.id)
+    if (!previous) throw new Error(`Unknown script: ${script.id}`)
+    const updated = { ...previous, ...script }
+    if (previous.enabled === undefined) delete updated.enabled
+    else updated.enabled = previous.enabled
+    return updated
+  })
+  const active = updates.filter((script) => script.enabled !== false)
+  if (active.length > 0) await userScriptsApi().update(active.map(chromeUserScript))
+  await saveStoredUserScripts(mergeUserScripts(stored ?? [], updates))
+}
+
+export async function setUserScriptEnabled(id: string, enabled: boolean): Promise<void> {
+  await restoreUserScripts()
+  const stored = (await loadStoredUserScripts()) ?? []
+  const script = stored.find((item) => item.id === id)
+  if (!script) throw new Error(`Unknown script: ${id}`)
+  if ((script.enabled !== false) === enabled) return
+
+  // Persist intent first: restoration reconciles the browser registry even if
+  // the worker stops between storage and the Chrome API call.
+  await saveStoredUserScripts(mergeUserScripts(stored, [{ ...script, enabled }]))
+  try {
+    if (enabled) await userScriptsApi().register([chromeUserScript(script)])
+    else await userScriptsApi().unregister({ ids: [id] })
+  } catch (error) {
+    await saveStoredUserScripts(stored)
+    throw error
+  }
 }
 
 export async function unregisterUserScripts(ids?: string[]): Promise<void> {

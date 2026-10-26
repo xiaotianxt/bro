@@ -5,6 +5,7 @@ import {
   listUserScripts,
   registerUserScripts,
   restoreUserScripts,
+  setUserScriptEnabled,
   unregisterUserScripts,
   updateUserScripts,
 } from '../userscripts.js'
@@ -46,6 +47,48 @@ describe('user scripts', () => {
     await expect(restoreUserScripts()).resolves.toBeUndefined()
     localStorage = { registeredUserScripts: [{ id: 'saved' }] }
     await expect(restoreUserScripts()).rejects.toThrow('Allow User Scripts')
+  })
+
+  it('keeps disabled definitions visible without restoring or injecting them', async () => {
+    const script = { id: 'paused', enabled: false, js: [{ code: 'void 0' }] }
+    localStorage = { registeredUserScripts: [script] }
+    await restoreUserScripts()
+    expect(api.register).not.toHaveBeenCalled()
+    await expect(listUserScripts()).resolves.toEqual([script])
+    await expect(listUserScripts(['other'])).resolves.toEqual([])
+    await updateUserScripts([{ id: 'paused', js: [{ code: 'void 1' }] }])
+    expect(api.update).not.toHaveBeenCalled()
+    expect(localStorage['registeredUserScripts']).toEqual([
+      { ...script, js: [{ code: 'void 1' }] },
+    ])
+    await expect(registerUserScripts([{ id: 'paused' }])).rejects.toThrow('already exists')
+    await unregisterUserScripts(['paused'])
+    expect(localStorage['registeredUserScripts']).toEqual([])
+  })
+
+  it('toggles registration while preserving source and excluding management metadata', async () => {
+    const script = { id: 'toggle', description: 'test', js: [{ code: 'void 0' }] }
+    localStorage = { registeredUserScripts: [script] }
+    api.getScripts.mockResolvedValue([{ id: script.id, js: script.js }])
+    await setUserScriptEnabled(script.id, false)
+    expect(api.unregister).toHaveBeenCalledWith({ ids: [script.id] })
+    expect(localStorage['registeredUserScripts']).toEqual([{ ...script, enabled: false }])
+    api.getScripts.mockResolvedValue([])
+    await setUserScriptEnabled(script.id, true)
+    expect(api.register).toHaveBeenCalledWith([{ id: script.id, js: script.js }])
+    expect(localStorage['registeredUserScripts']).toEqual([{ ...script, enabled: true }])
+  })
+
+  it('reconciles a disabled script left registered and preserves state on toggle failure', async () => {
+    const script = { id: 'paused', enabled: false, js: [{ code: 'void 0' }] }
+    localStorage = { registeredUserScripts: [script] }
+    api.getScripts.mockResolvedValue([{ id: script.id, js: script.js }])
+    await restoreUserScripts()
+    expect(api.unregister).toHaveBeenCalledWith({ ids: [script.id] })
+    api.getScripts.mockResolvedValue([])
+    api.register.mockRejectedValue(new Error('Permission denied'))
+    await expect(setUserScriptEnabled(script.id, true)).rejects.toThrow('Permission denied')
+    expect(localStorage['registeredUserScripts']).toEqual([script])
   })
 
   it('builds a validated inline script from form values', () => {
