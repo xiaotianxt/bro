@@ -5,7 +5,7 @@ import {
   type BroCatalogTool,
   type BroSessionDescriptor,
   type BroToolDetails,
-  DEFAULT_ACTIVE_UPSTREAM_TOOLS,
+  defaultBroTools,
   mapMcpToolResult,
   prepareBroArguments,
   searchBroCatalog,
@@ -20,7 +20,7 @@ const CLEANUP_TIMEOUT_MS = 3_000;
 interface RuntimeState {
   client: BroToolClient;
   session: BroSessionDescriptor;
-  activeFlowIds: Set<string>;
+  activeTargets: Map<string, "browser.close" | "browser.flow.finish">;
   catalog: BroCatalogTool[] | undefined;
   catalogPromise: Promise<BroCatalogTool[]> | undefined;
 }
@@ -97,7 +97,7 @@ export function installBroPiExtension(
     const current: RuntimeState = {
       client: createClient(),
       session,
-      activeFlowIds: restoreActiveFlowIds(ctx),
+      activeTargets: restoreActiveTargets(ctx),
       catalog: undefined,
       catalogPromise: undefined,
     };
@@ -137,7 +137,8 @@ export function installBroPiExtension(
     if (!current) return;
 
     if (event.reason !== "reload") {
-      await cleanupBrowserState(current);
+      const failures = await cleanupBrowserState(current);
+      if (failures.length) ctx.ui.notify(`bro cleanup incomplete: ${failures.join("; ")}`, "warning");
     }
     await current.client.close();
   });
@@ -215,8 +216,7 @@ export default function broPiExtension(pi: PiExtensionApi): void {
 function exposeDefaultTools(pi: PiExtensionApi, catalog: BroCatalogTool[]): void {
   const broToolNames = new Set(catalog.map((tool) => tool.piName));
   const preserved = pi.getActiveTools().filter((name) => !broToolNames.has(name));
-  const defaults = catalog
-    .filter((tool) => DEFAULT_ACTIVE_UPSTREAM_TOOLS.has(tool.upstream.name))
+  const defaults = defaultBroTools(catalog)
     .map((tool) => tool.piName);
   pi.setActiveTools(unique([...preserved, BRO_SEARCH_TOOL_NAME, ...defaults]));
 }
@@ -224,30 +224,34 @@ function exposeDefaultTools(pi: PiExtensionApi, catalog: BroCatalogTool[]): void
 async function syncSessionName(runtime: RuntimeState): Promise<void> {
   if (!runtime.session.id || !runtime.session.name) return;
 
-  await runtime.client.callTool(
+  const result = await runtime.client.callTool(
     "session_name",
     { sessionId: runtime.session.id, name: runtime.session.name },
     undefined,
     5_000,
   );
+  throwIfMcpToolFailed("session_name", result);
 }
 
-async function cleanupBrowserState(runtime: RuntimeState): Promise<void> {
-  const signal = AbortSignal.timeout(CLEANUP_TIMEOUT_MS);
-  const cleanupCalls = [...runtime.activeFlowIds].map((sessionId) =>
-    runtime.client.callTool("browser.flow.finish", { sessionId }, signal, CLEANUP_TIMEOUT_MS),
-  );
-  if (runtime.session.id) {
-    cleanupCalls.push(
-      runtime.client.callTool(
-        "tabs_finalize",
-        { sessionId: runtime.session.id },
-        signal,
-        CLEANUP_TIMEOUT_MS,
-      ),
-    );
+async function cleanupBrowserState(runtime: RuntimeState): Promise<string[]> {
+  const failures: string[] = [];
+  // Serialize shared tab/group cleanup. Each call has a bounded timeout; report
+  // errors rather than silently presenting a failed finalization as success.
+  for (const [id, tool] of runtime.activeTargets) {
+    try {
+      const args = tool === "browser.close" ? { targetId: id } : { sessionId: id };
+      const result = await runtime.client.callTool(tool, args, undefined, CLEANUP_TIMEOUT_MS);
+      throwIfMcpToolFailed(tool, result);
+      runtime.activeTargets.delete(id);
+    } catch (error) { failures.push(errorMessage(error)); }
   }
-  await Promise.allSettled(cleanupCalls);
+  if (runtime.session.id) {
+    try {
+      const result = await runtime.client.callTool("tabs_finalize", { sessionId: runtime.session.id }, undefined, CLEANUP_TIMEOUT_MS);
+      throwIfMcpToolFailed("tabs_finalize", result);
+    } catch (error) { failures.push(errorMessage(error)); }
+  }
+  return failures;
 }
 
 function trackFlowResult(
@@ -256,29 +260,28 @@ function trackFlowResult(
   params: unknown,
   result: CallToolResult,
 ): void {
-  if (upstreamName === "browser.flow.start") {
-    const sessionId = stringProperty(result.structuredContent, "sessionId");
-    if (sessionId) runtime.activeFlowIds.add(sessionId);
-    return;
-  }
-
-  if (upstreamName === "browser.flow.finish") {
-    const sessionId =
-      stringProperty(result.structuredContent, "sessionId") ?? stringProperty(params, "sessionId");
-    if (sessionId) runtime.activeFlowIds.delete(sessionId);
+  const modern = upstreamName === "browser.open" || upstreamName === "browser.close";
+  const key = modern ? "targetId" : "sessionId";
+  const id = stringProperty(result.structuredContent, key) ?? stringProperty(params, key);
+  if (!id) return;
+  if (upstreamName === "browser.open" || upstreamName === "browser.flow.start") {
+    runtime.activeTargets.set(id, modern ? "browser.close" : "browser.flow.finish");
+  } else if (upstreamName === "browser.close" || upstreamName === "browser.flow.finish") {
+    runtime.activeTargets.delete(id);
   }
 }
 
-function restoreActiveFlowIds(ctx: PiExtensionContext): Set<string> {
-  const active = new Set<string>();
+function restoreActiveTargets(ctx: PiExtensionContext): RuntimeState["activeTargets"] {
+  const active: RuntimeState["activeTargets"] = new Map();
   for (const entry of ctx.sessionManager.getBranch()) {
     const details = broDetailsFromBranchEntry(entry);
     if (!details) continue;
-    const sessionId = stringProperty(details.structuredContent, "sessionId");
-    if (!sessionId) continue;
-
-    if (details.upstreamTool === "browser.flow.start") active.add(sessionId);
-    if (details.upstreamTool === "browser.flow.finish") active.delete(sessionId);
+    const modern = details.upstreamTool === "browser.open" || details.upstreamTool === "browser.close";
+    const id = stringProperty(details.structuredContent, modern ? "targetId" : "sessionId");
+    if (!id) continue;
+    if (details.upstreamTool === "browser.open" || details.upstreamTool === "browser.flow.start")
+      active.set(id, modern ? "browser.close" : "browser.flow.finish");
+    if (details.upstreamTool === "browser.close" || details.upstreamTool === "browser.flow.finish") active.delete(id);
   }
   return active;
 }

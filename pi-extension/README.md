@@ -18,7 +18,7 @@ The bearer token is read directly from `~/.bro/settings.json`. It is not copied 
 Install the tagged bro repository as a Pi package:
 
 ```bash
-pi install git:github.com/xiaotianxt/bro@v1.3.2
+pi install git:github.com/xiaotianxt/bro@v1.4.0
 ```
 
 For development from a checkout:
@@ -36,16 +36,14 @@ entry with `pi remove /absolute/path/to/bro` to avoid loading both copies.
 ## Behavior
 
 - MCP tool names are normalized, for example `browser.batch.extract` becomes `bro_browser_batch_extract`.
-- Ten tools are active initially: search plus common extraction, flow, and one-call network capture.
-- Server-marked internal and compatibility tools remain available to other MCP clients but are not registered in Pi.
-- `bro_search_tools` enables server-owned capability packs through Pi's dynamic tool loading, so tabs, frames, accessibility, console, visual, upload, shortcut, and user-script workflows load coherently.
-- With bro v1.2.0+, search `CDP extension recovery` to load diagnosis, extension status, explicit profile-wide pause, and verified resume together. `CDP_FOREIGN_EXTENSION` errors explain the decision path; they never automatically disable a password manager or refresh a page.
-- With bro v1.3.0+, search `1Password login` for same-site (registrable-domain) metadata discovery and private, non-CDP form inspection/filling. Configure/authorize the local `op` CLI first; filling never dispatches submit. See [security boundaries](../docs/onepassword-login.md).
-- Pi's session ID is supplied to bro tab-lifecycle tools when the caller omits `sessionId`.
-- With bro v1.1.2+, ref click/scroll and computer input use temporary page-focus emulation without activating the user's tab/window. Reserve `tabs_activate` for genuinely necessary foreground work, not routine preparation or retries.
-- MCP errors become failed Pi tool results rather than successful text containing an error.
-- Text output is bounded to Pi's 50 KB / 2,000-line tool limit.
-- Session shutdown finalizes Pi-owned tabs and unfinished browser flows; `/reload` preserves them for the continuing session.
+- With 1.4, the server marks the default tools: search, extract/current.extract/batch.extract/batch.flow, and `browser.open/observe/act/close`. Older servers keep the legacy defaults. Internal tools are not registered in Pi; legacy `browser.flow.*` stays discoverable.
+- `bro_search_tools` loads server-owned capability packs (tabs, frames, accessibility, console, visual, upload, shortcuts, user scripts). Search `CDP extension recovery` (v1.2.0+) for extension diagnosis/pause/resume, or `1Password login` (v1.3.0+) for same-site, non-CDP login filling that never submits; see [security boundaries](../docs/onepassword-login.md).
+- `browser.open` receives Pi's session identity and label automatically; no session naming calls are needed.
+- Ref input emulates page focus without activating the user's tab; reserve `tabs_activate` for genuine foreground work.
+- MCP errors become failed Pi tool results. Text output is bounded to Pi's 50 KB / 2,000-line limit.
+- Session shutdown closes unfinished owned targets and Pi-owned tabs, reporting failures; `/reload` preserves them.
+
+Routing: known URLs → `browser.extract` / `browser.batch.extract`; the same interaction on several pages → `browser.batch.flow`; one interactive page → `browser.open`, then `browser.act` with `observe` steps, then `browser.close`. See [Browser facade](../docs/browser-facade.md).
 
 ## Development
 

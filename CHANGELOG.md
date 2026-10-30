@@ -1,5 +1,51 @@
 # Changelog
 
+## 1.4.0 (unreleased candidate)
+
+- Add the default `browser.open/observe/act/close` interface with explicit
+  browser/tab-pinned target IDs, composable typed actions and observations.
+  Keep extraction/batch fast paths and legacy flow signatures on the same engine.
+- Preserve same-node refs across rereads, scopes, filters and find. Bound the
+  volatile registry to 10,000 handles with explicit stale errors; never reuse
+  evicted/restarted identities. Validate complete frame inventories around reads.
+- Expose scoped/bounded observation controls on both facades and inside act;
+  text mode accepts `maxChars`/`cursor` and rejects only a11y-only options.
+- Wait for document-specific DOMContentLoaded at navigation dispatch, before
+  dependent evaluation. Preserve redirects, fail unmet readiness, clean listeners
+  and failed newly created tabs. Do not treat legitimate empty eval as failure.
+- Let server metadata select Pi defaults. Automatically inject owner/label,
+  preserve targets across reload and report shutdown cleanup errors. Older
+  servers retain legacy defaults; new servers keep legacy flows inactive by default.
+- Shrink the model-facing surface: short epoch-prefixed refs (`kqx297`) that
+  reject handles from an earlier registry; one-line act step results with the
+  failure first and no connection/cleanup/acknowledgement fields; observe
+  defaults of 8000 characters (3000 inside act) with cursor continuation.
+- Add the act `check` step for native radios/checkboxes. Covered clicks name
+  the covering element and its overlay as refs instead of a bare tag.
+- Ref scroll moves the nearest scrollable ancestor or the document and names
+  it; clicks accept hits on descendants, slotted content, composed ancestors and
+  labels, re-measure once, and report empty points as not visible, not covered.
+  An act `observe` whose scope was re-rendered reads the page and says so.
+- `browser.open` returns once navigation is dispatched; the target's first
+  observe or act waits up to 4 s for DOMContentLoaded and readable text, and
+  proceeds at the cap instead of failing.
+- Steer content reading to `mode: text`. Facade `maxChars` accepts at most
+  20000; a11y output is capped at 12000, and its truncation footer lists the
+  unread top-level landmarks and headings as refs to scope to. Add a condition-only act
+  `wait` step: `text`, `textGone`, or `refId` + `state`, polled up to
+  `timeoutMs` (default 5000, at most 15000); a timeout is reported and later
+  steps still run. An a11y observation retries once when the document
+  changes mid-read and says so; an evaluation timeout names the busy page or
+  long await and points to `wait`.
+- `browser.batch.flow` accepts act's step names (`navigate`, `evaluate`);
+  `goto`/`eval` remain aliases. Move developer invariants out of the injected
+  facade guide into `docs/interaction-internals.md`.
+- Act click/fill/select/check wait for the main frame to settle (400 ms quiet,
+  3 s cap) and report opened/closed dialogs and menus, alerts, new text and
+  navigation; a click with no visible change says so. Element steps accept
+  `role` + `name`, resolved when the step runs, instead of `refId`.
+- See `docs/releases/1.4.0.md` for migration, boundaries and deferred scope.
+
 ## Unreleased
 
 - Fix Pi MCP shared-connection ownership: request cancellation and ordinary

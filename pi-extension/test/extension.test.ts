@@ -120,6 +120,42 @@ describe("bro Pi extension", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
+  it("uses server-owned defaults, supplies ownership, and restores targets across reload for cleanup", async () => {
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const tools = ["browser.open", "browser.observe", "browser.act", "browser.close", "browser.flow.start", "browser.flow.finish"].map((name) => ({
+      ...upstreamTool(name), _meta: { "bro/default": !name.startsWith("browser.flow.") },
+    }));
+    const client: BroToolClient = {
+      connected: true,
+      async listTools() { return tools; },
+      async callTool(name, args) {
+        calls.push({ name, args });
+        return { content: [{ type: "text", text: "ok" }], structuredContent: { targetId: "target-1", status: "ok" } } as CallToolResult;
+      },
+      close: vi.fn(async () => {}),
+    };
+    const first = createPiHarness();
+    const context = createContext();
+    installBroPiExtension(first.pi, { createClient: () => client });
+    await first.emit("session_start", {}, context);
+    expect(first.activeTools()).toContain("bro_browser_open");
+    expect(first.activeTools()).not.toContain("bro_browser_flow_start");
+    const open = first.tools.get("bro_browser_open")!;
+    const args = open.prepareArguments!({ url: "https://example.test" });
+    expect(args).toEqual({ url: "https://example.test", ownerSessionId: "pi-session-1", label: "Browser review" });
+    const opened = await open.execute("open", args, undefined, undefined, context) as { details: unknown };
+    await first.emit("session_shutdown", { reason: "reload" }, context);
+    expect(calls.some((call) => call.name === "browser.close")).toBe(false);
+    const second = createPiHarness();
+    const resumed = createContext();
+    resumed.sessionManager.getBranch = () => [{ type: "message", message: { role: "toolResult", details: opened.details } }];
+    installBroPiExtension(second.pi, { createClient: () => client });
+    await second.emit("session_start", {}, resumed);
+    await second.emit("session_shutdown", { reason: "quit" }, resumed);
+    expect(calls.filter((call) => call.name === "browser.close")).toEqual([{ name: "browser.close", args: { targetId: "target-1" } }]);
+    expect(calls.at(-1)?.name).toBe("tabs_finalize");
+  });
+
   it("enables matching low-level tools additively", async () => {
     const client: BroToolClient = {
       connected: true,

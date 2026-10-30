@@ -62,6 +62,30 @@ describe('frame-aware DOM tools', () => {
     ])
   })
 
+  it('explains an evaluation timeout and points to a wait step, leaving other timeouts generic', async () => {
+    vi.useFakeTimers()
+    try {
+      type Send = (target: chrome.debugger.Debuggee, method: string, params: Record<string, unknown>) => Promise<unknown>
+      const send = chrome.debugger.sendCommand as unknown as ReturnType<typeof vi.fn<Send>>
+      const original = send.getMockImplementation()!
+      send.mockImplementation((target: chrome.debugger.Debuggee, method: string, params: Record<string, unknown>) =>
+        method === 'Runtime.evaluate' || method === 'Page.getFrameTree' ? new Promise(() => {}) : original(target, method, params))
+      await import('../tools/dom.js')
+      const { dispatchTool } = await import('../tool-registry.js')
+      const evaluating = dispatchTool('javascript_tool', 42, { code: 'new Promise(r => setTimeout(r, 10000))', awaitPromise: true })
+      const outcome = expect(evaluating).rejects.toThrow(
+        "evaluate got no result within 5000ms: the expression awaited too long or the page's main thread was busy. Instead of a timer, use a wait step for the text or ref state you expect, then evaluate a shorter expression.",
+      )
+      await vi.advanceTimersByTimeAsync(5000)
+      await outcome
+      const listing = expect(dispatchTool('frames_list', 42, {})).rejects.toThrow(/CDP command "Page.getFrameTree" timed out for tab 42 after 5000ms/)
+      await vi.advanceTimersByTimeAsync(5000)
+      await listing
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('evaluates JavaScript in the requested frame context', async () => {
     await import('../tools/dom.js')
     const { dispatchTool } = await import('../tool-registry.js')

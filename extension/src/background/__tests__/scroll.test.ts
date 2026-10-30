@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { scrollAndObserve } from '../scroll.js'
+import { scrollAndObserve, scrollerFor } from '../scroll.js'
 
 function fixture(rtl = false, onFrame?: () => void) {
   const element = {
     isConnected: true,
+    ownerDocument: { scrollingElement: null },
     scrollLeft: 0,
     scrollTop: 0,
     scrollWidth: 1300,
@@ -101,5 +102,70 @@ describe('observed scroll outcomes', () => {
       'not scrollable',
     )
     expect(el.scrollBy).not.toHaveBeenCalled()
+  })
+})
+
+interface Box {
+  name: string
+  scrollHeight: number
+  clientHeight: number
+  scrollWidth: number
+  clientWidth: number
+  overflowY: string
+  overflowX: string
+  parentElement: Box | null
+  ownerDocument: unknown
+  getRootNode: () => unknown
+}
+
+// A composed tree: target -> (shadow root) host -> panel -> body -> html.
+function tree(panelOverflow: string, documentOverflows: boolean) {
+  class FakeShadowRoot {
+    constructor(readonly host: Box) {}
+  }
+  vi.stubGlobal('ShadowRoot', FakeShadowRoot)
+  const doc: { scrollingElement: Box | null; documentElement: Box | null; body: Box | null } = {
+    scrollingElement: null,
+    documentElement: null,
+    body: null,
+  }
+  const box = (name: string, parent: Box | null, overflow = 'visible', overflows = false): Box => ({
+    name,
+    scrollHeight: overflows ? 2000 : 100,
+    clientHeight: 100,
+    scrollWidth: 100,
+    clientWidth: 100,
+    overflowY: overflow,
+    overflowX: 'visible',
+    parentElement: parent,
+    ownerDocument: doc,
+    getRootNode: () => doc,
+  })
+  const html = box('html', null, 'visible', documentOverflows)
+  const body = box('body', html, 'auto', true)
+  const panel = box('panel', body, panelOverflow, true)
+  const host = box('host', panel)
+  const target = box('target', null, 'visible', true)
+  const shadow = new FakeShadowRoot(host)
+  target.getRootNode = () => shadow
+  Object.assign(doc, { scrollingElement: html, documentElement: html, body })
+  vi.stubGlobal('getComputedStyle', (n: Box) => ({ overflowY: n.overflowY, overflowX: n.overflowX }))
+  return target as unknown as Element
+}
+
+describe('scroller resolution', () => {
+  const name = (el: Element | null) => (el as unknown as Box | null)?.name ?? null
+
+  it('moves up through a shadow host to the nearest scrollable ancestor', () => {
+    expect(name(scrollerFor.call(tree('auto', true), 'down'))).toBe('panel')
+  })
+
+  it('falls back to the document, skipping overflow:hidden ancestors and a propagated body', () => {
+    expect(name(scrollerFor.call(tree('hidden', true), 'down'))).toBe('html')
+  })
+
+  it('reports nothing only when no element on that axis can scroll', () => {
+    expect(scrollerFor.call(tree('visible', false), 'down')).toBeNull()
+    expect(scrollerFor.call(tree('auto', true), 'right')).toBeNull()
   })
 })

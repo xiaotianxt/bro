@@ -10,12 +10,12 @@ Introduced in **v1.1.0**. Upgrade the server and browser extension together. Exi
 
 ## User-facing workflow
 
-No new MCP tools are added. `browser.flow.observe` now defaults to a compact native accessibility snapshot containing frame trees, Shadow DOM controls, labels, values and relevant states. `mode: "text"` remains an explicit main-frame text option.
+In 1.4, `browser.observe` (and compatibility `browser.flow.observe`) defaults to a compact native accessibility snapshot containing frame trees, Shadow DOM controls, labels, values and relevant states. The same observation is composable inside `browser.act`. `mode: "text"` remains an explicit main-frame text option.
 
-Use the returned opaque refs directly in the existing flow operations:
+Use the returned opaque refs directly in `browser.act`:
 
 ```json
-{"sessionId":"FLOW","steps":[
+{"targetId":"TARGET","steps":[
   {"type":"fill","refId":"REF_FROM_OBSERVATION","value":"Luna"},
   {"type":"select","refId":"ANOTHER_REF","value":"Gamma"},
   {"type":"click","refId":"COMMIT_REF"}
@@ -27,23 +27,26 @@ The refs identify their own frames. Do not supply `css` or `frameId` with `refId
 Typical sequence:
 
 ```text
-flow.start → flow.observe → flow.act(refs) → flow.observe → flow.finish
+browser.open → browser.observe → browser.act(refs + observe) → browser.close
 ```
 
 Ref-only `scroll` steps are also supported in `flow.act`; pair them with
-`read_text` to verify intermediate UI states in one call without replacing refs.
+`observe` to verify intermediate UI states in one call without replacing refs.
+Legacy `flow.act` also retains `read_text`.
 See [Input focus](input-focus.md) for current focus/rendering semantics
 and structured movement/boundary results.
 
-`read_page`, `find`, `form_input`, `fill_element`, `click_element`, `scroll_element`, `get_element_info`, `wait_for_element`, `file_upload` and `upload_image` share the same ref identity/resolution mechanism. `read_page` defaults to `filter: all`, `compact: true`, `depth: 20`, and a shared 16,000-character budget. Use `filter: interactive` for a shorter controls-only view. `compact: false` retains unnamed structural nodes. Scope `refId` narrows to its AX subtree **within its owning document**; omit it for all frame trees.
+`read_page`, `find`, `form_input`, `fill_element`, `click_element`, `scroll_element`, `get_element_info`, `wait_for_element`, `file_upload` and `upload_image` share the same ref identity/resolution mechanism. `browser.observe` and `browser.flow.observe` expose the same `refId`, `filter`, `depth`, `maxChars`, `cursor` and `compact` controls as `read_page`; these options are rejected with `mode: text`. `read_page` defaults to `filter: all`, `compact: true`, `depth: 20`, and a shared 8,000-character budget (3,000 for an act `observe` step); truncated output reports a `cursor` for continuation. Use `filter: interactive` for a shorter controls-only view. `compact: false` retains unnamed structural nodes. Scope `refId` narrows to its AX subtree **within its owning document**; omit it for all frame trees.
 
 ## Identity and failure contracts
 
-- Refs are opaque `ref_<snapshot nonce>_<index>` handles, not selectors or page attributes. Do not synthesize them.
-- A snapshot replaces earlier refs for that tab. `find` also creates a new snapshot. Batch several actions against one observation; observe again when new nodes are needed.
+- Refs are opaque `<epoch><sequence>` handles such as `kqx297` (three-letter registry epoch, never-reissued sequence), not selectors or page attributes. Do not synthesize them. 1.4.0 candidates D and earlier used `ref_<nonce>_<n>`; the epoch replaces a 32-hex nonce repeated on every line.
+- Since 1.4, the same tab/frame/document/backend node keeps its ref across full, scoped, filtered and bounded observations and `find`. Omission from a partial read is not deletion. Only handles visible in the returned output are registered.
+- The volatile registry retains at most 10,000 refs across tabs, evicting the oldest issued handles first, except handles in the response currently being published. Evicted handles fail explicitly as stale/unknown and are never recycled. Reads do not refresh retention age.
 - Each handle binds to **tab + frame + document loader + browser backend node ID**.
-- A ref from another tab or earlier snapshot fails. Cross-document navigation and disconnected/replaced nodes fail rather than falling back to a guessed selector, copied attribute, or a new node with the same label.
-- Service-worker restart loses the volatile registry and yields an explicit stale/unknown-ref error. There is no attempt to resurrect uncertain identity.
+- A ref from another tab, removed frame or former document fails. Cross-document navigation and disconnected/replaced nodes fail rather than falling back to a guessed selector, copied attribute, or a new node with the same label.
+- Service-worker restart loses the volatile registry and starts a new epoch; refs from the old epoch fail with an explicit "earlier page registry" error. There is no attempt to resurrect uncertain identity.
+- A covered ref click dispatches nothing and names the covering element and its overlay as fresh refs. `check` sets a native radio/checkbox through its activation behavior instead; see [Interaction internals](interaction-internals.md).
 - `browser.batch.flow` creates new tabs and cannot reuse existing snapshot refs. It accepts CSS/eval templates; the server rejects ref steps before creating tabs.
 - Flow argument validation completes before any step executes. Invalid `css + refId`, `refId + frameId`, missing targets, or missing values cannot produce partially executed flows. Runtime failure still stops subsequent steps and propagates MCP failure.
 - Clicks temporarily emulate page focus without activating the tab/window, check actionability and occlusion, and dispatch trusted CDP input. There is **no JavaScript-click or coordinate-tool fallback**. Internally computed coordinates are part of the ref executor, not an agent-selected alternative target.
@@ -91,11 +94,11 @@ node scripts/live-refs.mjs \
 
 Do not use the default `extension/dist` output while it is loaded in your daily browser. `EXTENSION_OUT_DIR` and Vite's output handling make isolated builds explicit. The test defaults to port 3501, refuses production port 3500, and checks port availability. Use `--port` for another unused test port. `--bro` can select an installed release binary for an old/new contract comparison.
 
-Each contract resets the fixture to a fresh document, so a failed group cannot poison the next group's values, counters or overlays. Eleven real-browser contract groups cover:
+Each contract resets the fixture to a fresh document, so a failed group cannot poison the next group's values, counters or overlays. Fifteen real-browser contract groups cover:
 
 1. Same-site, cross-site and nested frame discovery with native Shadow DOM labels.
 2. Ref fill/select/click in all three forms, including a padded cross-site iframe with a 14px icon-sized button; the fixture verifies `isTrusted=true` for clicks and composed input events reaching the document.
-3. Cross-tab and previous-snapshot ref rejection.
+3. Cross-tab rejection and same-node ref continuity across rereads.
 4. Clone/replacement/disconnected-node rejection without changing the replacement field.
 5. Covered/disabled clicks, read-only controls and invalid options, with error reasons and unchanged page state.
 6. Iframe navigation invalidating its former document's refs.
@@ -104,6 +107,10 @@ Each contract resets the fixture to a fresh document, so a failed group cannot p
 9. `find`/info/wait/scroll interoperability, actual scroll offsets and explicit no-movement boundary reporting.
 10. Fresh-background-tab scrolling delivers event-driven visible UI before returning.
 11. One flow call batches three scroll/read pairs with visible 100/920/920 states and correct boundary flags.
+12. Computer wheel input renders background panels/pages without activation.
+13. Modern targets follow redirects, compose navigate/evaluate/observe, and reuse scoped refs for scroll/observe.
+14. Batch flow's initial evaluations read the intended document, never the initial about:blank.
+15. A covered visually hidden radio fails with the covering element and overlay refs; `check` sets it and a checkbox, and rejects unchecking a radio.
 
 The same suite can be kept alive for model acceptance with `--serve`; wait for the `Serving isolated fixtures` message. SIGTERM triggers cleanup of the owned browser, server and profile.
 

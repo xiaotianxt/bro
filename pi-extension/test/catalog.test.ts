@@ -2,6 +2,7 @@ import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import { describe, expect, it } from "vitest";
 import {
   buildBroCatalog,
+  defaultBroTools,
   mapMcpToolResult,
   normalizeBroToolName,
   prepareBroArguments,
@@ -21,6 +22,23 @@ function tool(name: string, description = "", properties: string[] = []): Tool {
 }
 
 describe("bro tool catalog", () => {
+  it("honors native defaults and falls back to legacy flows only on older servers", () => {
+    const old = buildBroCatalog([tool("browser.flow.start"), tool("browser.flow.observe"), tool("javascript_tool")], []);
+    expect(defaultBroTools(old).map((t) => t.upstream.name)).toEqual(["browser.flow.start", "browser.flow.observe"]);
+    const modern = buildBroCatalog([
+      { ...tool("browser.open"), _meta: { "bro/default": true } },
+      { ...tool("browser.flow.start"), _meta: { "bro/default": false } },
+      { ...tool("browser.network.capture"), _meta: { "bro/default": false } },
+    ], []);
+    expect(defaultBroTools(modern).map((t) => t.upstream.name)).toEqual(["browser.open"]);
+  });
+
+  it("keeps target identity separate from automatic or explicit owner naming", () => {
+    const session = { id: "pi", name: "Review" };
+    expect(prepareBroArguments("browser.act", { targetId: "target" }, session)).toEqual({ targetId: "target" });
+    expect(prepareBroArguments("browser.open", { ownerSessionId: "other", label: "Explicit" }, session)).toEqual({ ownerSessionId: "other", label: "Explicit" });
+  });
+
   it("normalizes names into a collision-resistant Pi namespace", () => {
     expect(normalizeBroToolName("browser.batch.extract")).toBe("bro_browser_batch_extract");
     expect(normalizeBroToolName("find")).toBe("bro_find");

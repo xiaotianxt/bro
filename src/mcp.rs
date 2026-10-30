@@ -71,7 +71,7 @@ impl ServerHandler for BrowserMcpServer {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let tool_name = request.name.to_string();
         let args = request.arguments.unwrap_or_default();
@@ -80,6 +80,10 @@ impl ServerHandler for BrowserMcpServer {
             return Ok(tool_error(format!("Unknown tool: {tool_name}")));
         };
 
+        if context.ct.is_cancelled() {
+            return Ok(tool_error(BridgeError::Cancelled.to_string()));
+        }
+        let facade = self.facade.with_cancellation(context.ct);
         match route {
             ToolRoute::FindLogins => Ok(login_result(crate::credentials::find(args).await)),
             ToolRoute::InspectLogin => Ok(login_result(
@@ -89,17 +93,27 @@ impl ServerHandler for BrowserMcpServer {
                 crate::credentials::fill(&self.bridge, args).await,
             )),
             ToolRoute::BrowsersContext => Ok(browsers_context(&self.bridge).await),
-            ToolRoute::BatchRun => Ok(facade_result(self.facade.batch_run(args).await)),
-            ToolRoute::BatchFlow => Ok(facade_result(self.facade.batch_flow(args).await)),
-            ToolRoute::Extract => Ok(facade_result(self.facade.extract(args).await)),
-            ToolRoute::CurrentExtract => Ok(facade_result(self.facade.current_extract(args).await)),
-            ToolRoute::BatchExtract => Ok(facade_result(self.facade.batch_extract(args).await)),
-            ToolRoute::ConsoleCapture => Ok(facade_result(self.facade.console_capture(args).await)),
-            ToolRoute::NetworkCapture => Ok(facade_result(self.facade.network_capture(args).await)),
-            ToolRoute::FlowStart => Ok(facade_result(self.facade.flow_start(args).await)),
-            ToolRoute::FlowObserve => Ok(facade_result(self.facade.flow_observe(args).await)),
-            ToolRoute::FlowAct => Ok(facade_result(self.facade.flow_act(args).await)),
-            ToolRoute::FlowFinish => Ok(facade_result(self.facade.flow_finish(args).await)),
+            ToolRoute::BatchRun => Ok(facade_result(facade.batch_run(args).await)),
+            ToolRoute::BatchFlow => Ok(facade_result(facade.batch_flow(args).await)),
+            ToolRoute::Extract => Ok(facade_result(facade.extract(args).await)),
+            ToolRoute::CurrentExtract => Ok(facade_result(facade.current_extract(args).await)),
+            ToolRoute::BatchExtract => Ok(facade_result(facade.batch_extract(args).await)),
+            ToolRoute::ConsoleCapture => Ok(facade_result(facade.console_capture(args).await)),
+            ToolRoute::NetworkCapture => Ok(facade_result(facade.network_capture(args).await)),
+            ToolRoute::Open => Ok(facade_result(facade.open(args).await)),
+            ToolRoute::Observe => Ok(rendered_result(
+                facade.observe_target(args).await,
+                crate::facade::render_observe,
+            )),
+            ToolRoute::Act => Ok(rendered_result(
+                facade.act(args).await,
+                crate::facade::render_act,
+            )),
+            ToolRoute::Close => Ok(facade_result(facade.close(args).await)),
+            ToolRoute::FlowStart => Ok(facade_result(facade.flow_start(args).await)),
+            ToolRoute::FlowObserve => Ok(facade_result(facade.flow_observe(args).await)),
+            ToolRoute::FlowAct => Ok(facade_result(facade.flow_act(args).await)),
+            ToolRoute::FlowFinish => Ok(facade_result(facade.flow_finish(args).await)),
             ToolRoute::AgentDone => {
                 let (tab_ids, browser_id) = match tool_catalog::take_agent_done_args(args) {
                     Ok(value) => value,
@@ -164,6 +178,28 @@ fn facade_result(result: Result<serde_json::Value, crate::facade::FacadeError>) 
             CallToolResult::structured_error(value)
         }
         Ok(value) => CallToolResult::structured(value),
+        Err(error) => tool_error(error.to_string()),
+    }
+}
+
+/// Model-facing text in content; the same data stays machine-readable in
+/// structuredContent, which adapters use for target tracking.
+fn rendered_result(
+    result: Result<serde_json::Value, crate::facade::FacadeError>,
+    render: fn(&serde_json::Value) -> String,
+) -> CallToolResult {
+    match result {
+        Ok(value) => {
+            let content = vec![Content::text(render(&value))];
+            let mut result =
+                if value.get("status").and_then(serde_json::Value::as_str) == Some("failed") {
+                    CallToolResult::error(content)
+                } else {
+                    CallToolResult::success(content)
+                };
+            result.structured_content = Some(value);
+            result
+        }
         Err(error) => tool_error(error.to_string()),
     }
 }

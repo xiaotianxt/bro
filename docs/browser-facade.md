@@ -1,50 +1,114 @@
 # Browser Facade
 
-The browser facade is the agent-facing layer above raw tab and CDP tools. Its
-purpose is to shorten common browser workflows without baking in website policy.
-The browser execution layer remains a minimal WebExtension adapter; bro does
-not claim a 100% Rust browser runtime.
+The browser facade is the agent-facing layer above raw tab and CDP tools. It
+shortens common browser workflows without baking in website policy. Developer
+invariants (ownership, reconnect authority, ref retention, cleanup) live in
+[Interaction internals](interaction-internals.md).
 
-## Batch Extraction
+## Choosing a tool
 
-`browser.batch.extract` opens independent URLs in background tabs, extracts
-visible text, then closes tabs by default. Links are opt-in so shopping/search
-pages do not flood the agent with navigation and ad URLs.
+- Known URLs, reading only: `browser.extract` (one) or `browser.batch.extract`
+  (several, in parallel).
+- The same interaction on several pages: `browser.batch.flow`.
+- One interactive page: `browser.open` → `browser.act` (ending with an
+  `observe` step) → `browser.close`.
+- A page the user already opened: `browser.current.extract`.
+- Console or network evidence: `browser.console.capture` /
+  `browser.network.capture`.
 
-Minimal input:
+Tool search is for advanced capabilities, not ordinary page work.
 
-```json
-{
-  "urls": [
-    "https://example.com/a",
-    "https://example.com/b"
-  ]
-}
+## Interaction: open → observe → act → close
+
+`browser.open` takes a `url`, opens an owned background tab, and returns
+`targetId` as soon as the page starts loading; the first observe or act waits
+(up to 4 s) for the page to load and show text.
+
+`browser.observe` reads the target as compact accessibility text with short
+refs such as `kqx12`. Read content with `mode: text`; use a11y only to find
+refs to act on:
+
+```text
+Frames: 1
+Frame "MAIN" "https://shop.example/item"
+  RootWebArea "Item"
+    [kqx27] main ""
+      [kqx130] radio "16GB RAM+512GB SSD" checked="false"
 ```
 
-Useful options:
+Options: `refId` scopes to that node's subtree; `filter: interactive` keeps
+controls only; `depth`, `maxChars` (default 8000, at most 12000) and `compact`
+bound output. Truncated output ends with `continue with cursor=N` and lists
+unread sections as refs: scope to one with `refId`, or pass `cursor: N` with the
+same scope for the next part. `mode: text` reads plain main-frame text instead
+(`maxChars`, default 12000, at most 20000, and `cursor` apply).
+A node keeps its ref across rereads; navigation or replacement needs a fresh
+observation.
 
-- `inputs`: array of `{ "id": "...", "url": "..." }` when stable result IDs
-  matter
-- `concurrency`: defaults to 6, clamped to 16
-- `maxChars`: defaults to 8000, clamped to 60000
-- `maxLinks`: defaults to 20, clamped to 200
-- `includeA11y`: defaults to false; when true, accessibility tree is used as a
-  fallback only when DOM extraction is not ready
-- `includeLinks`: defaults to false; enable it only when links are part of the
-  answer or follow-up crawl
-- `cleanup`: defaults to true
+`browser.act` runs 1–32 ordered steps on `targetId`:
 
-`urls` and `inputs` are mutually exclusive.
+- `navigate` (`url`) — waits for the new document
+- `evaluate` (`code`, optional `frameId`) — awaited JavaScript expression;
+  use an IIFE for statements
+- `click`, `fill`/`select` (`value`), `check` — by `refId`, or by `role` +
+  `name` resolved when the step runs (main frame; exact name, else a unique
+  substring; ambiguity fails)
+- `scroll` (`refId`, `direction`, `amount`) — moves the ref's nearest
+  scrollable container, else the page
+- `wait` (`text`, `textGone`, or `refId` + `state` visible/hidden/enabled/disabled;
+  `timeoutMs` default 5000, at most 15000) — after a step that loads content,
+  wait for what you expect instead of guessing a delay; not met in time is
+  reported and later steps still run
+- `check` (`checked` default true) — sets a native radio/checkbox without a
+  pointer click, so it works under covering overlays
+- `observe` — same options as `browser.observe`; default `maxChars` 3000; if
+  its `refId` scope was replaced, it observes the page and says so
+
+All steps validate before any effect; the first failure stops the rest. Each
+completed step reports one line, and failures come first:
+
+Each click/fill/select/check waits until the main frame's DOM has been quiet
+for 400 ms (at most 3 s) and reports what visibly changed: opened or closed
+dialogs, menus and listboxes, new alerts and invalid fields, new text, and
+navigation. A click with no visible change says so, which usually means it
+missed. Chain dependent steps directly, with no delays and no `evaluate` to
+read the page back:
+
+```json
+{"targetId":"TARGET","steps":[
+  {"type":"click","role":"button","name":"Access"},
+  {"type":"click","role":"menuitemradio","name":"Read and write"},
+  {"type":"click","role":"button","name":"Generate token"}
+]}
+```
+
+```text
+targetId: flow-1c05d07adf32
+clicked kqx130 (button "Access") → opened menu "Access" (settled 420ms)
+clicked kqx131 (menuitemradio "Read and write") → closed menu "Access"; text "Access: Read and write" (settled 450ms)
+clicked kqx132 (button "Generate token") → alert Expiration date can't be blank (settled 610ms)
+```
+
+A change that starts after more than 400 ms of quiet (a slow request) is not
+in the report; follow such a step with a `wait`. The report covers the main
+frame only.
+A covered click fails without dispatching and names the covering element and
+its overlay as refs, for example `Target kqx130 is covered by kqx402 <input
+placeholder="Enter your email"> inside overlay kqx400 <div role="dialog">`.
+Dismiss the overlay (observe `kqx400` for its close control) or use `check` for
+radios/checkboxes. There is no silent fallback to JavaScript clicks; `evaluate`
+is the explicit escape hatch.
+
+`browser.close` closes the owned tab. Pi closes unfinished targets at session
+end.
 
 ## Batch Flow
 
-`browser.batch.flow` opens independent URLs in owned tabs, runs the same ordered
-flow steps on each tab, and closes the tabs by default. Use it when every page
-needs the same interaction before data can be read, such as clicking a common
-reviews button, waiting for a modal, and returning a structured `eval` result.
-
-Minimal input:
+`browser.batch.flow` opens each URL in an owned background tab, runs the same
+steps on every tab, and closes them. Steps use act's names: `navigate`,
+`evaluate`, `click`/`fill`/`select` by `css`, `wait` (`ms`), `read_text`, and
+unscoped `observe` (`goto`/`eval` remain accepted aliases). Refs cannot be used
+because every tab is new.
 
 ```json
 {
@@ -53,143 +117,54 @@ Minimal input:
     { "id": "b", "url": "https://example.com/b" }
   ],
   "steps": [
+    { "type": "click", "css": "#reviews" },
     { "type": "wait", "ms": 1000 },
-    { "type": "eval", "code": "document.title" }
+    { "type": "evaluate", "code": "document.title" }
   ]
 }
 ```
 
-Useful options:
+Options: `urls` instead of `inputs`, `concurrency` (default 6, max 16),
+`timeoutMs` (default 12000 per URL), `cleanup` (default true), `active`
+(default false). Each item returns its step results, plus `stoppedAt` and
+`error` when a step failed.
 
-- `concurrency`: defaults to 6, clamped to 16
-- `timeoutMs`: defaults to 12000 per URL, clamped to 60000
-- `cleanup`: defaults to true
-- `active`: defaults to false
+## Batch Extraction
 
-Each item returns the per-step result list, `stoppedAt` when a step fails, and
-the item error. The tool keeps browser mechanics generic; selectors and scripts
-remain task-local policy supplied by the caller.
-
-## Single Extraction
-
-`browser.extract` is the one-URL version. It returns:
-
-- `status`: `ok`, `partial`, or `failed`
-- `text`
-- `links`
-- `diagnostics`
-
-Diagnostics include the source used, readiness, elapsed time, and fallback
-attempts. Empty diagnostic fields are omitted from the JSON result.
-
-## Current Tab Extraction
-
-`browser.current.extract` reads the current/default active tab without first
-calling `browsers_context` or `tabs_context`. Use it when the user says a page
-is already open or when the task is to inspect the current logged-in page.
+`browser.batch.extract` opens independent URLs in background tabs, extracts
+visible text, and closes the tabs.
 
 ```json
-{
-  "maxChars": 8000,
-  "includeLinks": false
-}
+{ "urls": ["https://example.com/a", "https://example.com/b"] }
 ```
 
-The extension includes the resolved `tabId` in the extraction payload when
-available, so the facade can still use fallback readers inside the same MCP
-tool call.
+Options: `inputs` (`{id, url}`, exclusive with `urls`), `concurrency` (default
+6, max 16), `maxChars` (default 8000), `includeLinks` (default false; enable
+only when links are part of the answer), `maxLinks` (default 20),
+`includeA11y` (accessibility fallback when DOM text is not ready), `cleanup`.
 
-## Console Capture
+## Single and Current-Tab Extraction
 
-`browser.console.capture` keeps console monitoring, trigger execution, message
-collection, and cleanup inside one MCP call. Use it when a click or evaluated
-expression is expected to emit a log or exception.
+`browser.extract` is the one-URL version. It returns `status` (`ok`,
+`partial`, `failed`), `text`, `links` and `diagnostics`.
+
+`browser.current.extract` reads the current/default active tab in one call, for
+pages the user already opened (`maxChars`, `includeLinks`).
+
+## Console and Network Capture
+
+`browser.console.capture` opens a URL, evaluates one trigger expression and
+returns the console messages it produced, in one call:
 
 ```json
-{
-  "url": "https://example.com",
-  "code": "document.querySelector('#trigger').click()",
-  "timeoutMs": 5000
-}
+{ "url": "https://example.com", "code": "document.querySelector('#go').click()" }
 ```
 
-The trigger may be an expression or a zero-argument function and returned
-Promises are awaited. Use raw `read_console_messages` only for deliberate
-interactive monitoring.
-
-## Network Capture
-
-`browser.network.capture` keeps the whole debugging transaction inside one MCP
-call so Manifest V3 service-worker suspension and model think time cannot discard
-monitoring state between tools.
-
-```json
-{
-  "url": "https://httpbin.org/html",
-  "code": "fetch('/anything?bro=benchmark').then(r => r.json())",
-  "urlIncludes": "/anything?bro=benchmark",
-  "includeResponseBodies": true
-}
-```
-
-The facade opens an owned background tab, waits for initial page readiness,
-enables CDP network events, evaluates and awaits the trigger expression, waits
-for a matching request to finish, includes bounded response bodies, and cleans
-up by default. A zero-argument function expression is also accepted and invoked.
-Headers and post bodies remain opt-in because they are sensitive and verbose.
-`maxBodyChars` is a total budget shared by all returned bodies.
-
-Use raw `read_network_requests` and `get_response_body` only for deliberate
-interactive diagnostics where losing extension-memory state is acceptable.
-
-## Flow
-
-Use `browser.flow.*` for sequential interaction with one leased tab.
-
-The following ref-first workflow is available in v1.1.0 and later; server and
-extension must be upgraded together.
-
-1. `browser.flow.start` opens a tab and returns `sessionId`.
-2. `browser.flow.observe` defaults to a compact accessibility snapshot, including
-   iframe trees and Shadow DOM labels. `mode:text` explicitly reads main-frame text.
-3. `browser.flow.act` runs ordered `goto`, awaited `eval`, `click`, `fill`,
-   `select`, ref-only `scroll`, `wait`, and `read_text` steps. For click/fill/select, pass the exact
-   `refId` from the latest snapshot instead of manually locating frames.
-4. Observe application outcomes, then call `browser.flow.finish` to release
-   state and close the tab.
-
-`fill` uses the native input/textarea value setter and dispatches input and
-change events so controlled frameworks observe the update. `select` validates
-the option value, uses the native select setter, and dispatches the same events.
-Eval code is a JavaScript expression; wrap multiple statements in an IIFE rather
-than using a top-level `return`.
-
-`scroll` requires a snapshot `refId`, accepts direction and 1–10000 CSS pixels,
-temporarily emulates page focus without activating the tab/window, and waits
-for rendering before returning measured
-movement/boundary data. Combine it with `read_text` steps to verify intermediate
-visible UI without new model turns or invalidating refs. This does not wait for
-arbitrary network-loaded content; use explicit readiness conditions for that.
-See [Input focus](input-focus.md) for current behavior and
-[Scroll interaction](scroll-interaction.md) for the original rendering fix.
-
-If a step fails, `browser.flow.act` stops at that step, returns prior results and
-the failure location, and marks the outer MCP result as an error.
-
-A ref already identifies its tab, frame, document and node. Do not combine it
-with `css` or `frameId`. New snapshots replace previous refs; navigation or DOM
-replacement requires a fresh observation. Ref-based select accepts an option
-value or a unique visible label. Ref clicks use trusted input without activating
-the tab/window; they do not fall back to JavaScript clicks or automatically
-retry in the foreground.
-
-For deliberate CSS/eval workflows, `frames_list` and explicit `frameId` remain
-available, including out-of-process frames. `read_text` without a frame ID is
-still main-frame-only. `browser.batch.flow` creates new tabs and accepts CSS/eval
-templates, not refs obtained on another tab.
-
-See [Frame-aware ref interaction](ref-interaction.md) for identity/actionability
-contracts, limits, and the reproducible real-browser and subagent tests.
+`browser.network.capture` does the same for requests: it evaluates `code`,
+waits for a request matching `urlIncludes`, and returns bounded response
+bodies (`maxBodyChars` is shared by all bodies). Headers and post data are
+opt-in. Both clean up by default; prefer them to the raw monitoring tools,
+which lose state when the service worker suspends.
 
 ## Design Rule
 

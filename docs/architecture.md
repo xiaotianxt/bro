@@ -22,7 +22,8 @@ The Rust core owns product policy:
 - route raw browser tools to the extension
 - compose higher-level tools such as `browser.batch.extract`,
   `browser.batch.flow`, `browser.console.capture`, `browser.network.capture`,
-  and frame-aware `browser.flow.*`
+  and frame-aware `browser.open/observe/act/close` (legacy `browser.flow.*`
+  shares the same executor and ownership state)
 - publish capability metadata so clients can load coherent dynamic tool packs
 - bound concurrency, cleanup, and response sizes
 
@@ -43,6 +44,10 @@ The browser extension owns mechanisms that cannot be implemented directly in Rus
 - Manifest V3 service worker lifecycle
 - content scripts
 - page-side JavaScript execution
+- document-specific navigation commitment/DOMContentLoaded readiness before
+  dependent actions, without global network-idle waits
+- bounded volatile tab/frame/loader/backend-node refs, stable across rereads;
+  full frame inventories invalidate documents, not scoped AX omissions
 
 It should stay small and primitive. Any policy that affects MCP users should
 move into Rust unless the browser API forces it to live in the extension.
@@ -58,7 +63,9 @@ The adapter owns only Pi-specific concerns:
 
 - dynamic tool exposure and `bro_search_tools`
 - mapping MCP text, images, structured content, errors, and cancellation to Pi
-- associating tab lifecycle calls with the current Pi session
+- associating tab lifecycle calls with the current Pi session, injecting owner
+  identity/labels separately from the server's pinned target IDs
+- selecting the server-marked default catalog, with old-server fallback
 - preserving browser state across Pi reload and finalizing it at session end
 
 It reads the token at runtime from `~/.bro/settings.json`; the token is not
@@ -82,8 +89,15 @@ visible and recoverable.
 - Unknown `browserId`: the request fails instead of falling back silently.
 - Extension authentication must finish within five seconds; an open socket is
   not registered as connected before the server acknowledges authentication.
-- Tool timeout: Rust stops scheduling more work and makes a best-effort tab
-  cleanup when it owns the tab.
+- Request cancellation: RMCP cancels the request token, not the handler future.
+  The facade checks it before new dispatches/steps; dispatched effects are not
+  rolled back. Required cleanup ignores that token.
+- Tool timeout: pending bridge registration is removed even if an outer future
+  is dropped. Facade allocation keeps a bounded late-reply handoff so abandoned
+  owned tabs can be reclaimed after an item timeout.
+- Dependent dispatch and cleanup carry the authenticated connection identity,
+  not just browserId. Reconnection rejects old authority rather than targeting
+  a reused tab ID. Failed cleanup retains ownership and reports failure.
 - Partial page readiness: extraction returns `partial` with diagnostics rather
   than pretending the page is fully ready.
 

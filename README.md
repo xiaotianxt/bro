@@ -63,7 +63,7 @@ bro setup browser
 For native bro tools in Pi, install the bro-owned adapter and reload Pi:
 
 ```bash
-pi install git:github.com/xiaotianxt/bro@v1.3.2
+pi install git:github.com/xiaotianxt/bro@v1.4.0
 ```
 
 Install the optional Codex/agent skill for bro-specific browser workflows:
@@ -162,15 +162,16 @@ tokens.
 The Pi package in `pi-extension/` uses Pi's extension API and the official MCP
 TypeScript SDK. It reads the bearer token directly from `~/.bro/settings.json`,
 keeps one MCP connection per Pi session, and registers bro's live tool schemas
-under a `bro_` namespace. Ten outcome-level extraction, flow, network, and
-search tools start active. `bro_search_tools` enables server-owned capability
+under a `bro_` namespace. Nine tools start active: search, open/observe/act/close,
+and extract/current.extract/batch.extract/batch.flow, selected by server metadata. `bro_search_tools` enables server-owned capability
 packs for tabs, frames, accessibility, console, visual input, uploads,
-shortcuts, and user scripts. Server-marked internal and compatibility tools are
-not registered in Pi.
+shortcuts, and user scripts. Internal tools are not registered. Legacy flow
+compatibility tools remain discoverable but inactive by default. Older servers
+retain the old default catalog.
 
 The adapter maps Pi session identity into bro's tab lifecycle, preserves browser
-state across `/reload`, and finalizes owned tabs and unfinished flows when the
-session ends. It remains a protocol adapter: browser policy, tool schemas,
+state across `/reload`, and finalizes owned tabs and unfinished targets when the
+session ends. Owner labels are automatic and separate from pinned target IDs. It remains a protocol adapter: browser policy, tool schemas,
 timeouts, and cleanup behavior stay in the Rust server.
 
 For development from this checkout:
@@ -257,15 +258,24 @@ and Unix-like systems this includes fields such as `appName`, `processId`,
   or exceptions, and clean up in one call
 - `browser.network.capture`: open a page, trigger requests, and collect matching
   request metadata and bounded response bodies in one call
-- `browser.flow.start`: lease one tab for sequential work
-- `browser.flow.observe`: read leased-tab text or accessibility tree
-- `browser.flow.act`: run ordered generic steps such as `goto`, `click`, `fill`,
-  `select`, and awaited `eval`
-- `browser.flow.finish`: release and optionally close the leased tab
+- `browser.open`: create an owned background tab and return a browser/tab-pinned
+  `targetId` at once; the first observe or act waits for document readiness
+- `browser.observe`: scoped, bounded a11y observations with short stable refs
+  (`kqx12`) and cursor continuation; text mode for reading main-frame content
+- `browser.act`: compose ordered `navigate`, `evaluate`, `wait`, ref
+  `click/fill/select/check/scroll`, and `observe` steps; validate before
+  effects, stop on runtime failure, and report one line per step
+- `browser.close`: close the owned target
+
+Legacy `browser.flow.start/observe/act/finish` keep their `sessionId` signatures
+and CSS/wait/read_text steps on the same executor. See the [facade
+guide](docs/browser-facade.md) and [interaction
+internals](docs/interaction-internals.md). A dispatched action is not proof of
+the application outcome; observe to verify it.
 
 Use `browser.batch.flow` when each page needs the same interaction before
 reading data, for example opening a reviews modal on every product page and
-then returning a structured `eval` result. It keeps the repeated workflow inside
+then returning a structured `evaluate` result. It keeps the repeated workflow inside
 one MCP call with bounded per-URL timeouts and cleanup, instead of requiring the
 agent to start, act on, and finish many separate flow sessions.
 

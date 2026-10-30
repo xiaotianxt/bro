@@ -43,6 +43,10 @@ pub enum ToolRoute {
     BatchExtract,
     ConsoleCapture,
     NetworkCapture,
+    Open,
+    Observe,
+    Act,
+    Close,
     FlowStart,
     FlowObserve,
     FlowAct,
@@ -116,6 +120,20 @@ impl ToolSpec {
     fn to_tool(self) -> Tool {
         let mut tool = Tool::new(self.name, self.description, Arc::new(schema(self.schema)));
         let mut meta = Map::new();
+        meta.insert(
+            "bro/default".to_string(),
+            json!(matches!(
+                self.name,
+                "browser.open"
+                    | "browser.observe"
+                    | "browser.act"
+                    | "browser.close"
+                    | "browser.extract"
+                    | "browser.current.extract"
+                    | "browser.batch.extract"
+                    | "browser.batch.flow"
+            )),
+        );
         if let Some(capability) = capability_for(self.name) {
             meta.insert("bro/capability".to_string(), json!(capability));
         }
@@ -170,7 +188,8 @@ fn capability_for(name: &str) -> Option<&'static str> {
         "browser.flow.start"
         | "browser.flow.observe"
         | "browser.flow.act"
-        | "browser.flow.finish" => Some("interaction"),
+        | "browser.flow.finish" => Some("compatibility"),
+        "browser.open" | "browser.observe" | "browser.act" | "browser.close" => Some("interaction"),
         "navigate" | "resize_window" | "javascript_tool" => Some("advanced"),
         "agent_done"
         | "browser.batch.run"
@@ -208,7 +227,7 @@ static SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "browser.batch.flow",
-        description: "Open multiple URLs in parallel, run the same ordered flow steps on each owned tab, and clean up by default. Use for repeated click/wait/eval/read workflows. Defaults: concurrency 6, timeoutMs 12000 per URL, cleanup true, active false.",
+        description: "Open several URLs in owned background tabs, run the same steps on each, and close them. Prefer it to open/act when every page needs the same interaction.",
         route: ToolRoute::BatchFlow,
         schema: "browser_batch_flow",
     },
@@ -243,6 +262,30 @@ static SPECS: &[ToolSpec] = &[
         schema: "browser_network_capture",
     },
     ToolSpec {
+        name: "browser.open",
+        description: "Open one URL in an owned background tab for interaction and return targetId as soon as it starts loading; the first observe/act waits up to 4 s for the page to load. Close it when done.",
+        route: ToolRoute::Open,
+        schema: "browser_open",
+    },
+    ToolSpec {
+        name: "browser.observe",
+        description: "Read a target. Read content with mode text; use a11y (default) only to find short refs (e.g. kqx12) to act on, across frames and Shadow DOM. Scope with refId; bound with filter/depth/maxChars; continue truncated output with cursor. Refs survive rereads, not navigation.",
+        route: ToolRoute::Observe,
+        schema: "browser_observe",
+    },
+    ToolSpec {
+        name: "browser.act",
+        description: "Run 1–32 ordered steps on a target: navigate, evaluate, wait, observe, and click/fill/select/check/scroll. Target elements by refId, or by role + name (e.g. {type:click, role:menuitemradio, name:\"Read and write\"}), which resolves when the step runs and survives re-renders. Each click/fill/select/check waits for the page to settle and reports what visibly changed (opened/closed dialogs and menus, alerts, new text, navigation); \"no visible change\" means it likely missed. So chain the next steps directly: no delays and no evaluate to read the page back. Use wait only for content that arrives later. All steps validate before any effect; the first failure stops the rest. Prefer these trusted actions over evaluate, whose synthetic events frameworks like React can ignore. Covered clicks fail and name the covering element; check sets a native radio/checkbox without a pointer click. scroll moves the ref's nearest scrollable container, else the page.",
+        route: ToolRoute::Act,
+        schema: "browser_act",
+    },
+    ToolSpec {
+        name: "browser.close",
+        description: "Close an owned target's tab and release its server state. Does not close unrelated tabs. Failed cleanup remains available for an explicit retry.",
+        route: ToolRoute::Close,
+        schema: "browser_close",
+    },
+    ToolSpec {
         name: "browser.flow.start",
         description: "Start a default background browser flow for one URL and keep its tab in server memory. Defaults: active false, cleanup true.",
         route: ToolRoute::FlowStart,
@@ -250,7 +293,7 @@ static SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "browser.flow.observe",
-        description: "Observe a flow as a compact accessibility snapshot by default, including iframe and Shadow DOM controls with actionable refs. Each observation replaces this tab's previous refs. Use mode text only for plain main-frame text.",
+        description: "Observe a flow as a compact accessibility snapshot by default, including iframe and Shadow DOM controls with actionable refs. Same-node refs survive rereads; refId scopes to its document subtree. filter/depth/maxChars/compact bound a11y output and are rejected in text mode. Use mode text only for plain main-frame text.",
         route: ToolRoute::FlowObserve,
         schema: "browser_flow_observe",
     },
@@ -355,7 +398,7 @@ static SPECS: &[ToolSpec] = &[
     ),
     forward(
         "read_page",
-        "Read a browser-native accessibility snapshot with inline frame trees and Shadow DOM labels. Refs are opaque, bound to this tab/snapshot/document, and replaced by the next read_page/find/a11y observation. Reobserve after navigation or DOM replacement; never guess refs.",
+        "Read a browser-native accessibility snapshot with inline frame trees and Shadow DOM labels. Refs are opaque, bound to tab/frame/document/node, and stable across read_page/find/a11y rereads until document change, node replacement, restart or bounded retention expiry. Reobserve after navigation or DOM replacement; never guess refs.",
         "read_page",
     ),
     forward(
@@ -416,7 +459,7 @@ static SPECS: &[ToolSpec] = &[
     ),
     forward(
         "form_input",
-        "Set and verify a form control value using an opaque ref from the latest snapshot, including iframe/Shadow DOM controls. For selects accept an option value or unique visible label. Disabled, read-only, hidden and stale controls fail.",
+        "Set and verify a form control value using an opaque ref from an observation, including iframe/Shadow DOM controls. For selects accept an option value or unique visible label. Disabled, read-only, hidden and stale controls fail.",
         "form_input",
     ),
     forward(
@@ -682,7 +725,7 @@ fn schema(kind: &str) -> JsonObject {
         "browser_batch_flow" => props(&[
             (
                 "urls",
-                json!({"type":"array","items":{"type":"string","format":"uri"},"minItems":1,"description":"URLs to open in owned background tabs."}),
+                json!({"type":"array","items":{"type":"string","format":"uri"},"minItems":1}),
             ),
             (
                 "inputs",
@@ -690,7 +733,7 @@ fn schema(kind: &str) -> JsonObject {
             ),
             (
                 "steps",
-                flow_steps_schema("Ordered CSS/eval flow steps to run on each newly created tab. Snapshot refs from other tabs cannot be reused.", false),
+                flow_steps_schema("Steps run on each new tab; refs are not available.", false),
             ),
             (
                 "concurrency",
@@ -698,25 +741,44 @@ fn schema(kind: &str) -> JsonObject {
             ),
             (
                 "timeoutMs",
-                json!({"type":"integer","minimum":1,"maximum":60000,"default":12000,"description":"Per-URL timeout including page open, steps, and cleanup scheduling."}),
+                json!({"type":"integer","minimum":1,"maximum":60000,"default":12000,"description":"Per URL, including open and steps."}),
             ),
             ("cleanup", json!({"type":"boolean","default":true})),
             ("active", json!({"type":"boolean","default":false})),
             ("browserId", browser_id_schema()),
         ]),
+        "browser_open" => props(&[
+            ("url", json!({"type":"string","format":"uri"})),
+            ("browserId", browser_id_schema()),
+            ("active", json!({"type":"boolean","default":false})),
+            ("ownerSessionId", json!({"type":"string","minLength":1,"description":"Owner identity; Pi supplies it."})),
+            ("label", json!({"type":"string","minLength":1,"description":"Tab-group label; Pi supplies it."})),
+        ]),
+        "browser_observe" => {
+            let mut properties = observation_properties();
+            properties.insert("targetId".to_string(), json!({"type":"string","minLength":1}));
+            properties
+        }
+        "browser_act" => props(&[
+            ("targetId", json!({"type":"string","minLength":1})),
+            ("steps", interaction_steps_schema()),
+        ]),
+        "browser_close" => props(&[("targetId", json!({"type":"string","minLength":1}))]),
         "browser_flow_start" => props(&[
             ("url", json!({"type":"string","format":"uri"})),
             ("browserId", browser_id_schema()),
             ("active", json!({"type":"boolean","default":false})),
             ("cleanup", json!({"type":"boolean","default":true})),
         ]),
-        "browser_flow_observe" => props(&[
-            ("sessionId", json!({"type":"string","minLength":1})),
-            (
-                "mode",
-                json!({"type":"string","enum":["text","a11y"],"default":"a11y"}),
-            ),
-        ]),
+        "browser_flow_observe" => {
+            let mut properties = observation_properties();
+            properties.insert(
+                "maxChars".to_string(),
+                json!({"type":"integer","minimum":1,"maximum":60000,"default":8000}),
+            );
+            properties.insert("sessionId".to_string(), json!({"type":"string","minLength":1}));
+            properties
+        }
         "browser_flow_act" => props(&[
             ("sessionId", json!({"type":"string","minLength":1})),
             (
@@ -851,7 +913,8 @@ fn schema(kind: &str) -> JsonObject {
                 json!({"type":"string","enum":["all","interactive"],"default":"all"}),
             ),
             ("depth", json!({"type":"integer","minimum":1,"maximum":100,"default":20})),
-            ("maxChars", json!({"type":"integer","minimum":1,"maximum":60000,"default":16000})),
+            ("maxChars", json!({"type":"integer","minimum":1,"maximum":60000,"default":8000})),
+            ("cursor", json!({"type":"integer","minimum":0,"maximum":1000000,"description":"Continue a truncated read from its reported cursor."})),
             ("refId", json!({"type":"string","description":"Optional latest ref to scope the AX subtree within its document. Omit to include all frames."})),
             ("compact", json!({"type":"boolean","default":true})),
             ("tabId", tab_id_schema("Numeric tab ID to read.")),
@@ -914,6 +977,7 @@ fn schema(kind: &str) -> JsonObject {
         "form_input" => props(&[
             ("refId", json!({"type":"string","minLength":1})),
             ("value", json!({"type":"string"})),
+            ("checked", json!({"type":"boolean","description":"Instead of value: set a native radio/checkbox through its activation behavior."})),
             ("tabId", tab_id_schema("Numeric tab ID.")),
             ("browserId", browser_id_schema()),
         ]),
@@ -1101,27 +1165,131 @@ fn required_fields(kind: &str) -> Option<&'static [&'static str]> {
         "browser_extract" => Some(&["url"]),
         "browser_console_capture" | "browser_network_capture" => Some(&["url", "code"]),
         "browser_batch_flow" => Some(&["steps"]),
-        "browser_flow_start" => Some(&["url"]),
+        "browser_open" | "browser_flow_start" => Some(&["url"]),
+        "browser_observe" | "browser_close" => Some(&["targetId"]),
+        "browser_act" => Some(&["targetId", "steps"]),
         "browser_flow_observe" | "browser_flow_finish" => Some(&["sessionId"]),
         "browser_flow_act" => Some(&["sessionId", "steps"]),
         _ => None,
     }
 }
 
+fn observation_properties() -> Map<String, Value> {
+    props(&[
+        (
+            "mode",
+            json!({"type":"string","enum":["text","a11y"],"default":"a11y","description":"text: plain main-frame text (default 12000 chars); refId/filter/depth/compact are a11y only."}),
+        ),
+        (
+            "refId",
+            json!({"type":"string","minLength":1,"description":"Scope to this ref's subtree."}),
+        ),
+        (
+            "filter",
+            json!({"type":"string","enum":["all","interactive"],"default":"all"}),
+        ),
+        (
+            "depth",
+            json!({"type":"integer","minimum":1,"maximum":100,"default":20}),
+        ),
+        (
+            "maxChars",
+            json!({"type":"integer","minimum":1,"maximum":20000,"default":8000,"description":"a11y caps at 12000; 3000 inside act."}),
+        ),
+        (
+            "cursor",
+            json!({"type":"integer","minimum":0,"maximum":1000000,"description":"Continue truncated output."}),
+        ),
+        (
+            "compact",
+            json!({"type":"boolean","default":true,"description":"Omit unnamed structural nodes."}),
+        ),
+    ])
+}
+
+fn interaction_steps_schema() -> Value {
+    let step = |kind: &str, required: &[&str], mut properties: Map<String, Value>| {
+        properties.insert("type".to_string(), json!({"const":kind,"type":"string"}));
+        let required: Vec<_> = std::iter::once("type")
+            .chain(required.iter().copied())
+            .collect();
+        json!({"type":"object","required":required,"additionalProperties":false,"properties":properties})
+    };
+    let ref_target = || props(&[("refId", json!({"type":"string","minLength":1}))]);
+    // Element steps take refId, or role + name resolved when the step runs.
+    let element = || {
+        props(&[
+            (
+                "refId",
+                json!({"type":"string","minLength":1,"description":"Ref from observe. Or give role + name instead."}),
+            ),
+            (
+                "role",
+                json!({"type":"string","minLength":1,"description":"Accessible role as observe prints it, e.g. button, menuitemradio, option, textbox. Main frame only."}),
+            ),
+            (
+                "name",
+                json!({"type":"string","minLength":1,"description":"Accessible name: exact, else a unique substring. Ambiguous or missing fails."}),
+            ),
+        ])
+    };
+    let mut form = element();
+    form.insert("value".to_string(), json!({"type":"string"}));
+    let mut check = element();
+    check.insert(
+        "checked".to_string(),
+        json!({"type":"boolean","default":true,"description":"Native radio/checkbox; no pointer click, so overlays do not block it."}),
+    );
+    let mut scroll = ref_target();
+    scroll.insert(
+        "direction".to_string(),
+        json!({"type":"string","enum":["up","down","left","right"],"default":"down"}),
+    );
+    scroll.insert(
+        "amount".to_string(),
+        json!({"type":"integer","minimum":1,"maximum":10000,"default":400}),
+    );
+    json!({"type":"array","minItems":1,"maxItems":32,"items":{"oneOf":[
+        step("navigate", &["url"], props(&[("url", json!({"type":"string","format":"uri"}))])),
+        step("evaluate", &["code"], props(&[("code", json!({"type":"string","minLength":1,"description":"Awaited JavaScript expression; IIFE for statements."})),("frameId",json!({"type":"string","minLength":1}))])),
+        step("click", &[], element()),
+        step("fill", &["value"], form.clone()),
+        step("select", &["value"], form),
+        step("check", &[], check),
+        step("scroll", &["refId"], scroll),
+        step("wait", &[], props(&[
+            ("text", json!({"type":"string","minLength":1,"description":"Exactly one condition: text appears, textGone disappears, or refId reaches state."})),
+            ("textGone", json!({"type":"string","minLength":1})),
+            ("refId", json!({"type":"string","minLength":1})),
+            ("state", json!({"type":"string","enum":["visible","hidden","enabled","disabled"]})),
+            ("timeoutMs", json!({"type":"integer","minimum":1,"maximum":15000,"default":5000,"description":"Not met in time is reported; later steps still run."})),
+        ])),
+        step("observe", &[], bare(observation_properties()))
+    ]}})
+}
+
+/// `allow_refs` is the legacy flow.act schema (goto/eval names, refs); without
+/// refs it is batch.flow, which speaks act's names and accepts goto/eval aliases.
 fn flow_steps_schema(description: &str, allow_refs: bool) -> Value {
     let companions = if allow_refs {
         "Required companion fields: goto=url, eval=code, click=one of refId/css, fill/select=one of refId/css+value, scroll=refId (direction down, amount 400 CSS pixels by default), wait=ms. read_text reads visible main-frame text without invalidating refs. refId cannot be combined with css/frameId."
     } else {
-        "Required companion fields: goto=url, eval=code, click=css, fill/select=css+value, wait=ms; read_text has none. These new tabs have no existing snapshot refs."
+        "Required fields: navigate=url, evaluate=code, click=css, fill/select=css+value, wait=ms; read_text has none. Same names as browser.act."
+    };
+    let (navigate, evaluate) = if allow_refs {
+        ("goto", "eval")
+    } else {
+        ("navigate", "evaluate")
     };
     let mut operations = vec![
-        "goto",
-        "eval",
+        navigate,
+        evaluate,
         "click",
         "fill",
         "select",
         "wait",
         "read_text",
+        "observe",
     ];
     if allow_refs {
         operations.push("scroll");
@@ -1131,37 +1299,55 @@ fn flow_steps_schema(description: &str, allow_refs: bool) -> Value {
             "type",
             json!({"type":"string","enum":operations,"description":companions}),
         ),
-        (
-            "url",
-            json!({"type":"string","format":"uri","description":"Destination for goto."}),
-        ),
+        ("url", json!({"type":"string","format":"uri"})),
         (
             "code",
-            json!({"type":"string","description":"JavaScript expression for eval. Returned Promises are awaited. Do not use top-level return; wrap statements in an IIFE."}),
+            json!({"type":"string","minLength":1,"description":format!("Awaited JavaScript expression for {evaluate}; IIFE for statements.")}),
         ),
         (
             "css",
-            json!({"type":"string","minLength":1,"description":"CSS selector for click/fill/select. Mutually exclusive with refId when refs are supported."}),
+            json!({"type":"string","minLength":1,"description":"CSS selector for click/fill/select."}),
         ),
         (
             "frameId",
-            json!({"type":"string","minLength":1,"description":"Optional frameId for eval, CSS-based click/fill/select, or read_text. Not allowed with refId. Omit for the main frame."}),
+            json!({"type":"string","minLength":1,"description":format!("Frame for {evaluate}, CSS steps or read_text; omit for the main frame.")}),
         ),
         (
             "value",
-            json!({"type":"string","description":"Text for fill; option value for CSS select, or option value/unique visible label for ref-based select."}),
+            json!({"type":"string","description":"Text for fill; option value (or unique label with refId) for select."}),
         ),
-        (
-            "ms",
-            json!({"type":"integer","minimum":0,"maximum":30000,"description":"Delay in milliseconds for wait."}),
-        ),
+        ("ms", json!({"type":"integer","minimum":0,"maximum":30000})),
     ]);
     if allow_refs {
-        properties.insert("refId".to_string(), json!({"type":"string","minLength":1,"description":"Opaque latest-snapshot ref for click/fill/select/scroll. Identifies its frame. Do not combine with css/frameId. Remains valid across read_text, but not a new snapshot/navigation/replacement."}));
+        properties.insert("refId".to_string(), json!({"type":"string","minLength":1,"description":"Opaque document-bound ref for click/fill/select/scroll. Identifies its frame. Do not combine with css/frameId. Same-node refs survive rereads, not navigation/replacement/restart/retention expiry."}));
         properties.insert("direction".to_string(), json!({"type":"string","enum":["up","down","left","right"],"default":"down","description":"Direction for scroll."}));
         properties.insert("amount".to_string(), json!({"type":"integer","minimum":1,"maximum":10000,"default":400,"description":"CSS pixels for scroll; movement is clamped by the actual scroll range."}));
     }
+    for (key, value) in bare(observation_properties()) {
+        if key != "refId" && key != "cursor" {
+            properties.insert(key, value);
+        }
+    }
+    if allow_refs {
+        // Legacy flow.act keeps its 1.3 budget; the facade ceilings do not apply.
+        properties.insert(
+            "maxChars".to_string(),
+            json!({"type":"integer","minimum":1,"maximum":60000,"default":8000}),
+        );
+    }
     json!({"type":"array","minItems":1,"description":description,"items":{"type":"object","required":["type"],"additionalProperties":false,"properties":properties}})
+}
+
+/// Nested copies of documented properties (act's observe step) drop the
+/// descriptions; the standalone tool already carries them.
+fn bare(mut properties: Map<String, Value>) -> Map<String, Value> {
+    for value in properties.values_mut() {
+        value
+            .as_object_mut()
+            .expect("schema properties are objects")
+            .remove("description");
+    }
+    properties
 }
 
 fn props(entries: &[(&str, Value)]) -> Map<String, Value> {
@@ -1281,6 +1467,84 @@ mod tests {
         assert!(schema["properties"].get("password").is_none());
         assert!(schema["properties"].get("username").is_none());
         assert_eq!(schema["properties"]["confirmFill"]["const"], true);
+    }
+
+    #[test]
+    fn target_catalog_is_server_owned_and_observations_share_one_schema() {
+        for name in [
+            "browser.open",
+            "browser.observe",
+            "browser.act",
+            "browser.close",
+        ] {
+            let tool = find_tool(name).unwrap();
+            let meta = tool.meta.unwrap();
+            assert_eq!(meta.0["bro/default"], true);
+            assert_eq!(meta.0["bro/capability"], "interaction");
+        }
+        assert_eq!(
+            find_tool("browser.flow.start").unwrap().meta.unwrap().0["bro/default"],
+            false
+        );
+        let observe = schema("browser_observe");
+        assert_eq!(observe["required"], json!(["targetId"]));
+        assert!(observe["properties"].get("sessionId").is_none());
+        for (key, value) in super::observation_properties() {
+            assert_eq!(observe["properties"][&key], value);
+            if key != "maxChars" {
+                assert_eq!(schema("browser_flow_observe")["properties"][&key], value);
+            }
+        }
+        // Facade ceiling; legacy flow.observe keeps its 1.3 bound.
+        assert_eq!(observe["properties"]["maxChars"]["maximum"], 20000);
+        assert_eq!(
+            schema("browser_flow_observe")["properties"]["maxChars"]["maximum"],
+            60000
+        );
+        let act = schema("browser_act");
+        assert_eq!(act["properties"]["steps"]["maxItems"], 32);
+        let steps = act["properties"]["steps"]["items"]["oneOf"]
+            .as_array()
+            .unwrap();
+        assert_eq!(steps.len(), 9);
+        let wait = steps
+            .iter()
+            .find(|step| step["properties"]["type"]["const"] == "wait")
+            .unwrap();
+        assert_eq!(wait["required"], json!(["type"]));
+        assert!(wait["properties"].get("ms").is_none());
+        assert_eq!(
+            wait["properties"]["state"]["enum"],
+            json!(["visible", "hidden", "enabled", "disabled"])
+        );
+        assert_eq!(wait["properties"]["timeoutMs"]["maximum"], 15000);
+        assert_eq!(wait["properties"]["timeoutMs"]["default"], 5000);
+        let click = steps
+            .iter()
+            .find(|step| step["properties"]["type"]["const"] == "click")
+            .unwrap();
+        assert_eq!(click["required"], json!(["type"]));
+        assert_eq!(click["properties"]["role"]["type"], "string");
+        assert!(click["properties"].get("css").is_none());
+        let check = steps
+            .iter()
+            .find(|step| step["properties"]["type"]["const"] == "check")
+            .unwrap();
+        assert_eq!(check["required"], json!(["type"]));
+        assert_eq!(check["properties"]["checked"]["default"], true);
+        assert_eq!(observe["properties"]["maxChars"]["default"], 8000);
+
+        // batch.flow speaks act's step names; legacy flow.act keeps goto/eval.
+        let batch = schema("browser_batch_flow");
+        let names = &batch["properties"]["steps"]["items"]["properties"]["type"]["enum"];
+        assert_eq!(names[0], "navigate");
+        assert_eq!(names[1], "evaluate");
+        assert!(!names.as_array().unwrap().contains(&json!("goto")));
+        let legacy = schema("browser_flow_act");
+        assert_eq!(
+            legacy["properties"]["steps"]["items"]["properties"]["type"]["enum"][0],
+            "goto"
+        );
     }
 
     #[test]

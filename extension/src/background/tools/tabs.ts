@@ -2,16 +2,20 @@
 
 import type { ToolResult } from '@bro/shared'
 import { registerTool } from '../tool-registry.js'
+import { ReadinessTimeout, navigateDocument } from '../navigation.js'
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 interface TabsCreateArgs {
+  sessionName?: string
   active?: boolean
   sessionId?: string
   windowId?: number
   url?: string
+  allowNotReady?: boolean
+  deferReadiness?: boolean
 }
 
 interface TabsMcpArgs {
@@ -170,6 +174,11 @@ function validateTabsCreateArgs(args: unknown): TabsCreateArgs {
   }
   const a = args as Record<string, unknown>
   const result: TabsCreateArgs = {}
+  if (a['sessionName'] !== undefined) {
+    if (typeof a['sessionName'] !== 'string' || !a['sessionName'].trim())
+      throw new Error('tabs_create: sessionName must be a nonempty string')
+    result.sessionName = a['sessionName']
+  }
   if (a['active'] !== undefined) {
     if (typeof a['active'] !== 'boolean') {
       throw new Error('tabs_create: "active" must be a boolean')
@@ -193,6 +202,21 @@ function validateTabsCreateArgs(args: unknown): TabsCreateArgs {
       throw new Error('tabs_create: "url" must be a string')
     }
     result.url = a['url']
+  }
+  if (a['allowNotReady'] !== undefined) {
+    if (typeof a['allowNotReady'] !== 'boolean') {
+      throw new Error('tabs_create: "allowNotReady" must be a boolean')
+    }
+    result.allowNotReady = a['allowNotReady']
+  }
+  if (a['deferReadiness'] !== undefined) {
+    if (typeof a['deferReadiness'] !== 'boolean') {
+      throw new Error('tabs_create: "deferReadiness" must be a boolean')
+    }
+    if (a['deferReadiness'] && result.allowNotReady) {
+      throw new Error('tabs_create: "deferReadiness" and "allowNotReady" are exclusive')
+    }
+    result.deferReadiness = a['deferReadiness']
   }
   return result
 }
@@ -506,13 +530,15 @@ async function executeTabsCreate(_tabId: number, rawArgs: unknown): Promise<Tool
   if (args.windowId !== undefined) {
     createProperties.windowId = args.windowId
   }
-  const newTab = await chrome.tabs.create(createProperties)
-  if (args.sessionId !== undefined && newTab.id !== undefined) {
-    await ensureSessionGroup(args.sessionId, newTab.id)
-    await addSessionTabId(args.sessionId, 'owned', newTab.id)
-  }
+  const { tab: newTab, notReady } = await createReadyTab(
+    createProperties,
+    args.sessionId,
+    args.sessionName,
+    args.deferReadiness ? 'defer' : args.allowNotReady ? 'allowNotReady' : 'wait',
+  )
+  const created = `Created tab: ${newTab.id ?? 'unknown'}${newTab.windowId !== undefined ? ` (window ${newTab.windowId})` : ''}`
   return {
-    content: [{ type: 'text', text: `Created tab: ${newTab.id ?? 'unknown'}${newTab.windowId !== undefined ? ` (window ${newTab.windowId})` : ''}` }],
+    content: [{ type: 'text', text: notReady ? `${created}\nNot ready: ${notReady}` : created }],
   }
 }
 
@@ -566,35 +592,46 @@ async function executeTabsContextMcp(_tabId: number, rawArgs: unknown): Promise<
  */
 async function executeTabsCreateMcp(_tabId: number, rawArgs: unknown): Promise<ToolResult> {
   const args = validateTabsCreateMcpArgs(rawArgs)
-
-  if (!args.sessionId) {
-    // Fallback: create tab without group
-    const newTab = await chrome.tabs.create({
-      url: args.url ?? 'about:blank',
-      active: args.active ?? false,
-    })
-    return {
-      content: [{ type: 'text', text: `Created tab: ${newTab.id ?? 'unknown'} (no session)` }],
-    }
-  }
-
-  // Create the new tab
-  const newTab = await chrome.tabs.create({
+  const { tab } = await createReadyTab({
     url: args.url ?? 'about:blank',
     active: args.active ?? false,
     ...(args.tabId !== undefined ? { openerTabId: args.tabId } : {}),
-  })
+  }, args.sessionId)
+  return { content: [{ type: 'text', text: `Created tab: ${tab.id}` }] }
+}
 
-  const newTabId = newTab.id
-  if (newTabId === undefined) {
-    throw new Error('tabs_create_mcp: created tab has no ID')
-  }
-
-  await ensureSessionGroup(args.sessionId, newTabId)
-  await addSessionTabId(args.sessionId, 'owned', newTabId)
-
-  return {
-    content: [{ type: 'text', text: `Created tab: ${newTabId}` }],
+// `allowNotReady` keeps a tab whose dispatched navigation only timed out, so an
+// owner can still observe or close it; every other failure removes the tab.
+// `defer` returns once navigation is dispatched: the caller owns readiness.
+async function createReadyTab(
+  properties: chrome.tabs.CreateProperties,
+  sessionId?: string,
+  sessionName?: string,
+  readiness: 'wait' | 'allowNotReady' | 'defer' = 'wait',
+): Promise<{ tab: chrome.tabs.Tab; notReady?: string }> {
+  // Acquire a known tab first, then install document listeners before navigation.
+  const tab = await chrome.tabs.create({ ...properties, url: 'about:blank' })
+  if (tab.id === undefined) throw new Error('Created tab has no ID')
+  try {
+    if (sessionId !== undefined) {
+      if (sessionName !== undefined) await setSessionName(sessionId, sessionName)
+      await ensureSessionGroup(sessionId, tab.id)
+      await addSessionTabId(sessionId, 'owned', tab.id)
+    }
+    if (properties.url && properties.url !== 'about:blank') {
+      if (readiness === 'defer') await chrome.tabs.update(tab.id, { url: properties.url })
+      else await navigateDocument(tab.id, properties.url)
+    }
+    return { tab }
+  } catch (error) {
+    if (readiness === 'allowNotReady' && error instanceof ReadinessTimeout)
+      return { tab, notReady: error.message }
+    try {
+      await chrome.tabs.remove(tab.id)
+    } catch (cleanupError) {
+      throw new Error(`Tab ${tab.id} failed to initialize and cleanup failed: ${String(cleanupError)}`, { cause: error })
+    }
+    throw error
   }
 }
 
@@ -647,6 +684,7 @@ async function executeTabsFinalize(_tabId: number, rawArgs: unknown): Promise<To
   const closed: number[] = []
   const kept: number[] = [...keepIds]
   const errors: string[] = []
+  const failed: number[] = []
 
   if (args.sessionId !== undefined) {
     for (const tabId of await getSessionTabIds(args.sessionId, 'owned')) {
@@ -660,17 +698,30 @@ async function executeTabsFinalize(_tabId: number, rawArgs: unknown): Promise<To
       await chrome.tabs.remove(tabId)
       closed.push(tabId)
     } catch (err) {
+      // Removal of an already-closed tab is complete, not a cleanup failure.
+      // Query errors propagate and leave ownership intact rather than assuming
+      // that an unreadable tab disappeared.
+      const tabs = await chrome.tabs.query({})
+      if (!tabs.some((tab) => tab.id === tabId)) {
+        closed.push(tabId)
+        continue
+      }
+      failed.push(tabId)
       const message = err instanceof Error ? err.message : String(err)
       errors.push(`tab ${tabId}: ${message}`)
     }
   }
 
   if (args.sessionId !== undefined) {
-    await clearSessionState(args.sessionId)
+    if (failed.length > 0) {
+      await chrome.storage.session.set({ [sessionOwnedTabsKey(args.sessionId)]: failed })
+    } else {
+      await clearSessionState(args.sessionId)
+    }
   }
 
   const lines = [
-    'Finalized browser session.',
+    errors.length > 0 ? 'Browser session cleanup incomplete.' : 'Finalized browser session.',
     `Closed tabs: ${closed.length > 0 ? closed.join(', ') : '(none)'}`,
     `Kept tabs: ${kept.length > 0 ? kept.join(', ') : '(none)'}`,
   ]
@@ -680,6 +731,7 @@ async function executeTabsFinalize(_tabId: number, rawArgs: unknown): Promise<To
 
   return {
     content: [{ type: 'text', text: lines.join('\n') }],
+    ...(errors.length > 0 ? { isError: true } : {}),
   }
 }
 

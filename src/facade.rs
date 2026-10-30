@@ -10,13 +10,17 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::bridge::{BridgeError, BridgeToolResult, BrowserBridge};
+use crate::bridge::{BridgeError, BridgeToolResult, BrowserBridge, BrowserTarget};
+use tokio_util::sync::CancellationToken;
 
 const DEFAULT_BATCH_CONCURRENCY: usize = 6;
 const MAX_BATCH_CONCURRENCY: usize = 16;
 const DEFAULT_TIMEOUT_MS: u64 = 12_000;
 const MAX_TIMEOUT_MS: u64 = 60_000;
 const DEFAULT_TEXT_READY_TIMEOUT_MS: u64 = 4_000;
+// browser.open returns once navigation is dispatched; the target's first
+// observe/act waits at most this long for DOMContentLoaded and readable text.
+const OPEN_SETTLE_TIMEOUT_MS: u64 = 4_000;
 const DEFAULT_TEXT_READY_MIN_CHARS: usize = 120;
 const MAX_TEXT_READY_MIN_CHARS: usize = 10_000;
 const EXTRACT_PAGE_GUARD_MS: u64 = 8_000;
@@ -27,6 +31,19 @@ const MAX_EXTRACT_MAX_LINKS: u64 = 200;
 const TEXT_READY_POLL_MS: u64 = 250;
 const MAX_WAIT_MS: u64 = 30_000;
 const CLEANUP_TIMEOUT_MS: u64 = 2_000;
+const OBSERVE_MAX_CHARS: u32 = 8_000;
+// An observe step verifies one action; scope it with refId, continue with cursor.
+const ACT_OBSERVE_MAX_CHARS: u32 = 3_000;
+// Facade ceilings (legacy flow.observe keeps 60000). Text is the cheap way to
+// read content; a11y finds refs, so a larger a11y budget is capped and its
+// truncation footer offers unread sections to scope instead.
+const MAX_OBSERVE_CHARS: u32 = 20_000;
+const MAX_A11Y_OBSERVE_CHARS: u32 = 12_000;
+// An act wait polls one condition; a timeout is a result, not a failure, so
+// the steps after it still report what the page shows.
+const DEFAULT_WAIT_TIMEOUT_MS: u64 = 5_000;
+const MAX_WAIT_TIMEOUT_MS: u64 = 15_000;
+const WAIT_POLL_MS: u64 = 250;
 
 #[derive(Debug, Error)]
 pub enum FacadeError {
@@ -36,6 +53,11 @@ pub enum FacadeError {
     UnknownSession(String),
     #[error("browser tool {tool} failed: {message}")]
     ToolFailed { tool: &'static str, message: String },
+    #[error("cleanup failed for targetId {target_id}: {source}")]
+    Cleanup {
+        target_id: String,
+        source: Box<FacadeError>,
+    },
     #[error(transparent)]
     Bridge(#[from] BridgeError),
     #[error(transparent)]
@@ -46,6 +68,7 @@ pub enum FacadeError {
 pub struct BrowserFacade {
     bridge: BrowserBridge,
     sessions: Arc<Mutex<HashMap<String, FlowSession>>>,
+    cancellation: CancellationToken,
 }
 
 impl BrowserFacade {
@@ -53,18 +76,40 @@ impl BrowserFacade {
         Self {
             bridge,
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            cancellation: CancellationToken::new(),
         }
+    }
+
+    pub fn with_cancellation(&self, cancellation: CancellationToken) -> Self {
+        Self {
+            cancellation,
+            ..self.clone()
+        }
+    }
+
+    async fn dispatch(
+        &self,
+        tool: &'static str,
+        args: Value,
+        tab_id: Option<i64>,
+        browser: BrowserTarget,
+    ) -> Result<BridgeToolResult, BridgeError> {
+        if self.cancellation.is_cancelled() {
+            return Err(BridgeError::Cancelled);
+        }
+        browser.dispatch(&self.bridge, tool, args, tab_id).await
     }
 
     pub async fn batch_run(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
         let args = BatchRunArgs::parse(args)?;
+        let options = args.options.bind(&self.bridge).await?;
         let concurrency = args.concurrency;
         let semaphore = Arc::new(Semaphore::new(concurrency));
         let mut tasks = JoinSet::new();
 
         for (index, input) in args.inputs.into_iter().enumerate() {
             let facade = self.clone();
-            let options = args.options.clone();
+            let options = options.clone();
             let semaphore = Arc::clone(&semaphore);
             tasks.spawn(async move {
                 let Ok(permit) = semaphore.acquire_owned().await else {
@@ -108,6 +153,7 @@ impl BrowserFacade {
 
     pub async fn batch_flow(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
         let args = BatchFlowArgs::parse(args)?;
+        let options = args.options.bind(&self.bridge).await?;
         let concurrency = args.concurrency;
         let semaphore = Arc::new(Semaphore::new(concurrency));
         let mut tasks = JoinSet::new();
@@ -115,7 +161,7 @@ impl BrowserFacade {
         for (index, input) in args.inputs.into_iter().enumerate() {
             let facade = self.clone();
             let steps = args.steps.clone();
-            let options = args.options.clone();
+            let options = options.clone();
             let semaphore = Arc::clone(&semaphore);
             tasks.spawn(async move {
                 let Ok(permit) = semaphore.acquire_owned().await else {
@@ -159,25 +205,28 @@ impl BrowserFacade {
 
     pub async fn extract(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
         let args = ExtractArgs::parse(args)?;
-        let result = self.run_extract_item(args.input, args.options).await;
+        let options = args.options.bind(&self.bridge).await?;
+        let result = self.run_extract_item(args.input, options).await;
         Ok(json!(result))
     }
 
     pub async fn current_extract(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
         let args = CurrentExtractArgs::parse(args)?;
-        let result = self.extract_current_tab(args.id, args.options).await;
+        let options = args.options.bind(&self.bridge).await?;
+        let result = self.extract_current_tab(args.id, options).await;
         Ok(json!(result))
     }
 
     pub async fn batch_extract(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
         let args = BatchExtractArgs::parse(args)?;
+        let options = args.options.bind(&self.bridge).await?;
         let concurrency = args.concurrency;
         let semaphore = Arc::new(Semaphore::new(concurrency));
         let mut tasks = JoinSet::new();
 
         for (index, input) in args.inputs.into_iter().enumerate() {
             let facade = self.clone();
-            let options = args.options.clone();
+            let options = options.clone();
             let semaphore = Arc::clone(&semaphore);
             tasks.spawn(async move {
                 let Ok(permit) = semaphore.acquire_owned().await else {
@@ -221,35 +270,21 @@ impl BrowserFacade {
 
     pub async fn console_capture(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
         let args = parse_args::<ConsoleCaptureArgs>(args)?;
-        let create = self
-            .bridge
-            .dispatch(
-                "tabs_create",
-                json!({ "url": args.url.clone(), "active": args.active }),
-                None,
-                args.browser_id.clone(),
+        let browser = self.bridge.bind(args.browser_id).await?;
+        let mut session = self
+            .acquire_session(
+                browser.clone(),
+                json!({ "url": args.url, "active": args.active }),
+                args.url.clone(),
+                args.cleanup,
             )
             .await?;
-        fail_if_tool_error("tabs_create", &create)?;
-        let tab_id = extract_tab_id(&create.result).ok_or_else(|| FacadeError::ToolFailed {
-            tool: "tabs_create",
-            message: "response did not include tabId".to_string(),
-        })?;
-        let session = FlowSession {
-            session_id: format!("console-capture-{}", Uuid::new_v4()),
-            tab_id,
-            browser_id: args.browser_id.clone(),
-            url: args.url.clone(),
-            cleanup: args.cleanup,
-        };
+        let tab_id = session.tab_id;
 
         let outcome = async {
-            let ready = self
-                .read_text_with_retry(tab_id, args.browser_id.clone())
-                .await?;
+            let ready = self.read_text_with_retry(tab_id, browser.clone()).await?;
             fail_if_tool_error("get_page_text", &ready)?;
             let capture = self
-                .bridge
                 .dispatch(
                     "capture_console",
                     json!({
@@ -258,7 +293,7 @@ impl BrowserFacade {
                         "maxMessages": args.max_messages.min(500)
                     }),
                     Some(tab_id),
-                    args.browser_id.clone(),
+                    browser.clone(),
                 )
                 .await?;
             fail_if_tool_error("capture_console", &capture)?;
@@ -267,47 +302,30 @@ impl BrowserFacade {
                 &capture.result,
                 tab_id,
                 &args.url,
-                args.browser_id.as_deref(),
+                Some(&browser.browser_id),
             )
         }
         .await;
 
-        let cleanup_error = if args.cleanup {
-            self.close_tab(&session).await.err()
-        } else {
-            None
-        };
+        let cleanup_error = session.cleanup().await.err();
         finish_capture("capture_console", outcome, cleanup_error)
     }
 
     pub async fn network_capture(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
         let args = parse_args::<NetworkCaptureArgs>(args)?;
-        let create = self
-            .bridge
-            .dispatch(
-                "tabs_create",
-                json!({ "url": args.url.clone(), "active": args.active }),
-                None,
-                args.browser_id.clone(),
+        let browser = self.bridge.bind(args.browser_id).await?;
+        let mut session = self
+            .acquire_session(
+                browser.clone(),
+                json!({ "url": args.url, "active": args.active }),
+                args.url.clone(),
+                args.cleanup,
             )
             .await?;
-        fail_if_tool_error("tabs_create", &create)?;
-        let tab_id = extract_tab_id(&create.result).ok_or_else(|| FacadeError::ToolFailed {
-            tool: "tabs_create",
-            message: "response did not include tabId".to_string(),
-        })?;
-        let session = FlowSession {
-            session_id: format!("network-capture-{}", Uuid::new_v4()),
-            tab_id,
-            browser_id: args.browser_id.clone(),
-            url: args.url.clone(),
-            cleanup: args.cleanup,
-        };
+        let tab_id = session.tab_id;
 
         let outcome = async {
-            let ready = self
-                .read_text_with_retry(tab_id, args.browser_id.clone())
-                .await?;
+            let ready = self.read_text_with_retry(tab_id, browser.clone()).await?;
             fail_if_tool_error("get_page_text", &ready)?;
 
             let mut capture_args = Map::from_iter([
@@ -329,12 +347,11 @@ impl BrowserFacade {
                 capture_args.insert("urlIncludes".to_string(), json!(url_includes));
             }
             let capture = self
-                .bridge
                 .dispatch(
                     "capture_network",
                     Value::Object(capture_args),
                     Some(tab_id),
-                    args.browser_id.clone(),
+                    browser.clone(),
                 )
                 .await?;
             fail_if_tool_error("capture_network", &capture)?;
@@ -343,69 +360,214 @@ impl BrowserFacade {
                 &capture.result,
                 tab_id,
                 &args.url,
-                args.browser_id.as_deref(),
+                Some(&browser.browser_id),
             )
         }
         .await;
 
-        let cleanup_error = if args.cleanup {
-            self.close_tab(&session).await.err()
-        } else {
-            None
-        };
+        let cleanup_error = session.cleanup().await.err();
         finish_capture("capture_network", outcome, cleanup_error)
     }
 
     pub async fn flow_start(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
         let args = parse_args::<FlowStartArgs>(args)?;
-        let result = self
-            .bridge
-            .dispatch(
-                "tabs_create",
-                json!({ "url": args.url, "active": args.active }),
-                None,
-                args.browser_id.clone(),
+        Ok(self.start_owned(args, false).await?.to_value())
+    }
+
+    pub async fn open(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
+        let args = parse_args::<OpenArgs>(args)?;
+        url::Url::parse(&args.url).map_err(|error| {
+            FacadeError::InvalidInput(format!("invalid navigation URL: {error}"))
+        })?;
+        if args
+            .owner_session_id
+            .as_ref()
+            .is_some_and(|value| value.trim().is_empty())
+            || args
+                .label
+                .as_ref()
+                .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err(FacadeError::InvalidInput(
+                "ownerSessionId and label must be nonempty when supplied".to_string(),
+            ));
+        }
+        let session = self
+            .start_owned(
+                FlowStartArgs {
+                    url: args.url,
+                    browser_id: args.browser_id,
+                    active: args.active,
+                    cleanup: true,
+                    owner_session_id: args.owner_session_id,
+                    label: args.label,
+                },
+                true,
             )
             .await?;
-        fail_if_tool_error("tabs_create", &result)?;
+        Ok(json!({"targetId": session.session_id, "tabId": session.tab_id, "url": session.url}))
+    }
 
-        let tab_id = extract_tab_id(&result.result).ok_or_else(|| FacadeError::ToolFailed {
-            tool: "tabs_create",
-            message: "response did not include tabId".to_string(),
-        })?;
+    /// `defer_readiness` returns once navigation is dispatched; the target is
+    /// owned and registered like any other, and its first use settles it.
+    async fn start_owned(
+        &self,
+        args: FlowStartArgs,
+        defer_readiness: bool,
+    ) -> Result<FlowSession, FacadeError> {
+        let browser = self.bridge.bind(args.browser_id).await?;
         let session_id = new_flow_session_id();
-        let session = FlowSession {
-            session_id: session_id.clone(),
-            tab_id,
-            browser_id: args.browser_id,
-            url: args.url,
-            cleanup: args.cleanup,
-        };
+        let mut create_args = json!({ "url": args.url, "active": args.active });
+        if defer_readiness {
+            create_args["deferReadiness"] = json!(true);
+        }
+        let owner = args
+            .owner_session_id
+            .or_else(|| args.label.as_ref().map(|_| session_id.clone()));
+        if let Some(owner) = owner {
+            create_args["sessionId"] = json!(owner);
+            if let Some(label) = args.label {
+                create_args["sessionName"] = json!(label);
+            }
+        }
+        let mut owned = self
+            .acquire_session(browser, create_args, args.url, args.cleanup)
+            .await?;
+        if self.cancellation.is_cancelled() {
+            owned.cleanup().await?;
+            return Err(BridgeError::Cancelled.into());
+        }
+        // Transfer responsibility to the interactive target map.
+        owned.armed = false;
+        Ok(owned.session.clone())
+    }
 
-        self.sessions
-            .lock()
-            .await
-            .insert(session_id.clone(), session.clone());
-
-        Ok(session.to_value())
+    /// Allocation runs to its bounded bridge reply even if the waiting caller is
+    /// dropped. The returned guard either transfers ownership or closes the late
+    /// tab on the original connection. It never follows a replacement browser.
+    async fn acquire_session(
+        &self,
+        browser: BrowserTarget,
+        args: Value,
+        url: String,
+        cleanup: bool,
+    ) -> Result<OwnedTab, FacadeError> {
+        let facade = self.clone();
+        let ready_pending = args["deferReadiness"] == json!(true) && url != "about:blank";
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            if tx.is_closed() {
+                return;
+            }
+            let result = async {
+                let create = facade
+                    .dispatch("tabs_create", args, None, browser.clone())
+                    .await?;
+                fail_if_tool_error("tabs_create", &create)?;
+                let tab_id =
+                    extract_tab_id(&create.result).ok_or_else(|| FacadeError::ToolFailed {
+                        tool: "tabs_create",
+                        message: "response did not include tabId".to_string(),
+                    })?;
+                let session = FlowSession {
+                    session_id: new_flow_session_id(),
+                    tab_id,
+                    browser_id: browser,
+                    url,
+                    cleanup,
+                    ready_pending,
+                };
+                facade
+                    .sessions
+                    .lock()
+                    .await
+                    .insert(session.session_id.clone(), session.clone());
+                Ok(OwnedTab {
+                    session,
+                    title: extract_title(&create.result),
+                    facade,
+                    armed: true,
+                })
+            }
+            .await;
+            // A failed handoff drops the guard and reclaims a late allocation.
+            let _ = tx.send(result);
+        });
+        rx.await.map_err(|error| FacadeError::ToolFailed {
+            tool: "tabs_create",
+            message: format!("allocation task failed: {error}"),
+        })?
     }
 
     pub async fn flow_observe(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
         let args = parse_args::<FlowObserveArgs>(args)?;
         let session = self.session(&args.session_id).await?;
-        let (tool, bridge_result) = match args.mode {
+        let content = self
+            .observe(&session, args.options.clone(), OBSERVE_MAX_CHARS)
+            .await?;
+        let mut value = session.to_value_object();
+        value.insert("mode".to_string(), json!(args.options.mode));
+        value.insert("content".to_string(), json!(content));
+        Ok(Value::Object(value))
+    }
+
+    pub async fn observe_target(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
+        let args = parse_args::<TargetObserveArgs>(args)?;
+        let options = args.options.within_ceiling()?;
+        let session = self.settled(&args.target_id).await?;
+        let content = self.observe(&session, options, OBSERVE_MAX_CHARS).await?;
+        Ok(json!({"targetId": session.session_id, "content": content}))
+    }
+
+    async fn observe(
+        &self,
+        session: &FlowSession,
+        mut options: ObserveOptions,
+        default_max_chars: u32,
+    ) -> Result<String, FacadeError> {
+        if matches!(options.mode, ObserveMode::A11y) {
+            options.max_chars.get_or_insert(default_max_chars);
+        }
+        let (tool, bridge_result) = match options.mode {
             ObserveMode::Text => {
-                let result = self
-                    .read_text_with_retry(session.tab_id, session.browser_id.clone())
-                    .await?;
+                let mut arguments = Map::new();
+                if let Some(max_chars) = options.max_chars {
+                    arguments.insert("maxChars".to_string(), json!(max_chars));
+                }
+                let result = match options.cursor.filter(|cursor| *cursor > 0) {
+                    // A continuation may legitimately be a short tail; readiness
+                    // was established by the read that produced the cursor.
+                    Some(cursor) => {
+                        arguments.insert("cursor".to_string(), json!(cursor));
+                        self.dispatch(
+                            "get_page_text",
+                            Value::Object(arguments),
+                            Some(session.tab_id),
+                            session.browser_id.clone(),
+                        )
+                        .await?
+                    }
+                    None => {
+                        self.read_text_args_with_retry(
+                            session.tab_id,
+                            session.browser_id.clone(),
+                            Value::Object(arguments),
+                        )
+                        .await?
+                    }
+                };
                 ("get_page_text", result)
             }
             ObserveMode::A11y => {
+                let mut arguments = serde_json::to_value(&options)?;
+                arguments
+                    .as_object_mut()
+                    .expect("observation options serialize as an object")
+                    .remove("mode");
                 let result = self
-                    .bridge
                     .dispatch(
                         "read_page",
-                        json!({"filter":"all","maxChars":16000}),
+                        arguments,
                         Some(session.tab_id),
                         session.browser_id.clone(),
                     )
@@ -414,72 +576,152 @@ impl BrowserFacade {
             }
         };
         fail_if_tool_error(tool, &bridge_result)?;
-
-        let mut value = session.to_value_object();
-        value.insert("mode".to_string(), json!(args.mode));
-        value.insert(
-            "content".to_string(),
-            json!(extract_text(&bridge_result.result).unwrap_or_default()),
-        );
-        Ok(Value::Object(value))
+        Ok(extract_text(&bridge_result.result).unwrap_or_default())
     }
 
     pub async fn flow_act(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
         let args = parse_args::<FlowActArgs>(args)?;
+        reject_condition_waits(&args.steps, "browser.flow.act")?;
         let session = self.session(&args.session_id).await?;
-        let mut step_results = Vec::with_capacity(args.steps.len());
-        let mut status = "ok";
+        self.act_steps(session, args.steps, StepShape::Legacy).await
+    }
+
+    pub async fn act(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
+        let args = parse_args::<TargetActArgs>(args)?;
+        if args.steps.is_empty() || args.steps.len() > 32 {
+            return Err(FacadeError::InvalidInput(
+                "act requires 1–32 ordered steps".to_string(),
+            ));
+        }
+        let steps = args
+            .steps
+            .into_iter()
+            .map(FlowStep::within_ceiling)
+            .collect::<Result<Vec<_>, _>>()?;
+        for step in &steps {
+            if matches!(step, FlowStep::Wait { .. }) {
+                return Err(FacadeError::InvalidInput(format!(
+                    "act wait takes a condition, not a delay: text, textGone, or refId with state, and optional timeoutMs (default {DEFAULT_WAIT_TIMEOUT_MS}, at most {MAX_WAIT_TIMEOUT_MS})"
+                )));
+            }
+            if let FlowStep::Goto { url } = step {
+                url::Url::parse(url).map_err(|error| {
+                    FacadeError::InvalidInput(format!("invalid navigation URL: {error}"))
+                })?;
+            }
+            if let FlowStep::Eval {
+                frame_id: Some(frame),
+                ..
+            } = step
+            {
+                if frame.trim().is_empty() {
+                    return Err(FacadeError::InvalidInput(
+                        "frameId must be nonempty".to_string(),
+                    ));
+                }
+            }
+            if matches!(
+                step,
+                FlowStep::Click { .. }
+                    | FlowStep::Fill { .. }
+                    | FlowStep::Select { .. }
+                    | FlowStep::ReadText { .. }
+            ) {
+                return Err(FacadeError::InvalidInput("act targets elements by refId or role + name: navigate/evaluate/wait/observe and click/fill/select/check/scroll; use evaluate for explicit synthetic operations or legacy flow.act for CSS/read_text".to_string()));
+            }
+        }
+        let session = self.settled(&args.target_id).await?;
+        self.act_steps(session, steps, StepShape::Slim).await
+    }
+
+    async fn act_steps(
+        &self,
+        mut session: FlowSession,
+        steps: Vec<FlowStep>,
+        shape: StepShape,
+    ) -> Result<Value, FacadeError> {
+        let mut step_results = Vec::with_capacity(steps.len());
         let mut stopped_at = None;
 
-        for (index, step) in args.steps.into_iter().enumerate() {
-            let step_type = step.kind();
-            let result = self.run_flow_step(&session, step).await;
-            match result {
-                Ok(mut value) => {
-                    value.insert("index".to_string(), json!(index));
-                    value.insert("type".to_string(), json!(step_type));
-                    value.insert("status".to_string(), json!("ok"));
-                    step_results.push(Value::Object(value));
+        for (index, step) in steps.into_iter().enumerate() {
+            let label = StepLabel::of(&step);
+            let next_url = match &step {
+                FlowStep::Goto { url } => Some(url.clone()),
+                _ => None,
+            };
+            let slim = matches!(shape, StepShape::Slim);
+            match self
+                .run_flow_step(&session, step, ACT_OBSERVE_MAX_CHARS, slim)
+                .await
+            {
+                Ok(value) => {
+                    if let Some(url) = next_url {
+                        session.url = url;
+                    }
+                    step_results.push(match shape {
+                        StepShape::Slim => label.slim(value),
+                        StepShape::Legacy => label.legacy(index, value),
+                    });
                 }
                 Err(error) => {
-                    status = "failed";
                     stopped_at = Some(index);
-                    step_results.push(json!({
-                        "index": index,
-                        "type": step_type,
-                        "status": "failed",
-                        "error": error.to_string()
-                    }));
+                    step_results.push(match shape {
+                        StepShape::Slim => label.slim_failure(&error),
+                        StepShape::Legacy => json!({
+                            "index": index,
+                            "type": label.legacy_kind(),
+                            "status": "failed",
+                            "error": error.to_string()
+                        }),
+                    });
                     break;
                 }
             }
         }
 
-        let mut value = session.to_value_object();
+        let status = if stopped_at.is_some() { "failed" } else { "ok" };
+        let mut value = match shape {
+            StepShape::Slim => {
+                Map::from_iter([("targetId".to_string(), json!(session.session_id))])
+            }
+            StepShape::Legacy => session.to_value_object(),
+        };
         value.insert("status".to_string(), json!(status));
-        value.insert("stoppedAt".to_string(), json!(stopped_at));
+        if stopped_at.is_some() || matches!(shape, StepShape::Legacy) {
+            value.insert("stoppedAt".to_string(), json!(stopped_at));
+        }
         value.insert("results".to_string(), json!(step_results));
         Ok(Value::Object(value))
     }
 
     pub async fn flow_finish(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
         let args = parse_args::<FlowFinishArgs>(args)?;
-        let session = self
-            .sessions
-            .lock()
-            .await
-            .remove(&args.session_id)
-            .ok_or_else(|| FacadeError::UnknownSession(args.session_id.clone()))?;
-        let cleanup = args.cleanup.unwrap_or(session.cleanup);
-        let mut close_error = None;
+        self.finish_legacy(&args.session_id, args.cleanup).await
+    }
 
-        if cleanup {
-            match self.close_tab(&session).await {
-                Ok(()) => {}
-                Err(error) => close_error = Some(error.to_string()),
-            }
+    pub async fn close(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
+        let args = parse_args::<TargetCloseArgs>(args)?;
+        let (_session, cleanup, error) = self.finish(&args.target_id, Some(true)).await?;
+        let mut value = Map::from_iter([
+            ("targetId".to_string(), json!(args.target_id)),
+            ("closed".to_string(), json!(cleanup && error.is_none())),
+            (
+                "status".to_string(),
+                json!(if error.is_some() { "failed" } else { "ok" }),
+            ),
+        ]);
+        if let Some(error) = error {
+            value.insert("error".to_string(), json!(error));
         }
+        Ok(Value::Object(value))
+    }
 
+    async fn finish_legacy(
+        &self,
+        session_id: &str,
+        cleanup: Option<bool>,
+    ) -> Result<Value, FacadeError> {
+        let (session, cleanup, close_error) = self.finish(session_id, cleanup).await?;
         let mut value = session.to_value_object();
         value.insert("cleanup".to_string(), json!(cleanup));
         value.insert(
@@ -500,68 +742,80 @@ impl BrowserFacade {
         Ok(Value::Object(value))
     }
 
-    async fn run_batch_item(&self, input: BatchInput, options: BatchOptions) -> BatchItemResult {
-        let owned_tab = Arc::new(Mutex::new(None));
+    /// Returns the released session, whether cleanup ran, and its failure.
+    async fn finish(
+        &self,
+        session_id: &str,
+        cleanup: Option<bool>,
+    ) -> Result<(FlowSession, bool, Option<String>), FacadeError> {
+        let session = self.session(session_id).await?;
+        let cleanup = cleanup.unwrap_or(session.cleanup);
+        let mut close_error = None;
+
+        if cleanup {
+            match self.close_tab(&session).await {
+                Ok(()) => {}
+                Err(error) => close_error = Some(error.to_string()),
+            }
+        }
+
+        // Retain failed cleanup for an explicit retry or adapter shutdown.
+        if close_error.is_none() {
+            self.sessions.lock().await.remove(session_id);
+        }
+        Ok((session, cleanup, close_error))
+    }
+
+    async fn run_batch_item(
+        &self,
+        input: BatchInput,
+        options: BatchOptions<BrowserTarget>,
+    ) -> BatchItemResult {
         match time::timeout(
             Duration::from_millis(options.timeout_ms),
-            self.run_batch_item_inner(input.clone(), options.clone(), Arc::clone(&owned_tab)),
+            self.run_batch_item_inner(input.clone(), options),
         )
         .await
         {
             Ok(result) => result,
-            Err(_elapsed) => {
-                let cleanup_error = self.cleanup_owned_tab(owned_tab).await;
-                let mut result = BatchItemResult::failed(input, None, "operation timed out");
-                if let Some(error) = cleanup_error {
-                    result.error = Some(format!("operation timed out; cleanup failed: {error}"));
-                }
-                result
-            }
+            Err(_) => BatchItemResult::failed(
+                input,
+                None,
+                "operation timed out; owned tab cleanup scheduled",
+            ),
         }
     }
 
     async fn run_batch_item_inner(
         &self,
         input: BatchInput,
-        options: BatchOptions,
-        owned_tab: Arc<Mutex<Option<OwnedTab>>>,
+        options: BatchOptions<BrowserTarget>,
     ) -> BatchItemResult {
-        let create = match self
-            .bridge
-            .dispatch(
-                "tabs_create",
-                json!({ "url": input.url, "active": options.active }),
-                None,
+        let mut owned = match self
+            .acquire_session(
                 options.browser_id.clone(),
+                json!({ "url": "about:blank", "active": options.active }),
+                input.url.clone(),
+                options.cleanup,
             )
             .await
         {
-            Ok(result) => result,
+            Ok(owned) => owned,
             Err(error) => return BatchItemResult::failed(input, None, error.to_string()),
         };
+        let tab_id_value = owned.tab_id;
+        let tab_id = Some(tab_id_value);
+        let title = owned.title.clone();
 
-        if let Some(message) = tool_error_message(&create) {
-            return BatchItemResult::failed(input, extract_tab_id(&create.result), message);
+        let text_result = async {
+            self.navigate_tab(tab_id_value, options.browser_id.clone(), &input.url)
+                .await?;
+            Ok::<_, FacadeError>(
+                self.read_text_with_retry(tab_id_value, options.browser_id.clone())
+                    .await?,
+            )
         }
-
-        let tab_id = extract_tab_id(&create.result);
-        let title = extract_title(&create.result);
-        let Some(tab_id_value) = tab_id else {
-            return BatchItemResult::failed(
-                input,
-                None,
-                "tabs_create response did not include tabId",
-            );
-        };
-        *owned_tab.lock().await = Some(OwnedTab {
-            tab_id: tab_id_value,
-            browser_id: options.browser_id.clone(),
-            cleanup: options.cleanup,
-        });
-
-        let text_result = self
-            .read_text_with_retry(tab_id_value, options.browser_id.clone())
-            .await;
+        .await;
 
         let mut result = match text_result {
             Ok(read) => {
@@ -574,22 +828,9 @@ impl BrowserFacade {
             Err(error) => BatchItemResult::failed(input, tab_id, error.to_string()),
         };
 
-        if options.cleanup {
-            if let Err(error) = self
-                .bridge
-                .dispatch(
-                    "tabs_close",
-                    json!({ "tabId": tab_id_value }),
-                    None,
-                    options.browser_id,
-                )
-                .await
-            {
-                result.status = BatchStatus::Failed;
-                result.error = Some(error.to_string());
-            } else {
-                *owned_tab.lock().await = None;
-            }
+        if let Err(error) = owned.cleanup().await {
+            result.status = BatchStatus::Failed;
+            result.error = Some(format!("cleanup failed: {error}"));
         }
 
         result
@@ -599,29 +840,20 @@ impl BrowserFacade {
         &self,
         input: BatchInput,
         steps: Vec<FlowStep>,
-        options: BatchOptions,
+        options: BatchOptions<BrowserTarget>,
     ) -> BatchFlowItemResult {
-        let owned_tab = Arc::new(Mutex::new(None));
         match time::timeout(
             Duration::from_millis(options.timeout_ms),
-            self.run_batch_flow_item_inner(
-                input.clone(),
-                steps,
-                options.clone(),
-                Arc::clone(&owned_tab),
-            ),
+            self.run_batch_flow_item_inner(input.clone(), steps, options),
         )
         .await
         {
             Ok(result) => result,
-            Err(_elapsed) => {
-                let cleanup_error = self.cleanup_owned_tab(owned_tab).await;
-                let mut result = BatchFlowItemResult::failed(input, None, "operation timed out");
-                if let Some(error) = cleanup_error {
-                    result.error = Some(format!("operation timed out; cleanup failed: {error}"));
-                }
-                result
-            }
+            Err(_) => BatchFlowItemResult::failed(
+                input,
+                None,
+                "operation timed out; owned tab cleanup scheduled",
+            ),
         }
     }
 
@@ -629,76 +861,53 @@ impl BrowserFacade {
         &self,
         input: BatchInput,
         steps: Vec<FlowStep>,
-        options: BatchOptions,
-        owned_tab: Arc<Mutex<Option<OwnedTab>>>,
+        options: BatchOptions<BrowserTarget>,
     ) -> BatchFlowItemResult {
-        let create = match self
-            .bridge
-            .dispatch(
-                "tabs_create",
-                json!({ "url": input.url, "active": options.active }),
-                None,
+        let mut session = match self
+            .acquire_session(
                 options.browser_id.clone(),
+                json!({ "url": "about:blank", "active": options.active }),
+                input.url.clone(),
+                options.cleanup,
             )
             .await
         {
-            Ok(result) => result,
+            Ok(owned) => owned,
             Err(error) => return BatchFlowItemResult::failed(input, None, error.to_string()),
         };
-
-        if let Some(message) = tool_error_message(&create) {
-            return BatchFlowItemResult::failed(input, extract_tab_id(&create.result), message);
+        let mut result =
+            BatchFlowItemResult::ok(input, Some(session.tab_id), session.title.clone());
+        let navigation = self
+            .navigate_tab(session.tab_id, options.browser_id.clone(), &session.url)
+            .await;
+        if let Err(error) = navigation {
+            result.status = BatchStatus::Failed;
+            result.error = Some(error.to_string());
+            if let Err(error) = session.cleanup().await {
+                result.error = Some(format!(
+                    "{}; cleanup failed: {error}",
+                    result.error.unwrap()
+                ));
+            }
+            return result;
         }
-
-        let tab_id = extract_tab_id(&create.result);
-        let title = extract_title(&create.result);
-        let Some(tab_id_value) = tab_id else {
-            return BatchFlowItemResult::failed(
-                input,
-                None,
-                "tabs_create response did not include tabId",
-            );
-        };
-        *owned_tab.lock().await = Some(OwnedTab {
-            tab_id: tab_id_value,
-            browser_id: options.browser_id.clone(),
-            cleanup: options.cleanup,
-        });
-
-        let session = FlowSession {
-            session_id: format!("batch-flow-{}", Uuid::new_v4()),
-            tab_id: tab_id_value,
-            browser_id: options.browser_id.clone(),
-            url: input.url.clone(),
-            cleanup: options.cleanup,
-        };
-
-        let mut result = BatchFlowItemResult::ok(input, tab_id, title);
         for (index, step) in steps.into_iter().enumerate() {
-            let step_type = step.kind();
-            match self.run_flow_step(&session, step).await {
-                Ok(mut value) => {
-                    value.insert("index".to_string(), json!(index));
-                    value.insert("type".to_string(), json!(step_type));
-                    value.insert("status".to_string(), json!("ok"));
-                    result.results.push(Value::Object(value));
-                }
+            let label = StepLabel::of(&step);
+            match self
+                .run_flow_step(&session, step, OBSERVE_MAX_CHARS, false)
+                .await
+            {
+                Ok(value) => result.results.push(label.slim(value)),
                 Err(error) => {
                     result.status = BatchStatus::Failed;
                     result.stopped_at = Some(index);
-                    result.error = Some(error.to_string());
-                    result.results.push(json!({
-                        "index": index,
-                        "type": step_type,
-                        "status": "failed",
-                        "error": error.to_string()
-                    }));
+                    result.error = Some(step_error(&error));
                     break;
                 }
             }
         }
 
-        if let Some(error) = self.cleanup_owned_tab(owned_tab).await {
+        if let Err(error) = session.cleanup().await {
             result.status = BatchStatus::Failed;
             result.error = Some(match result.error {
                 Some(existing) => format!("{existing}; cleanup failed: {error}"),
@@ -712,7 +921,7 @@ impl BrowserFacade {
     async fn run_extract_item(
         &self,
         input: BatchInput,
-        options: ExtractOptions,
+        options: ExtractOptions<BrowserTarget>,
     ) -> ExtractItemResult {
         self.run_extract_item_inner(input, options).await
     }
@@ -720,54 +929,26 @@ impl BrowserFacade {
     async fn run_extract_item_inner(
         &self,
         input: BatchInput,
-        options: ExtractOptions,
+        options: ExtractOptions<BrowserTarget>,
     ) -> ExtractItemResult {
-        let create = match self
-            .bridge
-            .dispatch(
-                "tabs_create",
-                json!({ "url": input.url, "active": options.active }),
-                None,
+        let mut owned = match self
+            .acquire_session(
                 options.browser_id.clone(),
+                json!({ "url": input.url, "active": options.active }),
+                input.url.clone(),
+                options.cleanup,
             )
             .await
         {
-            Ok(result) => result,
+            Ok(owned) => owned,
             Err(error) => return ExtractItemResult::failed(input, None, error.to_string()),
         };
-
-        if let Some(message) = tool_error_message(&create) {
-            return ExtractItemResult::failed(input, extract_tab_id(&create.result), message);
-        }
-
-        let tab_id = extract_tab_id(&create.result);
-        let title = extract_title(&create.result);
-        let Some(tab_id_value) = tab_id else {
-            return ExtractItemResult::failed(
-                input,
-                None,
-                "tabs_create response did not include tabId",
-            );
-        };
-
         let mut result = self
-            .extract_from_tab(input, tab_id_value, title, &options)
+            .extract_from_tab(input, owned.tab_id, owned.title.clone(), &options)
             .await;
-
-        if options.cleanup {
-            if let Err(error) = self
-                .bridge
-                .dispatch(
-                    "tabs_close",
-                    json!({ "tabId": tab_id_value }),
-                    None,
-                    options.browser_id,
-                )
-                .await
-            {
-                result.status = ExtractStatus::Failed;
-                result.error = Some(error.to_string());
-            }
+        if let Err(error) = owned.cleanup().await {
+            result.status = ExtractStatus::Failed;
+            result.error = Some(format!("cleanup failed: {error}"));
         }
 
         result
@@ -778,7 +959,7 @@ impl BrowserFacade {
         input: BatchInput,
         tab_id: i64,
         title: Option<String>,
-        options: &ExtractOptions,
+        options: &ExtractOptions<BrowserTarget>,
     ) -> ExtractItemResult {
         let start = time::Instant::now();
         let initial = self
@@ -794,7 +975,11 @@ impl BrowserFacade {
             .await
     }
 
-    async fn extract_current_tab(&self, id: String, options: ExtractOptions) -> ExtractItemResult {
+    async fn extract_current_tab(
+        &self,
+        id: String,
+        options: ExtractOptions<BrowserTarget>,
+    ) -> ExtractItemResult {
         let start = time::Instant::now();
         let snapshot = match self
             .read_extension_extract_page(None, options.browser_id.clone(), &options)
@@ -826,7 +1011,7 @@ impl BrowserFacade {
         tab_id: Option<i64>,
         title: Option<String>,
         initial: Result<DomSnapshot, FacadeError>,
-        options: &ExtractOptions,
+        options: &ExtractOptions<BrowserTarget>,
         start: time::Instant,
     ) -> ExtractItemResult {
         let mut diagnostics = ExtractDiagnostics::default();
@@ -922,11 +1107,10 @@ impl BrowserFacade {
     async fn read_extension_extract_page(
         &self,
         tab_id: Option<i64>,
-        browser_id: Option<String>,
-        options: &ExtractOptions,
+        browser_id: BrowserTarget,
+        options: &ExtractOptions<BrowserTarget>,
     ) -> Result<DomSnapshot, FacadeError> {
         let result = self
-            .bridge
             .dispatch(
                 "extract_page",
                 json!({
@@ -947,11 +1131,10 @@ impl BrowserFacade {
     async fn read_a11y_snapshot(
         &self,
         tab_id: i64,
-        browser_id: Option<String>,
+        browser_id: BrowserTarget,
         max_chars: u64,
     ) -> Result<String, FacadeError> {
         let result = self
-            .bridge
             .dispatch(
                 "read_page",
                 json!({ "maxChars": max_chars, "compact": true }),
@@ -966,10 +1149,9 @@ impl BrowserFacade {
     async fn read_dom_snapshot(
         &self,
         tab_id: i64,
-        browser_id: Option<String>,
+        browser_id: BrowserTarget,
     ) -> Result<DomSnapshot, FacadeError> {
         let result = self
-            .bridge
             .dispatch(
                 "javascript_tool",
                 json!({ "code": dom_extract_script() }),
@@ -981,29 +1163,108 @@ impl BrowserFacade {
         parse_dom_snapshot(&result.result)
     }
 
+    async fn navigate_tab(
+        &self,
+        tab_id: i64,
+        browser_id: BrowserTarget,
+        url: &str,
+    ) -> Result<BridgeToolResult, FacadeError> {
+        let result = self
+            .dispatch("navigate", json!({"url":url}), Some(tab_id), browser_id)
+            .await?;
+        fail_if_tool_error("navigate", &result)?;
+        Ok(result)
+    }
+
+    /// Resolves the target, acts and waits for the page to settle in one
+    /// extension call. Returns `refId` and the visible `changes`.
+    async fn act_element(
+        &self,
+        session: &FlowSession,
+        mut args: Value,
+        action: RefAction,
+    ) -> Result<Map<String, Value>, FacadeError> {
+        match action {
+            RefAction::Click => args["action"] = json!("click"),
+            RefAction::Fill(value) => {
+                args["action"] = json!("fill");
+                args["value"] = json!(value);
+            }
+            RefAction::Select(value) => {
+                args["action"] = json!("select");
+                args["value"] = json!(value);
+            }
+            RefAction::Check(checked) => {
+                args["action"] = json!("check");
+                args["checked"] = json!(checked);
+            }
+        }
+        let result = self
+            .dispatch(
+                "act_element",
+                args,
+                Some(session.tab_id),
+                session.browser_id.clone(),
+            )
+            .await?;
+        fail_if_tool_error("act_element", &result)?;
+        let text = extract_text(&result.result).unwrap_or_default();
+        match serde_json::from_str(&text) {
+            Ok(Value::Object(report)) => Ok(report),
+            _ => Err(FacadeError::ToolFailed {
+                tool: "act_element",
+                message: format!("unexpected act_element result: {text}"),
+            }),
+        }
+    }
+
+    /// `slim` marks the model-facing act shape. Observation is read-only, so
+    /// an act step whose scope was re-rendered reads the page instead of
+    /// failing the steps before it, and element actions report what visibly
+    /// changed so the caller need not sleep and read the page back.
     async fn run_flow_step(
         &self,
         session: &FlowSession,
         step: FlowStep,
+        observe_max_chars: u32,
+        slim: bool,
     ) -> Result<Map<String, Value>, FacadeError> {
         match step {
+            FlowStep::Observe { options } => {
+                let mode = options.mode;
+                let scope = options.ref_id.clone();
+                let content = match self
+                    .observe(session, options.clone(), observe_max_chars)
+                    .await
+                {
+                    Err(error) if slim && is_stale_scope(&error) => {
+                        let page = ObserveOptions {
+                            ref_id: None,
+                            cursor: None,
+                            ..options
+                        };
+                        let content = self.observe(session, page, observe_max_chars).await?;
+                        format!(
+                            "scope {} was replaced; observed page\n{content}",
+                            scope.unwrap_or_default()
+                        )
+                    }
+                    other => other?,
+                };
+                let mut value = session.to_value_object();
+                value.insert("mode".to_string(), json!(mode));
+                value.insert("content".to_string(), json!(content));
+                Ok(value)
+            }
             FlowStep::Goto { url } => {
                 let result = self
-                    .bridge
-                    .dispatch(
-                        "navigate",
-                        json!({ "url": url }),
-                        Some(session.tab_id),
-                        session.browser_id.clone(),
-                    )
+                    .navigate_tab(session.tab_id, session.browser_id.clone(), &url)
                     .await?;
-                fail_if_tool_error("navigate", &result)?;
                 self.update_session_url(&session.session_id, url).await;
                 Ok(single_result(result.result))
             }
             FlowStep::Eval { code, frame_id } => {
                 let result = self
-                    .bridge
                     .dispatch(
                         "javascript_tool",
                         javascript_tool_args(code, true, frame_id),
@@ -1017,7 +1278,6 @@ impl BrowserFacade {
             FlowStep::Click { css, frame_id } => {
                 let code = click_script(&css)?;
                 let result = self
-                    .bridge
                     .dispatch(
                         "javascript_tool",
                         javascript_tool_args(code, false, frame_id),
@@ -1035,7 +1295,6 @@ impl BrowserFacade {
             } => {
                 let code = fill_script(&css, &value)?;
                 let result = self
-                    .bridge
                     .dispatch(
                         "javascript_tool",
                         javascript_tool_args(code, false, frame_id),
@@ -1053,7 +1312,6 @@ impl BrowserFacade {
             } => {
                 let code = select_script(&css, &value)?;
                 let result = self
-                    .bridge
                     .dispatch(
                         "javascript_tool",
                         javascript_tool_args(code, false, frame_id),
@@ -1064,15 +1322,25 @@ impl BrowserFacade {
                 fail_if_tool_error("javascript_tool", &result)?;
                 Ok(single_result(result.result))
             }
+            FlowStep::Ref { ref_id, action } if slim => {
+                self.act_element(session, json!({ "refId": ref_id }), action)
+                    .await
+            }
+            FlowStep::Named { role, name, action } => {
+                self.act_element(session, json!({ "role": role, "name": name }), action)
+                    .await
+            }
             FlowStep::Ref { ref_id, action } => {
                 let (tool, args) = match action {
                     RefAction::Click => ("click_element", json!({"refId":ref_id})),
                     RefAction::Fill(value) | RefAction::Select(value) => {
                         ("form_input", json!({"refId":ref_id,"value":value}))
                     }
+                    RefAction::Check(checked) => {
+                        ("form_input", json!({"refId":ref_id,"checked":checked}))
+                    }
                 };
                 let result = self
-                    .bridge
                     .dispatch(tool, args, Some(session.tab_id), session.browser_id.clone())
                     .await?;
                 fail_if_tool_error(tool, &result)?;
@@ -1084,7 +1352,6 @@ impl BrowserFacade {
                 amount,
             } => {
                 let result = self
-                    .bridge
                     .dispatch(
                         "scroll_element",
                         json!({"refId":ref_id,"direction":direction,"amount":amount}),
@@ -1095,10 +1362,19 @@ impl BrowserFacade {
                 fail_if_tool_error("scroll_element", &result)?;
                 Ok(single_result(result.result))
             }
+            FlowStep::WaitFor {
+                condition,
+                timeout_ms,
+            } => self.wait_for(session, &condition, timeout_ms).await,
             FlowStep::Wait { ms } => {
                 let clamped = ms.min(MAX_WAIT_MS);
-                time::sleep(Duration::from_millis(clamped)).await;
-                Ok(Map::from_iter([("ms".to_string(), json!(clamped))]))
+                tokio::select! {
+                    biased;
+                    _ = self.cancellation.cancelled() => Err(BridgeError::Cancelled.into()),
+                    _ = time::sleep(Duration::from_millis(clamped)) => {
+                        Ok(Map::from_iter([("ms".to_string(), json!(clamped))]))
+                    }
+                }
             }
             FlowStep::ReadText { frame_id: None } => {
                 let result = self
@@ -1114,7 +1390,6 @@ impl BrowserFacade {
                 frame_id: Some(frame_id),
             } => {
                 let result = self
-                    .bridge
                     .dispatch(
                         "javascript_tool",
                         javascript_tool_args(
@@ -1135,17 +1410,134 @@ impl BrowserFacade {
         }
     }
 
+    /// Polls until the condition holds or the timeout passes. A check that
+    /// fails transiently (a navigation in flight) counts as not yet met.
+    async fn wait_for(
+        &self,
+        session: &FlowSession,
+        condition: &WaitCondition,
+        timeout_ms: u64,
+    ) -> Result<Map<String, Value>, FacadeError> {
+        let started = time::Instant::now();
+        let deadline = started + Duration::from_millis(timeout_ms);
+        let mut last_error = None;
+        let met = loop {
+            match self.condition_met(session, condition).await? {
+                Ok(true) => break true,
+                Ok(false) => last_error = None,
+                Err(message) => last_error = Some(message),
+            }
+            let now = time::Instant::now();
+            if now >= deadline {
+                break false;
+            }
+            let pause = Duration::from_millis(WAIT_POLL_MS).min(deadline - now);
+            tokio::select! {
+                biased;
+                _ = self.cancellation.cancelled() => return Err(BridgeError::Cancelled.into()),
+                _ = time::sleep(pause) => {}
+            }
+        };
+        let mut value = Map::from_iter([
+            ("met".to_string(), json!(met)),
+            (
+                "ms".to_string(),
+                json!(started.elapsed().as_millis() as u64),
+            ),
+            ("condition".to_string(), json!(condition.describe())),
+        ]);
+        if let (false, Some(error)) = (met, last_error) {
+            value.insert("lastError".to_string(), json!(error));
+        }
+        Ok(value)
+    }
+
+    /// Outer error: the wait cannot continue. Inner error: this check failed
+    /// and the next poll may succeed.
+    async fn condition_met(
+        &self,
+        session: &FlowSession,
+        condition: &WaitCondition,
+    ) -> Result<Result<bool, String>, FacadeError> {
+        let (needle, present) = match condition {
+            WaitCondition::Text(text) => (text, true),
+            WaitCondition::TextGone(text) => (text, false),
+            WaitCondition::Ref { ref_id, state } => {
+                let result = self
+                    .dispatch(
+                        "get_element_info",
+                        json!({"refId": ref_id}),
+                        Some(session.tab_id),
+                        session.browser_id.clone(),
+                    )
+                    .await?;
+                if let Some(message) = tool_error_message(&result) {
+                    // A node that left the document is hidden; any other
+                    // state can never hold for it.
+                    if message.contains("Stale") {
+                        return match state {
+                            WaitState::Hidden => Ok(Ok(true)),
+                            _ => Err(FacadeError::ToolFailed {
+                                tool: "get_element_info",
+                                message,
+                            }),
+                        };
+                    }
+                    return Ok(Err(message));
+                }
+                let info = extract_text(&result.result)
+                    .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                    .unwrap_or_default();
+                let visible = info["visible"] == json!(true);
+                let disabled = info["disabled"] == json!(true);
+                return Ok(Ok(match state {
+                    WaitState::Visible => visible,
+                    WaitState::Hidden => !visible,
+                    WaitState::Enabled => !disabled,
+                    WaitState::Disabled => disabled,
+                }));
+            }
+        };
+        let result = self
+            .dispatch(
+                "javascript_tool",
+                javascript_tool_args(text_present_script(needle)?, false, None),
+                Some(session.tab_id),
+                session.browser_id.clone(),
+            )
+            .await?;
+        if let Some(message) = tool_error_message(&result) {
+            return Ok(Err(message));
+        }
+        let found = javascript_string_result(&result.result)? == "true";
+        Ok(Ok(found == present))
+    }
+
     async fn read_text_with_retry(
         &self,
         tab_id: i64,
-        browser_id: Option<String>,
+        browser_id: BrowserTarget,
+    ) -> Result<BridgeToolResult, BridgeError> {
+        self.read_text_args_with_retry(tab_id, browser_id, json!({}))
+            .await
+    }
+
+    async fn read_text_args_with_retry(
+        &self,
+        tab_id: i64,
+        browser_id: BrowserTarget,
+        args: Value,
     ) -> Result<BridgeToolResult, BridgeError> {
         let deadline = time::Instant::now() + Duration::from_millis(DEFAULT_TEXT_READY_TIMEOUT_MS);
 
         loop {
             let result = self
-                .bridge
-                .dispatch("get_page_text", json!({}), Some(tab_id), browser_id.clone())
+                .dispatch(
+                    "get_page_text",
+                    args.clone(),
+                    Some(tab_id),
+                    browser_id.clone(),
+                )
                 .await?;
 
             if tool_error_message(&result).is_some()
@@ -1157,6 +1549,55 @@ impl BrowserFacade {
 
             time::sleep(Duration::from_millis(TEXT_READY_POLL_MS)).await;
         }
+    }
+
+    /// An opened target's first observe/act establishes readiness, so a page
+    /// that loaded during the model's turn costs one probe. At the cap the
+    /// call proceeds and shows whatever the page has.
+    async fn settled(&self, target_id: &str) -> Result<FlowSession, FacadeError> {
+        let mut session = self.session(target_id).await?;
+        if !session.ready_pending {
+            return Ok(session);
+        }
+        let deadline = time::Instant::now() + Duration::from_millis(OPEN_SETTLE_TIMEOUT_MS);
+        while !self.document_ready(&session).await? && time::Instant::now() < deadline {
+            tokio::select! {
+                biased;
+                _ = self.cancellation.cancelled() => return Err(BridgeError::Cancelled.into()),
+                _ = time::sleep(Duration::from_millis(TEXT_READY_POLL_MS)) => {}
+            }
+        }
+        if let Some(stored) = self.sessions.lock().await.get_mut(target_id) {
+            stored.ready_pending = false;
+        }
+        session.ready_pending = false;
+        Ok(session)
+    }
+
+    /// DOMContentLoaded of the navigated document plus readable text; a probe
+    /// that fails mid-navigation means not yet.
+    async fn document_ready(&self, session: &FlowSession) -> Result<bool, FacadeError> {
+        let result = self
+            .dispatch(
+                "javascript_tool",
+                javascript_tool_args(
+                    "({loading: document.readyState === 'loading', blank: location.href === 'about:blank', text: (document.body?.innerText ?? '').slice(0, 2000)})".to_string(),
+                    false,
+                    None,
+                ),
+                Some(session.tab_id),
+                session.browser_id.clone(),
+            )
+            .await?;
+        if tool_error_message(&result).is_some() {
+            return Ok(false);
+        }
+        let probe = extract_text(&result.result)
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .unwrap_or_default();
+        Ok(probe["loading"] == json!(false)
+            && probe["blank"] == json!(false)
+            && probe["text"].as_str().is_some_and(has_page_text))
     }
 
     async fn session(&self, session_id: &str) -> Result<FlowSession, FacadeError> {
@@ -1175,39 +1616,38 @@ impl BrowserFacade {
     }
 
     async fn close_tab(&self, session: &FlowSession) -> Result<(), FacadeError> {
-        let result = self
-            .bridge
+        let result = session
+            .browser_id
             .dispatch(
+                &self.bridge,
                 "tabs_close",
                 json!({ "tabId": session.tab_id }),
                 None,
-                session.browser_id.clone(),
             )
             .await?;
         fail_if_tool_error("tabs_close", &result)
     }
 
-    async fn cleanup_owned_tab(&self, owned_tab: Arc<Mutex<Option<OwnedTab>>>) -> Option<String> {
-        let owned = owned_tab.lock().await.take()?;
-        if !owned.cleanup {
-            return None;
+    async fn release_session(&self, session: &FlowSession) -> Result<(), FacadeError> {
+        if session.cleanup {
+            let result = time::timeout(
+                Duration::from_millis(CLEANUP_TIMEOUT_MS),
+                self.close_tab(session),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                Err(FacadeError::ToolFailed {
+                    tool: "tabs_close",
+                    message: "cleanup timed out".to_string(),
+                })
+            });
+            result.map_err(|source| FacadeError::Cleanup {
+                target_id: session.session_id.clone(),
+                source: Box::new(source),
+            })?;
         }
-
-        match time::timeout(
-            Duration::from_millis(CLEANUP_TIMEOUT_MS),
-            self.bridge.dispatch(
-                "tabs_close",
-                json!({ "tabId": owned.tab_id }),
-                None,
-                owned.browser_id,
-            ),
-        )
-        .await
-        {
-            Ok(Ok(result)) => tool_error_message(&result),
-            Ok(Err(error)) => Some(error.to_string()),
-            Err(_elapsed) => Some("cleanup timed out".to_string()),
-        }
+        self.sessions.lock().await.remove(&session.session_id);
+        Ok(())
     }
 }
 
@@ -1298,13 +1738,14 @@ impl BatchFlowArgs {
     fn parse(args: Map<String, Value>) -> Result<Self, FacadeError> {
         let raw = parse_args::<RawBatchFlowArgs>(args)?;
         let inputs = parse_batch_inputs(raw.urls, raw.inputs, "browser.batch.flow")?;
-        if raw
-            .steps
-            .iter()
-            .any(|step| matches!(step, FlowStep::Ref { .. } | FlowStep::Scroll { .. }))
-        {
+        if raw.steps.iter().any(|step| {
+            matches!(
+                step,
+                FlowStep::Ref { .. } | FlowStep::Named { .. } | FlowStep::Scroll { .. }
+            ) || matches!(step, FlowStep::Observe { options } if options.ref_id.is_some())
+        }) {
             return Err(FacadeError::InvalidInput(
-                "browser.batch.flow creates new tabs, so it cannot reuse snapshot refs; use CSS templates or browser.flow.act on the originating tab".to_string(),
+                "browser.batch.flow creates new tabs, so it cannot reuse snapshot refs or role/name targets; use CSS templates or browser.act on the originating tab".to_string(),
             ));
         }
         if raw.steps.is_empty() {
@@ -1312,6 +1753,7 @@ impl BatchFlowArgs {
                 "browser.batch.flow requires at least one step".to_string(),
             ));
         }
+        reject_condition_waits(&raw.steps, "browser.batch.flow")?;
         let concurrency = raw
             .concurrency
             .unwrap_or(DEFAULT_BATCH_CONCURRENCY)
@@ -1321,9 +1763,14 @@ impl BatchFlowArgs {
             .unwrap_or(DEFAULT_TIMEOUT_MS)
             .clamp(1, MAX_TIMEOUT_MS);
 
+        let steps = raw
+            .steps
+            .into_iter()
+            .map(FlowStep::within_ceiling)
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             inputs,
-            steps: raw.steps,
+            steps,
             concurrency,
             options: BatchOptions {
                 timeout_ms,
@@ -1369,11 +1816,25 @@ struct BatchInput {
 }
 
 #[derive(Debug, Clone)]
-struct BatchOptions {
+struct BatchOptions<B = Option<String>> {
     timeout_ms: u64,
     cleanup: bool,
     active: bool,
-    browser_id: Option<String>,
+    browser_id: B,
+}
+
+impl BatchOptions {
+    async fn bind(
+        self,
+        bridge: &BrowserBridge,
+    ) -> Result<BatchOptions<BrowserTarget>, BridgeError> {
+        Ok(BatchOptions {
+            browser_id: bridge.bind(self.browser_id).await?,
+            timeout_ms: self.timeout_ms,
+            cleanup: self.cleanup,
+            active: self.active,
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1532,7 +1993,7 @@ impl RawBatchExtractArgs {
 }
 
 #[derive(Debug, Clone)]
-struct ExtractOptions {
+struct ExtractOptions<B = Option<String>> {
     min_chars: usize,
     max_chars: u64,
     max_links: u64,
@@ -1540,7 +2001,25 @@ struct ExtractOptions {
     include_links: bool,
     cleanup: bool,
     active: bool,
-    browser_id: Option<String>,
+    browser_id: B,
+}
+
+impl ExtractOptions {
+    async fn bind(
+        self,
+        bridge: &BrowserBridge,
+    ) -> Result<ExtractOptions<BrowserTarget>, BridgeError> {
+        Ok(ExtractOptions {
+            browser_id: bridge.bind(self.browser_id).await?,
+            min_chars: self.min_chars,
+            max_chars: self.max_chars,
+            max_links: self.max_links,
+            include_a11y: self.include_a11y,
+            include_links: self.include_links,
+            cleanup: self.cleanup,
+            active: self.active,
+        })
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1772,20 +2251,67 @@ struct DomReadiness {
     reason: String,
 }
 
-#[derive(Debug, Clone)]
 struct OwnedTab {
-    tab_id: i64,
-    browser_id: Option<String>,
-    cleanup: bool,
+    session: FlowSession,
+    title: Option<String>,
+    facade: BrowserFacade,
+    armed: bool,
+}
+
+impl std::ops::Deref for OwnedTab {
+    type Target = FlowSession;
+    fn deref(&self) -> &FlowSession {
+        &self.session
+    }
+}
+
+impl OwnedTab {
+    async fn cleanup(&mut self) -> Result<(), FacadeError> {
+        self.start_cleanup()
+            .await
+            .map_err(|error| FacadeError::Cleanup {
+                target_id: self.session.session_id.clone(),
+                source: Box::new(FacadeError::ToolFailed {
+                    tool: "tabs_close",
+                    message: format!("cleanup task failed: {error}"),
+                }),
+            })?
+    }
+
+    fn start_cleanup(&mut self) -> tokio::task::JoinHandle<Result<(), FacadeError>> {
+        // Hand off before awaiting: dropping the waiter detaches this same close,
+        // rather than losing its reply or issuing a second, uncertain removal.
+        self.armed = false;
+        let facade = self.facade.clone();
+        let session = self.session.clone();
+        tokio::spawn(async move {
+            let result = facade.release_session(&session).await;
+            if let Err(error) = &result {
+                // Report at the owner, even if the explicit waiter has gone away.
+                tracing::warn!(tab_id = session.tab_id, target_id = session.session_id, %error, "owned tab cleanup failed; ownership retained");
+            }
+            result
+        })
+    }
+}
+
+impl Drop for OwnedTab {
+    fn drop(&mut self) {
+        if self.armed {
+            drop(self.start_cleanup());
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 struct FlowSession {
     session_id: String,
     tab_id: i64,
-    browser_id: Option<String>,
+    browser_id: BrowserTarget,
     url: String,
     cleanup: bool,
+    /// Opened with deferred readiness and not yet observed or acted on.
+    ready_pending: bool,
 }
 
 impl FlowSession {
@@ -1800,9 +2326,7 @@ impl FlowSession {
             ("url".to_string(), json!(self.url)),
             ("cleanup".to_string(), json!(self.cleanup)),
         ]);
-        if let Some(browser_id) = &self.browser_id {
-            value.insert("browserId".to_string(), json!(browser_id));
-        }
+        value.insert("browserId".to_string(), json!(self.browser_id.browser_id));
         value
     }
 }
@@ -1876,10 +2400,45 @@ fn default_network_capture_max_requests() -> u64 {
     20
 }
 
+// Public target identity and Pi ownership are intentionally different fields.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OpenArgs {
+    url: String,
+    browser_id: Option<String>,
+    #[serde(default)]
+    active: bool,
+    owner_session_id: Option<String>,
+    label: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TargetObserveArgs {
+    target_id: String,
+    #[serde(flatten)]
+    options: ObserveOptions,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TargetActArgs {
+    target_id: String,
+    steps: Vec<FlowStep>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TargetCloseArgs {
+    target_id: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FlowStartArgs {
     url: String,
+    owner_session_id: Option<String>,
+    label: Option<String>,
     #[serde(default)]
     browser_id: Option<String>,
     #[serde(default)]
@@ -1892,8 +2451,96 @@ struct FlowStartArgs {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FlowObserveArgs {
     session_id: String,
+    #[serde(flatten)]
+    options: ObserveOptions,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "RawObserveOptions", rename_all = "camelCase")]
+struct ObserveOptions {
+    mode: ObserveMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ref_id: Option<String>,
+    filter: ObserveFilter,
+    depth: u32,
+    /// Unset means the caller's default: standalone, act step, or legacy flow.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_chars: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cursor: Option<u32>,
+    compact: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+enum ObserveFilter {
+    #[default]
+    All,
+    Interactive,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawObserveOptions {
     #[serde(default)]
     mode: ObserveMode,
+    ref_id: Option<String>,
+    filter: Option<ObserveFilter>,
+    depth: Option<u32>,
+    max_chars: Option<u32>,
+    cursor: Option<u32>,
+    compact: Option<bool>,
+}
+
+impl TryFrom<RawObserveOptions> for ObserveOptions {
+    type Error = String;
+
+    fn try_from(raw: RawObserveOptions) -> Result<Self, Self::Error> {
+        if matches!(raw.mode, ObserveMode::Text)
+            && (raw.ref_id.is_some()
+                || raw.filter.is_some()
+                || raw.depth.is_some()
+                || raw.compact.is_some())
+        {
+            return Err("refId/filter/depth/compact require mode a11y".to_string());
+        }
+        let depth = raw.depth.unwrap_or(20);
+        if !(1..=100).contains(&depth)
+            || raw.max_chars.is_some_and(|max| !(1..=60000).contains(&max))
+            || raw.cursor.is_some_and(|cursor| cursor > 1_000_000)
+            || raw
+                .ref_id
+                .as_ref()
+                .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err("observation requires depth 1–100, maxChars 1–60000, cursor 0–1000000 and a nonempty refId when supplied".to_string());
+        }
+        Ok(Self {
+            mode: raw.mode,
+            ref_id: raw.ref_id,
+            filter: raw.filter.unwrap_or_default(),
+            depth,
+            max_chars: raw.max_chars,
+            cursor: raw.cursor,
+            compact: raw.compact.unwrap_or(true),
+        })
+    }
+}
+
+impl ObserveOptions {
+    /// Facade budgets: over-ceiling requests are rejected, matching the
+    /// schema; a11y above its cap is reduced, and the footer states the cap.
+    fn within_ceiling(mut self) -> Result<Self, FacadeError> {
+        if self.max_chars.is_some_and(|max| max > MAX_OBSERVE_CHARS) {
+            return Err(FacadeError::InvalidInput(format!(
+                "maxChars is at most {MAX_OBSERVE_CHARS}; read long content with mode text and cursor"
+            )));
+        }
+        if matches!(self.mode, ObserveMode::A11y) {
+            self.max_chars = self.max_chars.map(|max| max.min(MAX_A11Y_OBSERVE_CHARS));
+        }
+        Ok(self)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
@@ -1914,6 +2561,9 @@ struct FlowActArgs {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(try_from = "RawFlowStep")]
 enum FlowStep {
+    Observe {
+        options: ObserveOptions,
+    },
     Goto {
         url: String,
     },
@@ -1943,6 +2593,12 @@ enum FlowStep {
         ref_id: String,
         action: RefAction,
     },
+    /// Resolved to a ref by accessible role and name when the step runs.
+    Named {
+        role: String,
+        name: String,
+        action: RefAction,
+    },
     Scroll {
         ref_id: String,
         direction: ScrollDirection,
@@ -1951,10 +2607,64 @@ enum FlowStep {
     Wait {
         ms: u64,
     },
+    WaitFor {
+        condition: WaitCondition,
+        timeout_ms: u64,
+    },
     ReadText {
         #[serde(default, rename = "frameId")]
         frame_id: Option<String>,
     },
+}
+
+#[derive(Debug, Clone)]
+enum WaitCondition {
+    Text(String),
+    TextGone(String),
+    Ref { ref_id: String, state: WaitState },
+}
+
+impl WaitCondition {
+    fn describe(&self) -> String {
+        match self {
+            Self::Text(text) => format!("text {} appears", json!(text)),
+            Self::TextGone(text) => format!("text {} is gone", json!(text)),
+            Self::Ref { ref_id, state } => format!("{ref_id} is {}", state.name()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum WaitState {
+    Visible,
+    Hidden,
+    Enabled,
+    Disabled,
+}
+
+impl WaitState {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Visible => "visible",
+            Self::Hidden => "hidden",
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+/// Condition waits are an act contract; batch.flow and legacy flow.act keep ms.
+fn reject_condition_waits(steps: &[FlowStep], tool: &str) -> Result<(), FacadeError> {
+    if steps
+        .iter()
+        .any(|step| matches!(step, FlowStep::WaitFor { .. }))
+    {
+        return Err(FacadeError::InvalidInput(format!(
+            "{tool} wait takes ms; condition waits (text/textGone/refId) are browser.act steps"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -1976,6 +2686,7 @@ enum RefAction {
     Click,
     Fill(String),
     Select(String),
+    Check(bool),
 }
 
 // Deserialize the complete request before doing any browser work. In particular,
@@ -1988,32 +2699,40 @@ enum RefAction {
     deny_unknown_fields
 )]
 enum RawFlowStep {
+    Observe {
+        #[serde(flatten)]
+        options: ObserveOptions,
+    },
+    #[serde(alias = "navigate")]
     Goto {
         url: String,
     },
+    #[serde(alias = "evaluate")]
     Eval {
         code: String,
         frame_id: Option<String>,
     },
     Click {
-        css: Option<String>,
-        ref_id: Option<String>,
-        frame_id: Option<String>,
+        #[serde(flatten)]
+        target: RawTarget,
     },
     Fill {
-        css: Option<String>,
-        ref_id: Option<String>,
-        frame_id: Option<String>,
+        #[serde(flatten)]
+        target: RawTarget,
         value: String,
     },
     Select {
-        css: Option<String>,
-        ref_id: Option<String>,
-        frame_id: Option<String>,
+        #[serde(flatten)]
+        target: RawTarget,
         value: String,
     },
     Wait {
-        ms: u64,
+        ms: Option<u64>,
+        text: Option<String>,
+        text_gone: Option<String>,
+        ref_id: Option<String>,
+        state: Option<WaitState>,
+        timeout_ms: Option<u64>,
     },
     ReadText {
         frame_id: Option<String>,
@@ -2025,6 +2744,23 @@ enum RawFlowStep {
         #[serde(default = "default_scroll_amount")]
         amount: u32,
     },
+    Check {
+        #[serde(flatten)]
+        target: RawTarget,
+        #[serde(default = "default_true")]
+        checked: bool,
+    },
+}
+
+/// One of css (+ frameId), refId, or role + name.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawTarget {
+    css: Option<String>,
+    ref_id: Option<String>,
+    frame_id: Option<String>,
+    role: Option<String>,
+    name: Option<String>,
 }
 
 impl TryFrom<RawFlowStep> for FlowStep {
@@ -2032,6 +2768,7 @@ impl TryFrom<RawFlowStep> for FlowStep {
 
     fn try_from(raw: RawFlowStep) -> Result<Self, Self::Error> {
         match raw {
+            RawFlowStep::Observe { options } => Ok(Self::Observe { options }),
             RawFlowStep::Scroll {
                 ref_id,
                 direction,
@@ -2046,65 +2783,435 @@ impl TryFrom<RawFlowStep> for FlowStep {
                     amount,
                 })
             }
+            RawFlowStep::Check { target, checked } => {
+                if target.css.is_some() {
+                    return Err("check requires a refId or role + name, not css".to_string());
+                }
+                Self::from_target(target, RefAction::Check(checked))
+            }
             RawFlowStep::Goto { url } => Ok(Self::Goto { url }),
-            RawFlowStep::Eval { code, frame_id } => Ok(Self::Eval { code, frame_id }),
-            RawFlowStep::Wait { ms } => Ok(Self::Wait { ms }),
+            RawFlowStep::Eval { code, frame_id } => {
+                if code.is_empty() {
+                    return Err("evaluation code must be nonempty".to_string());
+                }
+                Ok(Self::Eval { code, frame_id })
+            }
+            RawFlowStep::Wait {
+                ms,
+                text,
+                text_gone,
+                ref_id,
+                state,
+                timeout_ms,
+            } => Self::wait(ms, text, text_gone, ref_id, state, timeout_ms),
             RawFlowStep::ReadText { frame_id } => Ok(Self::ReadText { frame_id }),
-            RawFlowStep::Click {
-                css,
-                ref_id,
-                frame_id,
-            } => Self::from_target(css, ref_id, frame_id, RefAction::Click),
-            RawFlowStep::Fill {
-                css,
-                ref_id,
-                frame_id,
-                value,
-            } => Self::from_target(css, ref_id, frame_id, RefAction::Fill(value)),
-            RawFlowStep::Select {
-                css,
-                ref_id,
-                frame_id,
-                value,
-            } => Self::from_target(css, ref_id, frame_id, RefAction::Select(value)),
+            RawFlowStep::Click { target } => Self::from_target(target, RefAction::Click),
+            RawFlowStep::Fill { target, value } => {
+                Self::from_target(target, RefAction::Fill(value))
+            }
+            RawFlowStep::Select { target, value } => {
+                Self::from_target(target, RefAction::Select(value))
+            }
         }
     }
 }
 
 impl FlowStep {
-    fn from_target(
-        css: Option<String>,
-        ref_id: Option<String>,
-        frame_id: Option<String>,
-        action: RefAction,
-    ) -> Result<Self, String> {
-        match (css, ref_id) {
-            (Some(css), None) if !css.trim().is_empty() => Ok(match action {
+    fn from_target(target: RawTarget, action: RefAction) -> Result<Self, String> {
+        let RawTarget {
+            css,
+            ref_id,
+            frame_id,
+            role,
+            name,
+        } = target;
+        match (css, ref_id, role, name) {
+            (Some(css), None, None, None) if !css.trim().is_empty() => Ok(match action {
                 RefAction::Click => Self::Click { css, frame_id },
                 RefAction::Fill(value) => Self::Fill { css, value, frame_id },
                 RefAction::Select(value) => Self::Select { css, value, frame_id },
+                RefAction::Check(_) => unreachable!("check rejects css before this point"),
             }),
-            (None, Some(ref_id)) if !ref_id.trim().is_empty() && frame_id.is_none() => Ok(Self::Ref { ref_id, action }),
-            _ => Err("click/fill/select require exactly one nonempty css or refId; refId already identifies its frame and cannot be combined with frameId".to_string()),
+            (None, Some(ref_id), None, None) if !ref_id.trim().is_empty() && frame_id.is_none() => {
+                Ok(Self::Ref { ref_id, action })
+            }
+            (None, None, Some(role), Some(name))
+                if !role.trim().is_empty() && !name.trim().is_empty() && frame_id.is_none() =>
+            {
+                Ok(Self::Named { role, name, action })
+            }
+            _ => Err("element steps take exactly one target: nonempty css (optionally with frameId), refId, or role + name (main frame)".to_string()),
+        }
+    }
+
+    fn wait(
+        ms: Option<u64>,
+        text: Option<String>,
+        text_gone: Option<String>,
+        ref_id: Option<String>,
+        state: Option<WaitState>,
+        timeout_ms: Option<u64>,
+    ) -> Result<Self, String> {
+        let condition = match (text, text_gone, ref_id, state) {
+            (Some(text), None, None, None) if !text.trim().is_empty() => {
+                Some(WaitCondition::Text(text))
+            }
+            (None, Some(text), None, None) if !text.trim().is_empty() => {
+                Some(WaitCondition::TextGone(text))
+            }
+            (None, None, Some(ref_id), Some(state)) if !ref_id.trim().is_empty() => {
+                Some(WaitCondition::Ref { ref_id, state })
+            }
+            (None, None, None, None) => None,
+            _ => return Err("wait requires exactly one condition: nonempty text, nonempty textGone, or refId with state (visible|hidden|enabled|disabled)".to_string()),
+        };
+        match (ms, condition) {
+            (Some(ms), None) if timeout_ms.is_none() => Ok(Self::Wait { ms }),
+            (None, Some(condition)) => {
+                let timeout_ms = timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
+                if !(1..=MAX_WAIT_TIMEOUT_MS).contains(&timeout_ms) {
+                    return Err(format!(
+                        "wait timeoutMs must be between 1 and {MAX_WAIT_TIMEOUT_MS}"
+                    ));
+                }
+                Ok(Self::WaitFor {
+                    condition,
+                    timeout_ms,
+                })
+            }
+            (None, None) => Err("wait requires a condition (text, textGone, or refId with state) or, in batch.flow and flow.act, ms".to_string()),
+            _ => Err("wait takes either ms or a condition with optional timeoutMs, not both".to_string()),
+        }
+    }
+
+    fn within_ceiling(self) -> Result<Self, FacadeError> {
+        match self {
+            Self::Observe { options } => Ok(Self::Observe {
+                options: options.within_ceiling()?,
+            }),
+            other => Ok(other),
         }
     }
 
     fn kind(&self) -> &'static str {
         match self {
-            Self::Goto { .. } => "goto",
-            Self::Eval { .. } => "eval",
+            Self::Observe { .. } => "observe",
+            Self::Goto { .. } => "navigate",
+            Self::Eval { .. } => "evaluate",
             Self::Click { .. } => "click",
             Self::Fill { .. } => "fill",
             Self::Select { .. } => "select",
-            Self::Ref { action, .. } => match action {
+            Self::Ref { action, .. } | Self::Named { action, .. } => match action {
                 RefAction::Click => "click",
                 RefAction::Fill(_) => "fill",
                 RefAction::Select(_) => "select",
+                RefAction::Check(_) => "check",
             },
             Self::Scroll { .. } => "scroll",
-            Self::Wait { .. } => "wait",
+            Self::Wait { .. } | Self::WaitFor { .. } => "wait",
             Self::ReadText { .. } => "read_text",
         }
+    }
+}
+
+/// Result shape of a step sequence: act/batch.flow are slim and model-facing;
+/// legacy flow.act keeps its 1.3 envelope and goto/eval names.
+#[derive(Clone, Copy)]
+enum StepShape {
+    Slim,
+    Legacy,
+}
+
+/// What a step targeted, captured before the step is consumed by execution.
+struct StepLabel {
+    kind: &'static str,
+    ref_id: Option<String>,
+    /// `role "name"` for a step targeted by accessible role and name.
+    named: Option<String>,
+    checked: Option<bool>,
+}
+
+impl StepLabel {
+    fn of(step: &FlowStep) -> Self {
+        let (ref_id, checked) = match step {
+            FlowStep::Ref { ref_id, action } => (
+                Some(ref_id.clone()),
+                match action {
+                    RefAction::Check(checked) => Some(*checked),
+                    _ => None,
+                },
+            ),
+            FlowStep::Named { action, .. } => (
+                None,
+                match action {
+                    RefAction::Check(checked) => Some(*checked),
+                    _ => None,
+                },
+            ),
+            FlowStep::Scroll { ref_id, .. } => (Some(ref_id.clone()), None),
+            _ => (None, None),
+        };
+        let named = match step {
+            FlowStep::Named { role, name, .. } => Some(format!("{role} {name:?}")),
+            _ => None,
+        };
+        Self {
+            kind: step.kind(),
+            ref_id,
+            named,
+            checked,
+        }
+    }
+
+    fn legacy_kind(&self) -> &'static str {
+        match self.kind {
+            "navigate" => "goto",
+            "evaluate" => "eval",
+            other => other,
+        }
+    }
+
+    fn legacy(&self, index: usize, mut value: Map<String, Value>) -> Value {
+        value.insert("index".to_string(), json!(index));
+        value.insert("type".to_string(), json!(self.legacy_kind()));
+        value.insert("status".to_string(), json!("ok"));
+        Value::Object(value)
+    }
+
+    fn head(&self) -> Map<String, Value> {
+        let mut entry = Map::from_iter([("type".to_string(), json!(self.kind))]);
+        if let Some(ref_id) = &self.ref_id {
+            entry.insert("refId".to_string(), json!(ref_id));
+        }
+        if let Some(named) = &self.named {
+            entry.insert("target".to_string(), json!(named));
+        }
+        if let Some(checked) = self.checked {
+            entry.insert("checked".to_string(), json!(checked));
+        }
+        entry
+    }
+
+    /// Keeps only what the caller cannot already infer from its own request.
+    fn slim(&self, value: Map<String, Value>) -> Value {
+        let mut entry = self.head();
+        let text = || extract_text(&Value::Object(value.clone())).unwrap_or_default();
+        match self.kind {
+            "observe" => {
+                entry.insert("content".to_string(), value["content"].clone());
+            }
+            "navigate" => {
+                let text = text();
+                let url = text.strip_prefix("Navigated to ").unwrap_or(&text);
+                entry.insert("url".to_string(), json!(url));
+            }
+            "evaluate" | "scroll" => {
+                let text = text();
+                let result = serde_json::from_str(&text).unwrap_or(Value::String(text));
+                entry.insert("result".to_string(), result);
+            }
+            "wait" => {
+                for key in ["met", "ms", "condition", "lastError"] {
+                    if let Some(field) = value.get(key) {
+                        entry.insert(key.to_string(), field.clone());
+                    }
+                }
+            }
+            "read_text" => {
+                entry.insert("text".to_string(), value["text"].clone());
+            }
+            "click" | "fill" | "select" | "check" => {
+                for key in ["refId", "changes"] {
+                    if let Some(field) = value.get(key) {
+                        entry.insert(key.to_string(), field.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+        Value::Object(entry)
+    }
+
+    fn slim_failure(&self, error: &FacadeError) -> Value {
+        let mut entry = self.head();
+        entry.insert("error".to_string(), json!(step_error(error)));
+        Value::Object(entry)
+    }
+}
+
+/// The extension prefixes every failure to resolve an observation scope.
+fn is_stale_scope(error: &FacadeError) -> bool {
+    matches!(error, FacadeError::ToolFailed { message, .. } if message.contains("Scoped ref "))
+}
+
+/// The step already names its tool; keep the browser's own message.
+fn step_error(error: &FacadeError) -> String {
+    match error {
+        FacadeError::ToolFailed { message, .. } => message
+            .strip_prefix("Error: ")
+            .unwrap_or(message)
+            .to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Model-facing text for a browser.act result: the failure first (it survives
+/// error truncation), then the target, then one line per completed step.
+pub fn render_act(value: &Value) -> String {
+    let results = value["results"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let failed = value["stoppedAt"].as_u64().map(|index| index as usize);
+    let mut lines = Vec::with_capacity(results.len() + 2);
+    if let Some(index) = failed {
+        let entry = &results[index];
+        let target = entry["refId"]
+            .as_str()
+            .or(entry["target"].as_str())
+            .map(|target| format!(" {target}"))
+            .unwrap_or_default();
+        lines.push(format!(
+            "failed at step {} ({}{target}): {}",
+            index + 1,
+            entry["type"].as_str().unwrap_or("step"),
+            entry["error"].as_str().unwrap_or("unknown error")
+        ));
+    }
+    lines.push(format!(
+        "targetId: {}",
+        value["targetId"].as_str().unwrap_or("")
+    ));
+    for entry in &results[..failed.unwrap_or(results.len())] {
+        let ref_id = entry["refId"].as_str().unwrap_or("");
+        let element = match entry["target"].as_str() {
+            Some(target) => format!("{ref_id} ({target})"),
+            None => ref_id.to_string(),
+        };
+        let kind = entry["type"].as_str().unwrap_or("");
+        let changed = changes_line(kind, &entry["changes"]);
+        lines.push(match kind {
+            "click" => format!("clicked {element}{changed}"),
+            "fill" => format!("filled {element}{changed}"),
+            "select" => format!("selected {element}{changed}"),
+            "check" if entry["checked"] == json!(false) => {
+                format!("unchecked {element}{changed}")
+            }
+            "check" => format!("checked {element}{changed}"),
+            "scroll" => scroll_line(ref_id, &entry["result"]),
+            "navigate" => format!("navigated: {}", plain(&entry["url"])),
+            "evaluate" => format!("evaluated: {}", plain(&entry["result"])),
+            "observe" => format!("observed:\n{}", plain(&entry["content"])),
+            "wait" => wait_line(entry),
+            other => format!("{other}: {entry}"),
+        });
+    }
+    lines.join("\n")
+}
+
+/// `→ opened …; alert …; text …` after an element action. A click with no
+/// visible effect says so, which tells the caller it likely missed; a fill or
+/// check usually changes nothing visible and then reports nothing. Empty when
+/// the step did not report changes (legacy shapes).
+fn changes_line(kind: &str, changes: &Value) -> String {
+    let Some(report) = changes.as_object() else {
+        return String::new();
+    };
+    let list = |key: &str| -> Vec<String> {
+        report
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|items| items.iter().map(plain).collect())
+            .unwrap_or_default()
+    };
+    let mut parts = Vec::new();
+    if let Some(url) = report.get("navigated").and_then(Value::as_str) {
+        parts.push(format!("navigated to {url}"));
+    }
+    for (key, verb) in [
+        ("opened", "opened"),
+        ("closed", "closed"),
+        ("alerts", "alert"),
+    ] {
+        parts.extend(list(key).into_iter().map(|item| format!("{verb} {item}")));
+    }
+    let added = list("added");
+    if !added.is_empty() {
+        parts.push(format!(
+            "text {}",
+            added
+                .iter()
+                .map(|text| format!("{text:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    let settled = report.get("settledMs").map(plain).unwrap_or_default();
+    let quiet = if report.get("quiet") == Some(&json!(false)) {
+        "still changing"
+    } else {
+        "settled"
+    };
+    if parts.is_empty() && kind != "click" {
+        String::new()
+    } else if parts.is_empty() {
+        format!(" → no visible change ({quiet} {settled}ms)")
+    } else {
+        format!(" → {} ({quiet} {settled}ms)", parts.join("; "))
+    }
+}
+
+fn wait_line(entry: &Value) -> String {
+    let (ms, condition) = (plain(&entry["ms"]), plain(&entry["condition"]));
+    if entry["met"] == json!(true) {
+        return format!("waited {ms}ms until {condition}");
+    }
+    let mut line = format!("wait not met after {ms}ms: {condition}");
+    if let Some(error) = entry["lastError"].as_str() {
+        line.push_str(&format!(
+            " (last check failed: {})",
+            error.strip_prefix("Error: ").unwrap_or(error)
+        ));
+    }
+    line.push_str("; continuing");
+    line
+}
+
+/// Names the element that actually moved, which may be an ancestor or the
+/// document rather than the requested ref.
+fn scroll_line(ref_id: &str, result: &Value) -> String {
+    let scrolled = result["scrolled"].as_str().unwrap_or(ref_id);
+    let mut line = format!("scrolled {scrolled}");
+    if scrolled != ref_id {
+        line.push_str(&format!(" (from {ref_id})"));
+    }
+    let moved: Vec<String> = [("dx", "x"), ("dy", "y")]
+        .iter()
+        .filter_map(|(label, axis)| {
+            let delta = result["delta"][axis].as_f64()?.round();
+            (delta != 0.0).then(|| format!("{label}={delta}"))
+        })
+        .collect();
+    line.push_str(&if moved.is_empty() {
+        " without moving".to_string()
+    } else {
+        format!(" {}", moved.join(" "))
+    });
+    if result["boundary"] == json!(true) {
+        line.push_str("; at the end");
+    }
+    line
+}
+
+/// Model-facing text for a browser.observe result: the observation itself.
+pub fn render_observe(value: &Value) -> String {
+    plain(&value["content"])
+}
+
+fn plain(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
     }
 }
 
@@ -2303,6 +3410,16 @@ fn javascript_string_result(result: &Value) -> Result<String, FacadeError> {
     }
 }
 
+/// Rendered main-frame text, compared case- and whitespace-insensitively:
+/// CSS text-transform changes innerText but not the accessible name a model
+/// copies from an observation.
+fn text_present_script(text: &str) -> Result<String, FacadeError> {
+    let needle = serde_json::to_string(text)?;
+    Ok(format!(
+        "(() => {{ const n = (s) => s.replace(/\\s+/g, ' ').trim().toLowerCase(); return n(document.body?.innerText ?? '').includes(n({needle})); }})()"
+    ))
+}
+
 fn click_script(css: &str) -> Result<String, FacadeError> {
     let selector = serde_json::to_string(css)?;
     Ok(format!(
@@ -2480,10 +3597,10 @@ fn dedupe_links(links: &mut Vec<ExtractLink>) {
     links.retain(|link| seen.insert((link.url.clone(), link.text.clone())));
 }
 
-fn enforce_extract_limits(
+fn enforce_extract_limits<B>(
     text: &mut String,
     links: &mut Vec<ExtractLink>,
-    options: &ExtractOptions,
+    options: &ExtractOptions<B>,
 ) {
     *text = truncate_chars(text, options.max_chars as usize);
 
@@ -2645,13 +3762,14 @@ fn extract_created_tab_id_from_text(value: &Value) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     use super::{
         click_script, enforce_extract_limits, extract_tab_id, fill_script, has_page_text,
-        new_flow_session_id, parse_dom_snapshot, select_script, BatchFlowArgs, BatchRunArgs,
-        CurrentExtractArgs, ExtractArgs, ExtractLink, ExtractOptions, FlowActArgs, FlowStep,
-        NetworkCaptureArgs,
+        new_flow_session_id, parse_args, parse_dom_snapshot, reject_condition_waits, select_script,
+        single_result, BatchFlowArgs, BatchRunArgs, CurrentExtractArgs, ExtractArgs, ExtractLink,
+        ExtractOptions, FlowActArgs, FlowStep, NetworkCaptureArgs, RefAction, StepLabel,
+        TargetActArgs,
     };
 
     #[test]
@@ -2796,7 +3914,31 @@ mod tests {
         }
         let observe: super::FlowObserveArgs =
             serde_json::from_value(json!({"sessionId":"s"})).unwrap();
-        assert!(matches!(observe.mode, super::ObserveMode::A11y));
+        assert!(matches!(observe.options.mode, super::ObserveMode::A11y));
+        let scoped: super::FlowObserveArgs = serde_json::from_value(json!({
+            "sessionId":"s", "refId":"ref_scope", "filter":"interactive", "depth":3,
+            "maxChars":1000, "compact":false
+        }))
+        .unwrap();
+        assert_eq!(scoped.options.ref_id.as_deref(), Some("ref_scope"));
+        for option in [
+            json!({"refId":"r"}),
+            json!({"filter":"all"}),
+            json!({"depth":2}),
+            json!({"compact":true}),
+        ] {
+            let mut input = json!({"sessionId":"s", "mode":"text"});
+            input
+                .as_object_mut()
+                .unwrap()
+                .extend(option.as_object().unwrap().clone());
+            assert!(serde_json::from_value::<super::FlowObserveArgs>(input).is_err());
+        }
+        // Budget and continuation are not a11y-specific.
+        assert!(serde_json::from_value::<super::FlowObserveArgs>(
+            json!({"sessionId":"s","mode":"text","maxChars":100,"cursor":100})
+        )
+        .is_ok());
         assert!(BatchFlowArgs::parse(json!({"urls":["https://example.test"],"steps":[{"type":"click","refId":"ref_snapshot_1"}]}).as_object().unwrap().clone()).is_err());
     }
 
@@ -2855,6 +3997,109 @@ mod tests {
                 frame_id: Some(frame_id)
             } if frame_id == "child-1"
         ));
+    }
+
+    #[test]
+    fn check_steps_are_ref_only_and_default_to_checked() {
+        let args: TargetActArgs = serde_json::from_value(json!({
+            "targetId": "t",
+            "steps": [
+                {"type": "check", "refId": "kqx1"},
+                {"type": "check", "refId": "kqx2", "checked": false}
+            ]
+        }))
+        .unwrap();
+        assert!(
+            matches!(&args.steps[0], FlowStep::Ref { ref_id, action: RefAction::Check(true) } if ref_id == "kqx1")
+        );
+        assert!(matches!(
+            &args.steps[1],
+            FlowStep::Ref {
+                action: RefAction::Check(false),
+                ..
+            }
+        ));
+        assert_eq!(args.steps[0].kind(), "check");
+        for invalid in [
+            json!({"type":"check","refId":""}),
+            json!({"type":"check","css":"input"}),
+            json!({"type":"check","refId":"kqx1","frameId":"child"}),
+            json!({"type":"check","refId":"kqx1","checked":"yes"}),
+        ] {
+            assert!(serde_json::from_value::<TargetActArgs>(
+                json!({"targetId":"t","steps":[invalid]})
+            )
+            .is_err());
+        }
+        // New tabs have no refs to check.
+        assert!(BatchFlowArgs::parse(
+            json!({"urls":["https://example.test"],"steps":[{"type":"check","refId":"kqx1"}]})
+                .as_object()
+                .unwrap()
+                .clone()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn batch_flow_accepts_act_step_names_and_reports_them() {
+        let args = BatchFlowArgs::parse(
+            json!({
+                "urls": ["https://example.test/a"],
+                "steps": [
+                    {"type": "navigate", "url": "https://example.test/b"},
+                    {"type": "evaluate", "code": "document.title"},
+                    {"type": "observe", "filter": "interactive"},
+                    {"type": "goto", "url": "https://example.test/c"},
+                    {"type": "eval", "code": "1"}
+                ]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )
+        .unwrap();
+        let kinds: Vec<_> = args.steps.iter().map(FlowStep::kind).collect();
+        assert_eq!(
+            kinds,
+            ["navigate", "evaluate", "observe", "navigate", "evaluate"]
+        );
+        let label = StepLabel::of(&args.steps[1]);
+        let slim = label.slim(single_result(
+            json!({"content":[{"type":"text","text":"{\"title\":\"A\"}"}]}),
+        ));
+        assert_eq!(slim, json!({"type":"evaluate","result":{"title":"A"}}));
+        assert_eq!(label.legacy_kind(), "eval");
+    }
+
+    #[test]
+    fn batch_flow_and_legacy_flow_keep_ms_waits() {
+        let parse = |steps: Value| {
+            BatchFlowArgs::parse(
+                json!({"urls": ["https://example.test/a"], "steps": steps})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+        };
+        let args = parse(json!([{"type": "wait", "ms": 0}])).unwrap();
+        assert!(matches!(args.steps[0], FlowStep::Wait { ms: 0 }));
+        let error = parse(json!([{"type": "wait", "text": "Done"}]))
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            error.contains("browser.batch.flow wait takes ms"),
+            "{error}"
+        );
+        let legacy = parse_args::<FlowActArgs>(
+            json!({"sessionId": "s", "steps": [{"type": "wait", "textGone": "Loading"}]})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+        .unwrap();
+        assert!(reject_condition_waits(&legacy.steps, "browser.flow.act").is_err());
     }
 
     #[test]
@@ -2955,7 +4200,7 @@ mod tests {
                 source: "dom".to_string(),
             },
         ];
-        let options = ExtractOptions {
+        let options: ExtractOptions = ExtractOptions {
             min_chars: 1,
             max_chars: 3,
             max_links: 1,

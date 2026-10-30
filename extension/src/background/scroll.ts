@@ -7,7 +7,46 @@ export interface ScrollObservation {
   extent: { x: number; y: number }
   moved: boolean
   boundary: boolean | null
+  // The frame's document scroller rather than an element box.
+  document: boolean
   renderSynchronized: true
+}
+
+// Serialized: the element a user scroll at `this` would move along the axis —
+// itself or its nearest composed ancestor that overflows on that axis with a
+// scrollable overflow style, else the document scroller, else null.
+export function scrollerFor(this: Element, direction: string): Element | null {
+  const vertical = direction === 'up' || direction === 'down'
+  const doc = this.ownerDocument
+  const root = doc.scrollingElement
+  const overflows = (n: Element): boolean =>
+    vertical ? n.scrollHeight > n.clientHeight : n.scrollWidth > n.clientWidth
+  for (
+    let n: Element | null = this;
+    n && n !== root && n !== doc.documentElement;
+    n =
+      n.parentElement ??
+      (n.getRootNode() instanceof ShadowRoot ? (n.getRootNode() as ShadowRoot).host : null)
+  ) {
+    const style = getComputedStyle(n)
+    const overflow = vertical ? style.overflowY : style.overflowX
+    // A visible-overflow <html> propagates body's overflow to the viewport,
+    // so body is then not a scroll container of its own.
+    if (
+      n === doc.body &&
+      getComputedStyle(doc.documentElement)[vertical ? 'overflowY' : 'overflowX'] === 'visible'
+    )
+      continue
+    // Ancestors with overflow:hidden often overflow by a pixel without being
+    // meant to scroll; only the explicit target may be one.
+    const scrollable =
+      overflow === 'auto' ||
+      overflow === 'scroll' ||
+      overflow === 'overlay' ||
+      (n === this && overflow === 'hidden')
+    if (scrollable && overflows(n)) return n
+  }
+  return root && overflows(root) ? root : null
 }
 
 export async function scrollAndObserve(
@@ -66,5 +105,15 @@ export async function scrollAndObserve(
     throw new Error(
       'Scroll made no progress away from a boundary; inspect scroll handlers or snap points. No retry was performed.',
     )
-  return { before, after, requested, delta, extent, moved, boundary, renderSynchronized: true }
+  return {
+    before,
+    after,
+    requested,
+    delta,
+    extent,
+    moved,
+    boundary,
+    document: this === this.ownerDocument.scrollingElement,
+    renderSynchronized: true,
+  }
 }

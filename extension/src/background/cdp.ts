@@ -6,7 +6,12 @@ import { formatDebuggerAttachError, getDebuggerTargetBlockReason } from './debug
 type EventCallback = (params: unknown) => void
 type DetachCallback = (tabId: number) => void
 
-const CDP_COMMAND_TIMEOUT_MS = 5_000
+// Shared by every CDP command; a timeout also detaches the debugger, so a
+// longer bound would hold up recovery for all commands, not just evaluations.
+export const CDP_COMMAND_TIMEOUT_MS = 5_000
+
+/** A CDP command got no reply within CDP_COMMAND_TIMEOUT_MS. */
+export class CdpCommandTimeout extends Error {}
 
 /**
  * CDPSession manages chrome.debugger attachments and routes CDP events
@@ -187,7 +192,7 @@ export class CDPSession {
         settled = true
         this.forceDetach(tabId)
         reject(
-          new Error(
+          new CdpCommandTimeout(
             `CDP command "${method}" timed out for tab ${tabId} after ${CDP_COMMAND_TIMEOUT_MS}ms`,
           ),
         )

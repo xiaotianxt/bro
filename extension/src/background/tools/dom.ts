@@ -1,10 +1,10 @@
 // DOM tools — read_page, find, get_page_text, form_input, javascript_tool
 
 import type { ToolResult } from '@bro/shared'
-import { cdpSession } from '../cdp.js'
+import { CDP_COMMAND_TIMEOUT_MS, CdpCommandTimeout, cdpSession } from '../cdp.js'
 import { getBrowserFrames, sendToFrame } from '../frames.js'
 import { registerTool } from '../tool-registry.js'
-import { readAXPage, findAX, refTool, waitAX } from './accessibility.js'
+import { readAXPage, findAX, refTool, waitAX, actElement } from './accessibility.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -195,9 +195,15 @@ async function evaluateInPage(
   if (frameId !== undefined && !frame) throw new Error(`Frame ${frameId} is no longer available`)
   const world = frame === undefined ? undefined : await sendToFrame<{ executionContextId: number }>(tabId, frame, 'Page.createIsolatedWorld', { frameId, worldName: 'bro', grantUniveralAccess: false })
   const contextId = world?.executionContextId
-  const evaluate = (params: object): Promise<CDPEvaluateResult> => frame === undefined
-    ? cdpSession.send(tabId, 'Runtime.evaluate', params)
-    : sendToFrame(tabId, frame, 'Runtime.evaluate', params)
+  const evaluate = (params: object): Promise<CDPEvaluateResult> => (frame === undefined
+    ? cdpSession.send<CDPEvaluateResult>(tabId, 'Runtime.evaluate', params)
+    : sendToFrame<CDPEvaluateResult>(tabId, frame, 'Runtime.evaluate', params)
+  ).catch((error: unknown) => {
+    if (!(error instanceof CdpCommandTimeout)) throw error
+    throw new Error(
+      `evaluate got no result within ${CDP_COMMAND_TIMEOUT_MS}ms: the expression awaited too long or the page's main thread was busy. Instead of a timer, use a wait step for the text or ref state you expect, then evaluate a shorter expression.`,
+    )
+  })
   if (awaitPromise) {
     // Async wrapper: await the eval result, then return {result, isError}.
     // CDP awaitPromise:true ensures the outer Promise (from async IIFE) is
@@ -236,13 +242,16 @@ async function evaluateInPage(
 // self-contained and cannot reference any outer scope variables.
 // ---------------------------------------------------------------------------
 
-function pageGetBodyText(maxChars: number): string {
+// `cursor` is a character offset into the same text, so a truncated read can
+// be continued without re-reading what the caller already has.
+function pageGetBodyText(maxChars: number, cursor: number): string {
   const body = document.body
   if (!body) return ''
   const raw = (body as HTMLBodyElement).innerText?.trim() ?? ''
-  return raw.length > maxChars
-    ? raw.slice(0, maxChars) + '\n[... truncated ...]'
-    : raw
+  const end = cursor + maxChars
+  return end < raw.length
+    ? raw.slice(cursor, end) + `\n[Truncated; continue with cursor=${end}.]`
+    : raw.slice(cursor)
 }
 
 async function pageExtractStable(options: {
@@ -490,11 +499,12 @@ async function executeGetPageText(
       ? (rawArgs as Record<string, unknown>)
       : {}
   const maxChars = getClampedInteger(args, 'maxChars', 12000, 1, 60000)
+  const cursor = getClampedInteger(args, 'cursor', 0, 0, 10_000_000)
 
   const text = await executeInPage(
     tabId,
     pageGetBodyText,
-    [maxChars],
+    [maxChars, cursor],
   ) as string
 
   return {
@@ -659,3 +669,4 @@ registerTool('scroll_element', (tabId, args) => refTool('scroll_element', tabId,
 registerTool('fill_element', (tabId, args) => refTool('fill_element', tabId, args))
 registerTool('get_element_info', (tabId, args) => refTool('get_element_info', tabId, args))
 registerTool('wait_for_element', waitAX)
+registerTool('act_element', actElement)

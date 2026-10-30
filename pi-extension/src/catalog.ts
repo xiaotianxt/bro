@@ -179,12 +179,27 @@ function toolPiVisibility(tool: Tool): string | undefined {
   return typeof visibility === "string" && visibility.length > 0 ? visibility : undefined;
 }
 
+export function defaultBroTools(catalog: BroCatalogTool[]): BroCatalogTool[] {
+  const serverOwnsDefaults = catalog.some((tool) => typeof tool.upstream._meta?.["bro/default"] === "boolean");
+  return catalog.filter((tool) => serverOwnsDefaults
+    ? tool.upstream._meta?.["bro/default"] === true
+    : DEFAULT_ACTIVE_UPSTREAM_TOOLS.has(tool.upstream.name));
+}
+
 export function prepareBroArguments(
   upstreamName: string,
   args: unknown,
   session: BroSessionDescriptor,
 ): unknown {
-  if (!isRecord(args) || !PI_SESSION_TOOLS.has(upstreamName)) return args;
+  if (!isRecord(args)) return args;
+  if (upstreamName === "browser.open") {
+    return {
+      ...args,
+      ...(args.ownerSessionId === undefined && session.id ? { ownerSessionId: session.id } : {}),
+      ...(args.label === undefined && session.name ? { label: session.name } : {}),
+    };
+  }
+  if (!PI_SESSION_TOOLS.has(upstreamName)) return args;
 
   const prepared: Record<string, unknown> = { ...args };
   if (prepared.sessionId === undefined && session.id) {

@@ -2,6 +2,7 @@
 
 import type { ToolResult } from '@bro/shared'
 import { registerTool } from '../tool-registry.js'
+import { navigateDocument } from '../navigation.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -77,7 +78,7 @@ function validateResizeWindowArgs(args: unknown): ResizeWindowArgs {
  * Waits for the given tab to finish loading (status === 'complete').
  * Times out after 30 seconds.
  */
-function waitForTabComplete(tabId: number): Promise<string> {
+function waitForTabComplete(tabId: number, dispatch: () => Promise<void>): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const TIMEOUT_MS = 30_000
 
@@ -100,6 +101,11 @@ function waitForTabComplete(tabId: number): Promise<string> {
     }
 
     chrome.tabs.onUpdated.addListener(listener)
+    void dispatch().catch((error) => {
+      clearTimeout(timeout)
+      chrome.tabs.onUpdated.removeListener(listener)
+      reject(error)
+    })
   })
 }
 
@@ -111,28 +117,16 @@ async function executeNavigate(tabId: number, rawArgs: unknown): Promise<ToolRes
   const args = validateNavigateArgs(rawArgs)
 
   if (args.url !== undefined) {
-    // Register listener BEFORE initiating navigation (Fix 4: prevents race where fast
-    // navigations complete before the listener is attached, causing 30s timeout)
-    const completionPromise = waitForTabComplete(tabId)
-    await chrome.tabs.update(tabId, { url: args.url })
-    const finalUrl = await completionPromise
+    const finalUrl = await navigateDocument(tabId, args.url)
     const displayUrl = finalUrl || args.url
     return {
       content: [{ type: 'text', text: `Navigated to ${displayUrl}` }],
     }
   }
 
-  // Register listener BEFORE initiating navigation (Fix 4: same race condition prevention)
-  const completionPromise = waitForTabComplete(tabId)
-
-  // Navigate back or forward using Chrome history
-  if (args.direction === 'back') {
-    await chrome.tabs.goBack(tabId)
-  } else {
-    await chrome.tabs.goForward(tabId)
-  }
-
-  const finalUrl = await completionPromise
+  const finalUrl = await waitForTabComplete(tabId, () =>
+    args.direction === 'back' ? chrome.tabs.goBack(tabId) : chrome.tabs.goForward(tabId),
+  )
 
   // Get the tab's current URL if waitForTabComplete didn't provide one
   let displayUrl = finalUrl
