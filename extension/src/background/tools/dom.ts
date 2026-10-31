@@ -129,31 +129,6 @@ async function executeInPage<T>(
   return res.result.value as T
 }
 
-async function executeInPageAwait<T>(
-  tabId: number,
-  func: (...args: any[]) => Promise<T>,
-  args: unknown[],
-): Promise<T> {
-  const argsJson = args.map((a) => JSON.stringify(a)).join(', ')
-  const expression = `(${func.toString()})(${argsJson})`
-
-  const res = await cdpSession.send<CDPEvaluateResult>(tabId, 'Runtime.evaluate', {
-    expression,
-    returnByValue: true,
-    awaitPromise: true,
-  })
-
-  if (res.exceptionDetails) {
-    const msg =
-      res.exceptionDetails.exception?.description ??
-      res.exceptionDetails.text ??
-      'Unknown error in page'
-    throw new Error(msg)
-  }
-
-  return res.result.value as T
-}
-
 async function waitForTabLoadComplete(
   tabId: number,
   guardMs: number,
@@ -254,18 +229,13 @@ function pageGetBodyText(maxChars: number, cursor: number): string {
     : raw.slice(cursor)
 }
 
-async function pageExtractStable(options: {
+// One read of the page; executeExtractPage polls it until it is stable.
+function pageExtractSnapshot(options: {
   maxChars: number
   maxLinks: number
-  minChars: number
-  quietMs: number
-  guardMs: number
-}): Promise<ExtractPageResult> {
+}): ExtractPageResult & { shell: boolean } {
   const maxChars = options.maxChars
   const maxLinks = options.maxLinks
-  const minChars = options.minChars
-  const quietMs = options.quietMs
-  const guardMs = options.guardMs
 
   function cleanText(value: unknown): string {
     return String(value ?? '').replace(/\s+/g, ' ').trim()
@@ -423,68 +393,8 @@ async function pageExtractStable(options: {
     }
   }
 
-  return await new Promise<ExtractPageResult>((resolve) => {
-    let finished = false
-    let quietTimer: ReturnType<typeof setTimeout> | undefined
-    let lastSignature = ''
-    let stableChecks = 0
-    const observer = new MutationObserver(() => scheduleCheck())
-
-    function finish(reason: string): void {
-      if (finished) return
-      finished = true
-      if (quietTimer !== undefined) clearTimeout(quietTimer)
-      observer.disconnect()
-      window.removeEventListener('load', scheduleCheck)
-      const result = snapshot()
-      result.readiness.reason = reason
-      resolve(result)
-    }
-
-    function scheduleCheck(): void {
-      if (finished) return
-      if (quietTimer !== undefined) clearTimeout(quietTimer)
-      quietTimer = setTimeout(checkStable, quietMs)
-    }
-
-    function checkStable(): void {
-      const current = snapshot()
-      const textHead = current.text.slice(0, 160)
-      const textTail = current.text.slice(-160)
-      const signature = `${current.text.length}:${current.links.length}:${document.readyState}:${textHead}:${textTail}`
-      if (signature === lastSignature) {
-        stableChecks += 1
-      } else {
-        stableChecks = 0
-        lastSignature = signature
-      }
-
-      const enoughText = current.text.length >= minChars
-      const documentReady = document.readyState !== 'loading'
-      if (
-        enoughText &&
-        documentReady &&
-        stableChecks >= 1 &&
-        !looksLikeNavigationShell(current.text)
-      ) {
-        finish('dom_quiet')
-      } else {
-        scheduleCheck()
-      }
-    }
-
-    const root = document.documentElement || document.body
-    if (root) {
-      observer.observe(root, {
-        childList: true,
-        subtree: true,
-        characterData: true,
-      })
-    }
-    window.addEventListener('load', scheduleCheck, { once: true })
-    scheduleCheck()
-    setTimeout(() => finish('guard'), guardMs)
-  })
+  const result = snapshot()
+  return { ...result, shell: looksLikeNavigationShell(result.text) }
 }
 
 // get_page_text tool
@@ -568,33 +478,45 @@ async function executeExtractPage(
 
   await waitForTabLoadComplete(tabId, EXTRACT_LOAD_GUARD_MS)
 
-  let result: ExtractPageResult | undefined
-  for (let attempt = 0; attempt < EXTRACT_MAX_ATTEMPTS; attempt += 1) {
+  // Polled from the service worker: a page-side wait relies on page timers,
+  // which Chrome throttles in background tabs, and would hold one CDP command
+  // past its timeout. Stable means two equal reads quietMs apart.
+  const deadline = Date.now() + guardMs
+  let lastSignature = ''
+  let result: ExtractPageResult & { shell: boolean }
+  let failures = 0
+  for (;;) {
     try {
-      result = await executeInPageAwait(
-        tabId,
-        pageExtractStable,
-        [{ maxChars, maxLinks, minChars, quietMs, guardMs }],
-      ) as ExtractPageResult
-      result.tabId = tabId
-      break
+      result = await executeInPage(tabId, pageExtractSnapshot, [{ maxChars, maxLinks }])
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       const transient =
         message.includes('Execution context was destroyed') ||
         message.includes('Cannot find default execution context') ||
         message.includes('Cannot find context with specified id')
-      if (!transient || attempt === EXTRACT_MAX_ATTEMPTS - 1) throw error
-      await new Promise<void>((resolve) => setTimeout(resolve, 150 * (attempt + 1)))
+      if (!transient || ++failures === EXTRACT_MAX_ATTEMPTS) throw error
+      await new Promise<void>((resolve) => setTimeout(resolve, 150 * failures))
+      continue
     }
+    const { text, links, readiness } = result
+    const signature = `${text.length}:${links.length}:${readiness.documentReadyState}:${text.slice(0, 160)}:${text.slice(-160)}`
+    const ready =
+      signature === lastSignature &&
+      text.length >= minChars &&
+      readiness.documentReadyState !== 'loading' &&
+      !result.shell
+    if (ready || Date.now() >= deadline) {
+      result.readiness.reason = ready ? 'dom_quiet' : 'guard'
+      break
+    }
+    lastSignature = signature
+    await new Promise<void>((resolve) => setTimeout(resolve, quietMs))
   }
-
-  if (!result) {
-    throw new Error('extract_page: extraction did not produce a result')
-  }
+  const { shell: _shell, ...page } = result
+  const extracted: ExtractPageResult = { ...page, tabId }
 
   return {
-    content: [{ type: 'text', text: JSON.stringify(result) }],
+    content: [{ type: 'text', text: JSON.stringify(extracted) }],
   }
 }
 

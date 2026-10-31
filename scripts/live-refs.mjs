@@ -152,6 +152,24 @@ const fixture = (req, res) => {
     res.writeHead(302, { Location: `${rootUrl}/blank` }).end()
     return
   }
+  if (url.pathname === '/lazy-feed') {
+    // Cards render only after IntersectionObserver and requestAnimationFrame
+    // fire, which Chrome withholds from tabs that are not shown.
+    send(`<!doctype html><title>Lazy feed</title><nav>Home Shorts Subscriptions</nav><main id="grid"><div id="sentinel" style="height:10px"></div></main>
+    <script>
+      new IntersectionObserver((entries) => {
+        if (!entries[0].isIntersecting) return
+        requestAnimationFrame(() => {
+          for (let i = 0; i < 12; i++) {
+            const card = document.createElement('article')
+            card.textContent = 'LAZY_CARD_' + i + ' video title'
+            grid.insertBefore(card, sentinel)
+          }
+        })
+      }).observe(sentinel)
+    </script>`)
+    return
+  }
   if (url.pathname === '/slow-post') {
     setTimeout(() => send('<!doctype html><title>Posted</title><p>POSTED</p>'), 1200)
     return
@@ -1117,6 +1135,17 @@ try {
     const closed = await tool('browser.close', { targetId: held.targetId })
     assert.equal((closed.structuredContent ?? JSON.parse(text(closed))).closed, true)
     return { openMs, observeMs, heldOpenMs, heldObserveMs }
+  })
+  await check('R: background tabs render lazy content', async () => {
+    const extracted = JSON.parse(text(await tool('browser.extract', { url: `${rootUrl}/lazy-feed` })))
+    assert.match(extracted.text, /LAZY_CARD_11/, JSON.stringify(extracted))
+    const opened = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/lazy-feed` })))
+    try {
+      assert.match(text(await tool('browser.observe', { targetId: opened.targetId, mode: 'text' })), /LAZY_CARD_11/)
+    } finally {
+      await tool('browser.close', { targetId: opened.targetId })
+    }
+    return { extractMs: extracted.diagnostics.elapsedMs }
   })
   await check('G: truncation footer lists scoped refs; ceilings', async () => {
     const opened = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/g-long` })))

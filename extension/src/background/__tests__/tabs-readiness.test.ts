@@ -1,14 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { navigation, ReadinessTimeout } = vi.hoisted(() => ({
+const { navigation, ReadinessTimeout, keepRendering } = vi.hoisted(() => ({
   navigation: vi.fn(),
   ReadinessTimeout: class ReadinessTimeout extends Error {},
+  keepRendering: vi.fn(),
 }))
 vi.mock('../navigation.js', () => ({ navigateDocument: navigation, ReadinessTimeout }))
+vi.mock('../render-pump.js', () => ({ keepRendering }))
 
 beforeEach(() => {
   vi.resetModules()
   navigation.mockReset()
+  keepRendering.mockReset()
   vi.stubGlobal('chrome', { tabs: {
     create: vi.fn(async () => ({ id: 42, windowId: 7, url: 'about:blank' })),
     remove: vi.fn(async () => {}),
@@ -27,6 +30,7 @@ describe('new tab readiness', () => {
     for (let i = 0; i < 5; i++) await Promise.resolve()
     expect(chrome.tabs.create).toHaveBeenCalledWith({ url: 'about:blank', active: false })
     expect(navigation).toHaveBeenCalledWith(42, 'https://intended.test')
+    expect(keepRendering).toHaveBeenCalledWith(42)
     expect(acknowledged).toBe(false)
     ready('https://redirect.test')
     expect((await pending).content).toEqual([{ type: 'text', text: 'Created tab: 42 (window 7)' }])

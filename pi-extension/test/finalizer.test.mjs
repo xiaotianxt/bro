@@ -5,6 +5,7 @@ import { installBroPiExtension } from '../src/index.ts';
 // Runtime contract across independently typechecked packages. Only the browser
 // APIs are mocked; Pi receives the actual production finalizer's MCP content.
 vi.mock('../../extension/src/background/navigation.js', () => ({ navigateDocument: vi.fn() }));
+vi.mock('../../extension/src/background/render-pump.js', () => ({ keepRendering: vi.fn() }));
 
 it('warns on actual finalization failure and retains only failed cleanup ownership', async () => {
   const state = { 'session_owned_tabs_pi-session-1': [42, 43, 44] };

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.4.1 (unreleased)
+
+- Background tabs that bro creates now render: Chrome gives hidden tabs no
+  frames, so `requestAnimationFrame` and `IntersectionObserver` never ran and
+  lazy feeds (YouTube's home grid) stayed skeletons. bro takes a cheap
+  screenshot of each such tab every 250 ms, which renders one frame without
+  activating the tab or changing focus.
+- `browser.extract` polls page stability from the extension instead of waiting
+  inside the page. The page-side wait outlived the 5 s CDP command limit on
+  busy pages, detached the debugger and fell back to navigation-only text; an
+  unsettled page now returns what it has with reason `guard`.
+
 ## 1.4.0
 
 - Add the default `browser.open/observe/act/close` interface with explicit

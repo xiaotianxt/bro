@@ -7,6 +7,7 @@ import { dispatchTool } from './tool-registry.js'
 import { ALARM_KEEPALIVE, ALARM_WS_RECONNECT } from './bridge-client.js'
 import { ActiveRequestTracker } from './request-tracker.js'
 import { restoreUserScripts } from '../userscripts.js'
+import { restoreRenderPump } from './render-pump.js'
 // Register all tools (side-effect imports — each module calls registerTool)
 import './tools/computer.js'
 import './tools/navigation.js'
@@ -28,6 +29,10 @@ void recoverPause().catch((error: unknown) => {
 
 void restoreUserScripts().catch((error: unknown) => {
   console.warn('[UserScripts] Failed to restore registered scripts:', error)
+})
+
+void restoreRenderPump().catch((error: unknown) => {
+  console.warn('[RenderPump] Failed to restore background tabs:', error)
 })
 
 // ---------------------------------------------------------------------------

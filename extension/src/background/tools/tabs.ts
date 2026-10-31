@@ -3,6 +3,7 @@
 import type { ToolResult } from '@bro/shared'
 import { registerTool } from '../tool-registry.js'
 import { ReadinessTimeout, navigateDocument } from '../navigation.js'
+import { keepRendering } from '../render-pump.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -612,6 +613,8 @@ async function createReadyTab(
   // Acquire a known tab first, then install document listeners before navigation.
   const tab = await chrome.tabs.create({ ...properties, url: 'about:blank' })
   if (tab.id === undefined) throw new Error('Created tab has no ID')
+  // Before navigation, so lazy content renders while the page loads.
+  if (!tab.active) keepRendering(tab.id)
   try {
     if (sessionId !== undefined) {
       if (sessionName !== undefined) await setSessionName(sessionId, sessionName)
