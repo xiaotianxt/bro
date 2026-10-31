@@ -783,3 +783,22 @@ async function dispatchComputer(tabId: number, args: ComputerArgs): Promise<Tool
 // ---------------------------------------------------------------------------
 
 registerTool('computer', executeComputer)
+
+// Trusted key press for act's press step; the focused element receives it.
+export async function pressKey(tabId: number, combo: string): Promise<void> {
+  const parsed = parseKeyCombo(combo)
+  if (!parsed.keyCode) throw new Error(`Unknown key ${combo}; use names like Escape, Enter, Tab, ArrowDown`)
+  await withInput(tabId, async () => {
+    await dispatchKeyEvent(
+      tabId,
+      parsed.key,
+      parsed.code,
+      parsed.keyCode,
+      parsed.modifiers,
+      parsed.altKey,
+      parsed.ctrlKey,
+      parsed.metaKey,
+      parsed.shiftKey,
+    )
+  })
+}

@@ -1,5 +1,6 @@
 import type { ToolResult } from '@bro/shared'
 import {
+  INTERACTIVE,
   REF_PATTERN,
   SnapshotStore,
   renderSnapshot,
@@ -13,6 +14,7 @@ import { getBrowserFrames, sendToFrame, type BrowserFrame } from '../frames.js'
 import { withInput } from '../input.js'
 import { scrollAndObserve, scrollerFor } from '../scroll.js'
 import { watchChanges } from '../changes.js'
+import { pressKey } from './computer.js'
 
 const snapshots = new SnapshotStore()
 chrome.tabs.onRemoved.addListener((tabId) => snapshots.clear(tabId))
@@ -613,6 +615,17 @@ function setValue(this: Element, value: string, checkable = false): void {
   this.dispatchEvent(new Event('input', { bubbles: true, composed: true }))
   this.dispatchEvent(new Event('change', { bubbles: true, composed: true }))
   const actual = (this as unknown as Record<string, unknown>)[property]
+  // The browser silently drops a date/time value in any other format.
+  const formats: Record<string, string> = {
+    date: 'YYYY-MM-DD',
+    time: 'HH:MM',
+    'datetime-local': 'YYYY-MM-DDTHH:MM',
+    month: 'YYYY-MM',
+    week: 'YYYY-Www',
+  }
+  const format = this instanceof win.HTMLInputElement ? formats[this.type] : undefined
+  if (actual !== desired && format)
+    throw new Error(`A ${(this as HTMLInputElement).type} input takes ${format}, e.g. fill the whole input once`)
   if (actual !== desired)
     throw new Error(
       'Control did not retain the requested value; observe and retry with a fresh ref',
@@ -733,12 +746,7 @@ export async function waitAX(tabId: number, raw: unknown): Promise<ToolResult> {
   return { ...textResult('Element did not become visible before the deadline.'), isError: true }
 }
 
-// Resolved at execution, not from an earlier observation, so a target that
-// re-rendered between observe and act still resolves. Main frame only. Roles
-// and names come from the same AX tree observe prints. An exact accessible
-// name wins; otherwise a unique substring match. Ambiguity fails instead of
-// guessing.
-async function resolveNamed(tabId: number, role: string, name: string): Promise<string> {
+async function mainTree(tabId: number): Promise<{ main: BrowserFrame; nodes: AXNode[] }> {
   const main = (await getBrowserFrames(tabId)).find((frame) => !frame.parentId)
   if (!main) throw new Error('Main frame unavailable')
   await sendToFrame(tabId, main, 'Accessibility.enable', {})
@@ -748,24 +756,45 @@ async function resolveNamed(tabId: number, role: string, name: string): Promise<
     'Accessibility.getFullAXTree',
     { frameId: main.id },
   )
-  const normalize = (value: unknown) => String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase()
+  return { main, nodes }
+}
+
+const normalize = (value: unknown) => String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase()
+
+// Resolved at execution, not from an earlier observation, so a target that
+// re-rendered between observe and act still resolves. Main frame only. Roles
+// and names come from the same AX tree observe prints. An exact accessible
+// name wins; otherwise a unique substring match. Ambiguity fails instead of
+// guessing, and so does a near-miss role: the error names the roles found.
+async function resolveNamed(tabId: number, role: string, name: string): Promise<string> {
+  const { main, nodes } = await mainTree(tabId)
   const wanted = normalize(name)
-  const named = nodes.filter(
-    (node) =>
-      !node.ignored && node.backendDOMNodeId !== undefined && normalize(node.role?.value) === normalize(role),
-  )
-  const exact = named.filter((node) => normalize(node.name?.value) === wanted)
-  const candidates = exact.length ? exact : named.filter((node) => normalize(node.name?.value).includes(wanted))
-  const visible: AXNode[] = []
-  for (const node of candidates) {
-    const shown = await callNode(tabId, main, node.backendDOMNodeId!, function (this: Element) {
-      const r = this.getBoundingClientRect()
-      return r.width > 0 && r.height > 0 && getComputedStyle(this).visibility === 'visible'
-    }, [])
-    if (shown) visible.push(node)
+  const visibleMatches = async (withRole: (role: string) => boolean): Promise<AXNode[]> => {
+    const named = nodes.filter(
+      (node) => !node.ignored && node.backendDOMNodeId !== undefined && withRole(normalize(node.role?.value)),
+    )
+    const exact = named.filter((node) => normalize(node.name?.value) === wanted)
+    const candidates = exact.length ? exact : named.filter((node) => normalize(node.name?.value).includes(wanted))
+    const visible: AXNode[] = []
+    for (const node of candidates) {
+      const shown = await callNode(tabId, main, node.backendDOMNodeId!, function (this: Element) {
+        const r = this.getBoundingClientRect()
+        return r.width > 0 && r.height > 0 && getComputedStyle(this).visibility === 'visible'
+      }, [])
+      if (shown) visible.push(node)
+    }
+    return visible
   }
-  if (!visible.length)
-    throw new Error(`No visible ${role} named "${name}"; observe to read current names`)
+  const describe = (node: AXNode) => `${String(node.role?.value)} ${JSON.stringify(String(node.name?.value ?? ''))}`
+  const visible = await visibleMatches((found) => found === normalize(role))
+  if (!visible.length) {
+    const others = await visibleMatches((found) => found !== normalize(role) && INTERACTIVE.has(found))
+    throw new Error(
+      others.length
+        ? `No visible ${role} named "${name}"; visible with other roles: ${others.slice(0, 5).map(describe).join(', ')}`
+        : `No visible ${role} named "${name}"; observe to read current names`,
+    )
+  }
   if (visible.length > 1)
     throw new Error(
       `${visible.length} visible ${role} elements match "${name}" (${visible
@@ -779,24 +808,106 @@ async function resolveNamed(tabId: number, role: string, name: string): Promise<
   return ref
 }
 
+const LAYER_ROLES = new Set(['dialog', 'alertdialog', 'menu', 'listbox'])
+const MAX_LAYER_CONTROLS = 12
+
+const isLayer = (node: AXNode) =>
+  !node.ignored && node.backendDOMNodeId !== undefined && LAYER_ROLES.has(String(node.role?.value))
+const layerIds = (nodes: AXNode[]) => new Set(nodes.filter(isLayer).map((node) => node.backendDOMNodeId!))
+
+// Refs for the controls of layers that were not in the tree before the click,
+// so the next step can act on a just-opened menu or dialog without observing.
+// Outermost new layers only; a long layer lists its first controls and its
+// own ref to observe for the rest.
+async function openedControls(
+  tabId: number,
+  before: Set<number>,
+): Promise<{ controls?: string[]; moreControls?: string }> {
+  const { main, nodes } = await mainTree(tabId)
+  const byId = new Map(nodes.map((node) => [node.nodeId, node]))
+  const fresh = nodes.filter((node) => isLayer(node) && !before.has(node.backendDOMNodeId!))
+  const inside = new Set<string>()
+  const layers: AXNode[] = []
+  const controls: AXNode[] = []
+  const visit = (node: AXNode, root: boolean): void => {
+    if (!root && inside.has(node.nodeId)) return
+    inside.add(node.nodeId)
+    const role = String(node.role?.value)
+    if (!root && !node.ignored && node.backendDOMNodeId !== undefined && INTERACTIVE.has(role) && !LAYER_ROLES.has(role))
+      controls.push(node)
+    for (const id of node.childIds ?? []) {
+      const child = byId.get(id)
+      if (child) visit(child, false)
+    }
+  }
+  for (const layer of fresh) {
+    if (inside.has(layer.nodeId)) continue
+    layers.push(layer)
+    visit(layer, true)
+  }
+  if (!controls.length) return {}
+  const refs = new Map<string, RefTarget>()
+  const register = (node: AXNode) => {
+    const target = { frameId: main.id, loaderId: main.loaderId, backendNodeId: node.backendDOMNodeId! }
+    const ref = snapshots.handle(tabId, target)
+    refs.set(ref, target)
+    return ref
+  }
+  const listed = controls.slice(0, MAX_LAYER_CONTROLS).map((node) => {
+    const name = String(node.name?.value ?? '').trim().replace(/\s+/g, ' ')
+    return `${register(node)} ${String(node.role?.value)} ${JSON.stringify(name.length > 80 ? name.slice(0, 80) + '…' : name)}`
+  })
+  const rest = controls.length - listed.length
+  const moreControls = rest > 0 ? `observe ${layers.map(register).join(', ')} for ${rest} more` : undefined
+  snapshots.publish(tabId, refs)
+  return moreControls ? { controls: listed, moreControls } : { controls: listed }
+}
+
 // One act step: resolve the target, act with the same ref tools, and report
-// what visibly changed once the page settles.
+// what visibly changed once the page settles. press goes to the focused
+// element, or focuses its optional target first.
 export async function actElement(tabId: number, raw: unknown): Promise<ToolResult> {
   const args = argsObject(raw)
   const action = stringArg(args, 'action')
-  const ref =
-    args['refId'] !== undefined
+  const targeted = args['refId'] !== undefined || args['role'] !== undefined
+  const ref = !targeted
+    ? undefined
+    : args['refId'] !== undefined
       ? stringArg(args, 'refId')
       : await resolveNamed(tabId, stringArg(args, 'role'), stringArg(args, 'name'))
-  const [tool, toolArgs] =
-    action === 'click'
-      ? ['click_element', { refId: ref }]
-      : action === 'check'
-        ? ['form_input', { refId: ref, checked: args['checked'] }]
-        : action === 'fill' || action === 'select'
-          ? ['form_input', { refId: ref, value: args['value'] }]
-          : [undefined, undefined]
-  if (!tool) throw new Error(`Unsupported act_element action ${action}`)
-  const { changes } = await watchChanges(tabId, () => refTool(tool, tabId, toolArgs))
-  return textResult(JSON.stringify({ refId: ref, changes }))
+  let act: () => Promise<unknown>
+  if (action === 'press') {
+    const key = stringArg(args, 'key')
+    act = async () => {
+      if (ref)
+        await withRef(tabId, ref, function (this: Element) {
+          ;(this as HTMLElement).focus()
+        })
+      await pressKey(tabId, key)
+    }
+  } else {
+    if (!ref) throw new Error(`act_element ${action} requires refId or role + name`)
+    const [tool, toolArgs] =
+      action === 'click'
+        ? ['click_element', { refId: ref }]
+        : action === 'check'
+          ? ['form_input', { refId: ref, checked: args['checked'] }]
+          : action === 'fill' || action === 'select'
+            ? ['form_input', { refId: ref, value: args['value'] }]
+            : [undefined, undefined]
+    if (!tool) throw new Error(`Unsupported act_element action ${action}`)
+    act = () => refTool(tool, tabId, toolArgs)
+  }
+  const before = action === 'click' || action === 'press' ? layerIds((await mainTree(tabId)).nodes) : undefined
+  const { changes } = await watchChanges(tabId, act)
+  let report = changes
+  if (before && changes.opened?.length && !changes.navigated) {
+    const controls = await openedControls(tabId, before)
+    // The listed controls already carry the opened layer's text.
+    if (controls.controls) {
+      report = { ...changes, ...controls }
+      delete report.added
+    }
+  }
+  return textResult(JSON.stringify(ref ? { refId: ref, changes: report } : { changes: report }))
 }

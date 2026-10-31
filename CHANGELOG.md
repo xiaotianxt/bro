@@ -44,6 +44,12 @@
   3 s cap) and report opened/closed dialogs and menus, alerts, new text and
   navigation; a click with no visible change says so. Element steps accept
   `role` + `name`, resolved when the step runs, instead of `refId`.
+- A click that opens a menu/dialog lists refs for its controls; a form post
+  started by an action holds the settle wait; a role + name miss names the
+  roles found instead. Add `browser.click`/`fill`/`press` single-action tools
+  and an act `press` step; `targetId` defaults to the MCP session's last
+  target. Observations show native date/time inputs as one ISO-fillable node
+  and drop text that repeats its parent's name.
 - See `docs/releases/1.4.0.md` for migration, boundaries and deferred scope.
 
 ## Unreleased

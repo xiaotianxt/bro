@@ -47,12 +47,16 @@ pub enum ToolRoute {
     Observe,
     Act,
     Close,
+    /// browser.click/fill/press: one act step on a target.
+    Step(&'static str),
     FlowStart,
     FlowObserve,
     FlowAct,
     FlowFinish,
     AgentDone,
-    Forward { tab_id_envelope: bool },
+    Forward {
+        tab_id_envelope: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -126,6 +130,9 @@ impl ToolSpec {
                 self.name,
                 "browser.open"
                     | "browser.observe"
+                    | "browser.click"
+                    | "browser.fill"
+                    | "browser.press"
                     | "browser.act"
                     | "browser.close"
                     | "browser.extract"
@@ -189,7 +196,8 @@ fn capability_for(name: &str) -> Option<&'static str> {
         | "browser.flow.observe"
         | "browser.flow.act"
         | "browser.flow.finish" => Some("compatibility"),
-        "browser.open" | "browser.observe" | "browser.act" | "browser.close" => Some("interaction"),
+        "browser.open" | "browser.observe" | "browser.click" | "browser.fill" | "browser.press"
+        | "browser.act" | "browser.close" => Some("interaction"),
         "navigate" | "resize_window" | "javascript_tool" => Some("advanced"),
         "agent_done"
         | "browser.batch.run"
@@ -274,8 +282,26 @@ static SPECS: &[ToolSpec] = &[
         schema: "browser_observe",
     },
     ToolSpec {
+        name: "browser.click",
+        description: "Click an element by refId (from observe or a change report) or role + name. Waits for the page to settle and reports what visibly changed; a menu or dialog it opens lists its controls' refs, so click those next without observing. \"no visible change\" means it likely missed. targetId defaults to the target this session last used.",
+        route: ToolRoute::Step("click"),
+        schema: "browser_click",
+    },
+    ToolSpec {
+        name: "browser.fill",
+        description: "Set a text field, select, or date/time input by refId or role + name; date inputs take ISO values such as 2026-12-15. Reports what visibly changed. targetId defaults to the target this session last used.",
+        route: ToolRoute::Step("fill"),
+        schema: "browser_fill",
+    },
+    ToolSpec {
+        name: "browser.press",
+        description: "Press a key such as Escape (closes most menus, dialogs and pickers), Enter, Tab or ArrowDown. Goes to the focused element, or focuses refId / role + name first. Reports what visibly changed. targetId defaults to the target this session last used.",
+        route: ToolRoute::Step("press"),
+        schema: "browser_press",
+    },
+    ToolSpec {
         name: "browser.act",
-        description: "Run 1–32 ordered steps on a target: navigate, evaluate, wait, observe, and click/fill/select/check/scroll. Target elements by refId, or by role + name (e.g. {type:click, role:menuitemradio, name:\"Read and write\"}), which resolves when the step runs and survives re-renders. Each click/fill/select/check waits for the page to settle and reports what visibly changed (opened/closed dialogs and menus, alerts, new text, navigation); \"no visible change\" means it likely missed. So chain the next steps directly: no delays and no evaluate to read the page back. Use wait only for content that arrives later. All steps validate before any effect; the first failure stops the rest. Prefer these trusted actions over evaluate, whose synthetic events frameworks like React can ignore. Covered clicks fail and name the covering element; check sets a native radio/checkbox without a pointer click. scroll moves the ref's nearest scrollable container, else the page.",
+        description: "Run 1–32 ordered steps on a target: navigate, evaluate, wait, observe, and click/fill/select/check/scroll. Target elements by refId, or by role + name (e.g. {type:click, role:menuitem, name:\"Read and write\"}), which resolves when the step runs and survives re-renders. Each click/fill/select/check waits for the page to settle and reports what visibly changed (opened/closed dialogs and menus, alerts, new text, navigation, including a form post it started); a click that opens a menu or dialog lists refs for its controls, so act on them without observing. \"no visible change\" means it likely missed. So chain the next steps directly: no delays and no evaluate to read the page back. Use wait only for content that arrives later. All steps validate before any effect; the first failure stops the rest. Prefer these trusted actions over evaluate, whose synthetic events frameworks like React can ignore. Covered clicks fail and name the covering element; check sets a native radio/checkbox without a pointer click. scroll moves the ref's nearest scrollable container, else the page.",
         route: ToolRoute::Act,
         schema: "browser_act",
     },
@@ -756,13 +782,23 @@ fn schema(kind: &str) -> JsonObject {
         ]),
         "browser_observe" => {
             let mut properties = observation_properties();
-            properties.insert("targetId".to_string(), json!({"type":"string","minLength":1}));
+            properties.insert("targetId".to_string(), target_id_schema());
             properties
         }
         "browser_act" => props(&[
-            ("targetId", json!({"type":"string","minLength":1})),
+            ("targetId", target_id_schema()),
             ("steps", interaction_steps_schema()),
         ]),
+        "browser_click" => with_target(element_target()),
+        "browser_fill" => {
+            let mut properties = element_target();
+            properties.insert(
+                "value".to_string(),
+                json!({"type":"string","description":"Text, option value or label, or ISO date/time."}),
+            );
+            with_target(properties)
+        }
+        "browser_press" => with_target(press_properties()),
         "browser_close" => props(&[("targetId", json!({"type":"string","minLength":1}))]),
         "browser_flow_start" => props(&[
             ("url", json!({"type":"string","format":"uri"})),
@@ -1166,8 +1202,10 @@ fn required_fields(kind: &str) -> Option<&'static [&'static str]> {
         "browser_console_capture" | "browser_network_capture" => Some(&["url", "code"]),
         "browser_batch_flow" => Some(&["steps"]),
         "browser_open" | "browser_flow_start" => Some(&["url"]),
-        "browser_observe" | "browser_close" => Some(&["targetId"]),
-        "browser_act" => Some(&["targetId", "steps"]),
+        "browser_close" => Some(&["targetId"]),
+        "browser_act" => Some(&["steps"]),
+        "browser_fill" => Some(&["value"]),
+        "browser_press" => Some(&["key"]),
         "browser_flow_observe" | "browser_flow_finish" => Some(&["sessionId"]),
         "browser_flow_act" => Some(&["sessionId", "steps"]),
         _ => None,
@@ -1207,6 +1245,42 @@ fn observation_properties() -> Map<String, Value> {
     ])
 }
 
+fn target_id_schema() -> Value {
+    json!({"type":"string","minLength":1,"description":"From browser.open. Defaults to the target this session last opened or used."})
+}
+
+fn with_target(mut properties: Map<String, Value>) -> Map<String, Value> {
+    properties.insert("targetId".to_string(), target_id_schema());
+    properties
+}
+
+/// Element steps take refId, or role + name resolved when the step runs.
+fn element_target() -> Map<String, Value> {
+    props(&[
+        (
+            "refId",
+            json!({"type":"string","minLength":1,"description":"Ref from observe or a change report. Or give role + name instead."}),
+        ),
+        (
+            "role",
+            json!({"type":"string","minLength":1,"description":"Accessible role as observe prints it, e.g. button, menuitem, option, textbox. Main frame only."}),
+        ),
+        (
+            "name",
+            json!({"type":"string","minLength":1,"description":"Accessible name: exact, else a unique substring. Ambiguous or missing fails."}),
+        ),
+    ])
+}
+
+fn press_properties() -> Map<String, Value> {
+    let mut properties = element_target();
+    properties.insert(
+        "key".to_string(),
+        json!({"type":"string","minLength":1,"description":"Key name such as Escape, Enter, Tab, ArrowDown, or a combo like Shift+Tab. Goes to the focused element; a refId or role + name is focused first."}),
+    );
+    properties
+}
+
 fn interaction_steps_schema() -> Value {
     let step = |kind: &str, required: &[&str], mut properties: Map<String, Value>| {
         properties.insert("type".to_string(), json!({"const":kind,"type":"string"}));
@@ -1216,23 +1290,7 @@ fn interaction_steps_schema() -> Value {
         json!({"type":"object","required":required,"additionalProperties":false,"properties":properties})
     };
     let ref_target = || props(&[("refId", json!({"type":"string","minLength":1}))]);
-    // Element steps take refId, or role + name resolved when the step runs.
-    let element = || {
-        props(&[
-            (
-                "refId",
-                json!({"type":"string","minLength":1,"description":"Ref from observe. Or give role + name instead."}),
-            ),
-            (
-                "role",
-                json!({"type":"string","minLength":1,"description":"Accessible role as observe prints it, e.g. button, menuitemradio, option, textbox. Main frame only."}),
-            ),
-            (
-                "name",
-                json!({"type":"string","minLength":1,"description":"Accessible name: exact, else a unique substring. Ambiguous or missing fails."}),
-            ),
-        ])
-    };
+    let element = element_target;
     let mut form = element();
     form.insert("value".to_string(), json!({"type":"string"}));
     let mut check = element();
@@ -1240,6 +1298,7 @@ fn interaction_steps_schema() -> Value {
         "checked".to_string(),
         json!({"type":"boolean","default":true,"description":"Native radio/checkbox; no pointer click, so overlays do not block it."}),
     );
+    let press = press_properties();
     let mut scroll = ref_target();
     scroll.insert(
         "direction".to_string(),
@@ -1256,6 +1315,7 @@ fn interaction_steps_schema() -> Value {
         step("fill", &["value"], form.clone()),
         step("select", &["value"], form),
         step("check", &[], check),
+        step("press", &["key"], press),
         step("scroll", &["refId"], scroll),
         step("wait", &[], props(&[
             ("text", json!({"type":"string","minLength":1,"description":"Exactly one condition: text appears, textGone disappears, or refId reaches state."})),
@@ -1474,6 +1534,9 @@ mod tests {
         for name in [
             "browser.open",
             "browser.observe",
+            "browser.click",
+            "browser.fill",
+            "browser.press",
             "browser.act",
             "browser.close",
         ] {
@@ -1486,8 +1549,16 @@ mod tests {
             find_tool("browser.flow.start").unwrap().meta.unwrap().0["bro/default"],
             false
         );
+        // The MCP session supplies its last target when targetId is omitted.
         let observe = schema("browser_observe");
-        assert_eq!(observe["required"], json!(["targetId"]));
+        assert!(observe.get("required").is_none());
+        assert_eq!(schema("browser_act")["required"], json!(["steps"]));
+        assert_eq!(schema("browser_close")["required"], json!(["targetId"]));
+        assert_eq!(route_for("browser.press"), Some(ToolRoute::Step("press")));
+        let press = schema("browser_press");
+        assert_eq!(press["required"], json!(["key"]));
+        assert_eq!(press["properties"]["role"], super::element_target()["role"]);
+        assert_eq!(schema("browser_fill")["required"], json!(["value"]));
         assert!(observe["properties"].get("sessionId").is_none());
         for (key, value) in super::observation_properties() {
             assert_eq!(observe["properties"][&key], value);
@@ -1506,7 +1577,7 @@ mod tests {
         let steps = act["properties"]["steps"]["items"]["oneOf"]
             .as_array()
             .unwrap();
-        assert_eq!(steps.len(), 9);
+        assert_eq!(steps.len(), 10);
         let wait = steps
             .iter()
             .find(|step| step["properties"]["type"]["const"] == "wait")

@@ -28,3 +28,11 @@ Run before handoff:
 ```bash
 make check
 ```
+
+For extension behavior, also run the real-browser contracts in an isolated
+profile. While iterating, run only the affected check by name substring; run
+all of them once before handoff:
+
+```bash
+make live-refs CHROME_BIN=/path/to/chromium CHECKS="T:"
+```

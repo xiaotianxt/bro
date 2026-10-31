@@ -152,6 +152,10 @@ const fixture = (req, res) => {
     res.writeHead(302, { Location: `${rootUrl}/blank` }).end()
     return
   }
+  if (url.pathname === '/slow-post') {
+    setTimeout(() => send('<!doctype html><title>Posted</title><p>POSTED</p>'), 1200)
+    return
+  }
   if (url.pathname === '/blank') {
     send('<!doctype html><title>Benchmark ready</title><p>Ready</p>')
     return
@@ -209,19 +213,26 @@ const fixture = (req, res) => {
     // Shaped like GitHub's token page: menus re-render with fresh ids on every
     // open, labels update on a later task (React schedules with MessageChannel,
     // which background tabs do not throttle like timers), and validation
-    // arrives over the network.
+    // arrives over the network. Submit posts and answers after more than the
+    // settle quiet period.
     send(`<!doctype html><title>Token form</title><h1>New token</h1>
     <label>Token name <input id="name"></label>
     <button id="exp">Expiration: 30 days</button><div id="exp-menu"></div>
     <button id="access">Access: Read-only</button><div id="access-menu"></div>
     <button id="generate">Generate token</button><div id="status"></div>
+    <form method="post" action="/slow-post"><button>Submit post</button></form>
+    <label>Expires <input type="date" id="expires"></label>
+    <button id="perms">Permissions</button><div id="perm-panel"></div>
     <script>
     let renders=0;const state={exp:'30 days',access:'Read-only'};
     const later=f=>{const c=new MessageChannel();c.port1.onmessage=()=>f();c.port2.postMessage(0)};
-    const menu=(root,label,items,pick)=>{renders++;root.innerHTML='<div role="menu" aria-label="'+label+'">'+items.map((t,i)=>'<div role="menuitemradio" id="_r_'+renders+'_'+i+'" style="padding:4px">'+t+'</div>').join('')+'</div>';
-      root.querySelectorAll('[role=menuitemradio]').forEach(item=>item.onclick=()=>{root.innerHTML='';later(()=>pick(item.textContent))})};
+    const menu=(root,label,items,pick)=>{renders++;root.innerHTML='<div role="menu" aria-label="'+label+'">'+items.map((t,i)=>'<div role="menuitem" id="_r_'+renders+'_'+i+'" style="padding:4px">'+t+'</div>').join('')+'</div>';
+      root.querySelectorAll('[role=menuitem]').forEach(item=>item.onclick=()=>{root.innerHTML='';later(()=>pick(item.textContent))})};
     document.querySelector('#exp').onclick=()=>menu(document.querySelector('#exp-menu'),'Expiration',['7 days','30 days','90 days'],v=>{state.exp=v;document.querySelector('#exp').textContent='Expiration: '+v});
     document.querySelector('#access').onclick=()=>menu(document.querySelector('#access-menu'),'Access',['Read-only','Read and write'],v=>{state.access=v;document.querySelector('#access').textContent='Access: '+v});
+    document.querySelector('#perms').onclick=()=>{document.querySelector('#perm-panel').innerHTML='<div role="dialog" aria-label="Permissions"><label><input type="checkbox">Contents</label></div>'};
+    // Like GitHub's multi-select panel: no close button, only Escape closes it.
+    document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelector('#perm-panel').innerHTML=''});
     document.querySelector('#generate').onclick=()=>fetch('/blank').then(()=>{document.querySelector('#status').innerHTML=state.access==='Read and write'?'<p>TOKEN_CREATED '+document.querySelector('#name').value+' '+state.exp+'</p>':'<p role="alert">Contents needs read and write access</p>'});
     </script>`)
     return
@@ -995,26 +1006,46 @@ try {
       const result = text(await tool('browser.act', { targetId, steps: [
         { type: 'fill', role: 'textbox', name: 'Token name', value: 'rss-dispatch' },
         { type: 'click', role: 'button', name: 'Expiration' },
-        { type: 'click', role: 'menuitemradio', name: '90 days' },
+        { type: 'click', role: 'menuitem', name: '90 days' },
         { type: 'click', role: 'button', name: 'Generate token' },
         { type: 'click', role: 'button', name: 'Access' },
-        { type: 'click', role: 'menuitemradio', name: 'Read and write' },
+        { type: 'click', role: 'menuitem', name: 'Read and write' },
         { type: 'click', role: 'button', name: 'Generate token' },
       ] }))
       const elapsed = Math.round(performance.now() - started)
       const lines = result.split('\n')
       assert.equal(lines.length, 8, result)
       assert.match(lines[1], /^filled \w+ \(textbox "Token name"\)$/)
-      assert.match(lines[2], /^clicked \w+ \(button "Expiration"\) → opened menu "Expiration"/)
+      // An opened layer lists its controls as refs.
+      assert.match(lines[2], /^clicked \w+ \(button "Expiration"\) → opened menu "Expiration"; controls [a-z]{3}\d+ menuitem "7 days", [a-z]{3}\d+ menuitem "30 days", [a-z]{3}\d+ menuitem "90 days" /)
       // The menu item re-rendered with a fresh id; resolution happens at click.
-      assert.match(lines[3], /^clicked \w+ \(menuitemradio "90 days"\) → closed menu "Expiration".*text "Expiration: 90 days"/)
+      assert.match(lines[3], /^clicked \w+ \(menuitem "90 days"\) → closed menu "Expiration".*text "Expiration: 90 days"/)
       assert.match(lines[4], /→ alert Contents needs read and write access/)
       assert.match(lines[6], /text "Access: Read and write"/)
       assert.match(lines[7], /text "TOKEN_CREATED rss-dispatch 90 days"/)
       assert.ok(elapsed < 8000, `${elapsed}ms`)
-      await tool('browser.act', { targetId, steps: [{ type: 'click', role: 'menuitemradio', name: 'Read and write' }] }, /No visible menuitemradio named "Read and write"/)
+      // One date input is one fillable node; its month/day/year parts and a
+      // button's echoed label are not separate lines.
+      const page = text(await tool('browser.observe', { maxChars: 12000 }))
+      assert.match(page, /\[[a-z]{3}\d+\] Date "Expires"/)
+      assert.doesNotMatch(page, /spinbutton|StaticText "Generate token"/)
+      // Single-action tools default to this session's last target.
+      await tool('browser.fill', { role: 'Date', name: 'Expires', value: '12/15/2026' }, /A date input takes YYYY-MM-DD/)
+      assert.match(text(await tool('browser.fill', { role: 'Date', name: 'Expires', value: '2026-12-15' })), new RegExp(`^targetId: ${targetId}\\nfilled \\w+ \\(Date "Expires"\\)$`))
+      assert.match(text(await tool('browser.click', { role: 'button', name: 'Permissions' })), /opened dialog "Permissions"; controls \w+ checkbox "Contents"/)
+      assert.match(text(await tool('browser.press', { key: 'Escape' })), /\npressed Escape → closed dialog "Permissions" \(settled \d+ms\)$/)
+      await tool('browser.press', { key: 'Esc4pe' }, /Unknown key Esc4pe/)
+      await tool('browser.act', { targetId, steps: [{ type: 'click', role: 'menuitem', name: 'Read and write' }] }, /No visible menuitem named "Read and write"/)
+      const menu = text(await tool('browser.act', { targetId, steps: [{ type: 'click', role: 'button', name: 'Access' }] }))
+      // A near-miss role names what is there instead of only failing.
+      await tool('browser.act', { targetId, steps: [{ type: 'click', role: 'menuitemradio', name: 'Read and write' }] }, /No visible menuitemradio named "Read and write"; visible with other roles: menuitem "Read and write"/)
+      const listed = /([a-z]{3}\d+) menuitem "Read-only"/.exec(menu)?.[1]
+      assert.ok(listed, menu)
+      assert.match(text(await tool('browser.act', { targetId, steps: [{ type: 'click', refId: listed }] })), /closed menu "Access".*text "Access: Read-only"/)
       await tool('browser.act', { targetId, steps: [{ type: 'click', role: 'button', name: 'e' }] }, /visible button elements match "e"/)
       await tool('browser.act', { targetId, steps: [{ type: 'click', role: 'button', name: 'Generate', refId: 'kqx1' }] }, /exactly one target/)
+      // A form post that answers after the quiet period still reports the navigation.
+      assert.match(text(await tool('browser.act', { targetId, steps: [{ type: 'click', role: 'button', name: 'Submit post' }] })), /→ navigated to \S+\/slow-post/)
     } finally {
       await tool('browser.close', { targetId })
     }

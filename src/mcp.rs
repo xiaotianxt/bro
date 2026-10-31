@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use rmcp::{
     model::{
@@ -24,11 +24,52 @@ use crate::{
 pub struct BrowserMcpServer {
     bridge: BrowserBridge,
     facade: BrowserFacade,
+    /// The target this MCP session last opened or used. The facade is shared
+    /// by every session, so the default lives here, never in the facade.
+    last_target: Arc<Mutex<Option<String>>>,
 }
 
 impl BrowserMcpServer {
     pub fn new(bridge: BrowserBridge, facade: BrowserFacade) -> Self {
-        Self { bridge, facade }
+        Self {
+            bridge,
+            facade,
+            last_target: Arc::default(),
+        }
+    }
+
+    /// Fills a missing targetId with this session's last target.
+    fn default_target(
+        &self,
+        args: &mut serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), CallToolResult> {
+        if args.contains_key("targetId") {
+            return Ok(());
+        }
+        let last = self.last_target.lock().expect("last target lock").clone();
+        match last {
+            Some(target) => {
+                args.insert("targetId".to_string(), json!(target));
+                Ok(())
+            }
+            None => Err(tool_error(
+                "targetId is required: this session has no open target; call browser.open first"
+                    .to_string(),
+            )),
+        }
+    }
+
+    /// Records the target a successful or failed call reported.
+    fn targeted(&self, result: CallToolResult) -> CallToolResult {
+        let target = result
+            .structured_content
+            .as_ref()
+            .and_then(|value| value.get("targetId"))
+            .and_then(serde_json::Value::as_str);
+        if let Some(target) = target {
+            *self.last_target.lock().expect("last target lock") = Some(target.to_string());
+        }
+        result
     }
 }
 
@@ -74,7 +115,7 @@ impl ServerHandler for BrowserMcpServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let tool_name = request.name.to_string();
-        let args = request.arguments.unwrap_or_default();
+        let mut args = request.arguments.unwrap_or_default();
 
         let Some(route) = tool_catalog::route_for(&tool_name) else {
             return Ok(tool_error(format!("Unknown tool: {tool_name}")));
@@ -84,6 +125,14 @@ impl ServerHandler for BrowserMcpServer {
             return Ok(tool_error(BridgeError::Cancelled.to_string()));
         }
         let facade = self.facade.with_cancellation(context.ct);
+        if matches!(
+            route,
+            ToolRoute::Observe | ToolRoute::Act | ToolRoute::Step(_)
+        ) {
+            if let Err(error) = self.default_target(&mut args) {
+                return Ok(error);
+            }
+        }
         match route {
             ToolRoute::FindLogins => Ok(login_result(crate::credentials::find(args).await)),
             ToolRoute::InspectLogin => Ok(login_result(
@@ -100,15 +149,19 @@ impl ServerHandler for BrowserMcpServer {
             ToolRoute::BatchExtract => Ok(facade_result(facade.batch_extract(args).await)),
             ToolRoute::ConsoleCapture => Ok(facade_result(facade.console_capture(args).await)),
             ToolRoute::NetworkCapture => Ok(facade_result(facade.network_capture(args).await)),
-            ToolRoute::Open => Ok(facade_result(facade.open(args).await)),
-            ToolRoute::Observe => Ok(rendered_result(
+            ToolRoute::Open => Ok(self.targeted(facade_result(facade.open(args).await))),
+            ToolRoute::Observe => Ok(self.targeted(rendered_result(
                 facade.observe_target(args).await,
                 crate::facade::render_observe,
-            )),
-            ToolRoute::Act => Ok(rendered_result(
+            ))),
+            ToolRoute::Act => Ok(self.targeted(rendered_result(
                 facade.act(args).await,
                 crate::facade::render_act,
-            )),
+            ))),
+            ToolRoute::Step(kind) => Ok(self.targeted(rendered_result(
+                facade.step(kind, args).await,
+                crate::facade::render_act,
+            ))),
             ToolRoute::Close => Ok(facade_result(facade.close(args).await)),
             ToolRoute::FlowStart => Ok(facade_result(facade.flow_start(args).await)),
             ToolRoute::FlowObserve => Ok(facade_result(facade.flow_observe(args).await)),

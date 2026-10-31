@@ -122,7 +122,7 @@ export interface SnapshotOptions {
   cursor?: number
 }
 
-const INTERACTIVE = new Set([
+export const INTERACTIVE = new Set([
   'button',
   'link',
   'textbox',
@@ -140,7 +140,15 @@ const INTERACTIVE = new Set([
   'treeitem',
   'listbox',
   'option',
+  // Native date/time inputs, shown as one fillable node (see NATIVE_COMPOSITES).
+  'Date',
+  'DateTime',
+  'InputTime',
 ])
+// Native inputs whose browser-internal parts (month/day/year spinbuttons, the
+// picker button) the AX tree exposes. Those parts are not form controls; the
+// input itself is filled with an ISO value, so its subtree is not rendered.
+const NATIVE_COMPOSITES = new Set(['Date', 'DateTime', 'InputTime'])
 const STATES = new Set([
   'checked',
   'selected',
@@ -209,7 +217,9 @@ export function renderSnapshot(
       )
     const nodes = new Map(frame.nodes.map((node) => [node.nodeId, node]))
     const seenNodes = new Set<string>()
-    const walk = (node: AXNode, depth: number, inLandmark: boolean): void => {
+    // `echo` is the name of the nearest shown ancestor: a StaticText repeating
+    // it (a button's own label) adds nothing.
+    const walk = (node: AXNode, depth: number, inLandmark: boolean, echo = ''): void => {
       if (seenNodes.has(node.nodeId) || (truncated && outlineFull) || depth > options.depth) return
       seenNodes.add(node.nodeId)
       const role = String(node.role?.value ?? '')
@@ -223,6 +233,7 @@ export function renderSnapshot(
       const show =
         !node.ignored &&
         role !== 'InlineTextBox' &&
+        !(role === 'StaticText' && name !== '' && name === echo) &&
         !(options.compact !== false && structural) &&
         (options.filter === 'all' || interactive || role === 'RootWebArea' || role === 'Iframe') &&
         (!options.matchWords || (node.backendDOMNodeId && options.matchWords.every((word) =>
@@ -269,17 +280,17 @@ export function renderSnapshot(
         // The node that did not fit is the first unread one: offer it as a section.
         if (placed === 'full') {
           seenNodes.delete(node.nodeId)
-          return walk(node, depth, inLandmark)
+          return walk(node, depth, inLandmark, echo)
         }
         if (placed === 'shown' && ref && target) {
           refs.set(ref, target)
           rendered.set(identity, ref)
         }
       }
-      if (properties.get('protected')) return
+      if (properties.get('protected') || NATIVE_COMPOSITES.has(role)) return
       for (const child of node.childIds ?? []) {
         const next = nodes.get(child)
-        if (next) walk(next, depth + (show ? 1 : 0), inLandmark || landmark)
+        if (next) walk(next, depth + (show ? 1 : 0), inLandmark || landmark, show ? name : echo)
       }
     }
     // AX node IDs are local to a document/target, not globally unique.

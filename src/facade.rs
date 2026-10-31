@@ -627,11 +627,27 @@ impl BrowserFacade {
                     | FlowStep::Select { .. }
                     | FlowStep::ReadText { .. }
             ) {
-                return Err(FacadeError::InvalidInput("act targets elements by refId or role + name: navigate/evaluate/wait/observe and click/fill/select/check/scroll; use evaluate for explicit synthetic operations or legacy flow.act for CSS/read_text".to_string()));
+                return Err(FacadeError::InvalidInput("act targets elements by refId or role + name: navigate/evaluate/wait/observe and click/fill/select/check/press/scroll; use evaluate for explicit synthetic operations or legacy flow.act for CSS/read_text".to_string()));
             }
         }
         let session = self.settled(&args.target_id).await?;
         self.act_steps(session, steps, StepShape::Slim).await
+    }
+
+    /// browser.click/fill/press: one act step, so one rendering and one
+    /// change report for every element action.
+    pub async fn step(
+        &self,
+        kind: &'static str,
+        mut args: Map<String, Value>,
+    ) -> Result<Value, FacadeError> {
+        let target_id = args.remove("targetId");
+        args.insert("type".to_string(), json!(kind));
+        let mut act = Map::from_iter([("steps".to_string(), json!([args]))]);
+        if let Some(target_id) = target_id {
+            act.insert("targetId".to_string(), target_id);
+        }
+        self.act(act).await
     }
 
     async fn act_steps(
@@ -1198,6 +1214,10 @@ impl BrowserFacade {
                 args["action"] = json!("check");
                 args["checked"] = json!(checked);
             }
+            RefAction::Press(key) => {
+                args["action"] = json!("press");
+                args["key"] = json!(key);
+            }
         }
         let result = self
             .dispatch(
@@ -1322,7 +1342,11 @@ impl BrowserFacade {
                 fail_if_tool_error("javascript_tool", &result)?;
                 Ok(single_result(result.result))
             }
-            FlowStep::Ref { ref_id, action } if slim => {
+            FlowStep::Press { key } => {
+                self.act_element(session, json!({}), RefAction::Press(key))
+                    .await
+            }
+            FlowStep::Ref { ref_id, action } if slim || matches!(action, RefAction::Press(_)) => {
                 self.act_element(session, json!({ "refId": ref_id }), action)
                     .await
             }
@@ -1339,6 +1363,7 @@ impl BrowserFacade {
                     RefAction::Check(checked) => {
                         ("form_input", json!({"refId":ref_id,"checked":checked}))
                     }
+                    RefAction::Press(_) => unreachable!("press always runs through act_element"),
                 };
                 let result = self
                     .dispatch(tool, args, Some(session.tab_id), session.browser_id.clone())
@@ -2604,6 +2629,10 @@ enum FlowStep {
         direction: ScrollDirection,
         amount: u32,
     },
+    /// A key press to the focused element; a targeted press is a Ref/Named step.
+    Press {
+        key: String,
+    },
     Wait {
         ms: u64,
     },
@@ -2687,6 +2716,8 @@ enum RefAction {
     Fill(String),
     Select(String),
     Check(bool),
+    /// Focus the target, then press the key.
+    Press(String),
 }
 
 // Deserialize the complete request before doing any browser work. In particular,
@@ -2750,6 +2781,11 @@ enum RawFlowStep {
         #[serde(default = "default_true")]
         checked: bool,
     },
+    Press {
+        #[serde(flatten)]
+        target: RawTarget,
+        key: String,
+    },
 }
 
 /// One of css (+ frameId), refId, or role + name.
@@ -2788,6 +2824,24 @@ impl TryFrom<RawFlowStep> for FlowStep {
                     return Err("check requires a refId or role + name, not css".to_string());
                 }
                 Self::from_target(target, RefAction::Check(checked))
+            }
+            RawFlowStep::Press { target, key } => {
+                if key.trim().is_empty() {
+                    return Err("press requires a nonempty key, e.g. Escape".to_string());
+                }
+                if target.css.is_some() {
+                    return Err("press targets a refId or role + name, not css".to_string());
+                }
+                match target {
+                    RawTarget {
+                        ref_id: None,
+                        frame_id: None,
+                        role: None,
+                        name: None,
+                        ..
+                    } => Ok(Self::Press { key }),
+                    target => Self::from_target(target, RefAction::Press(key)),
+                }
             }
             RawFlowStep::Goto { url } => Ok(Self::Goto { url }),
             RawFlowStep::Eval { code, frame_id } => {
@@ -2830,7 +2884,9 @@ impl FlowStep {
                 RefAction::Click => Self::Click { css, frame_id },
                 RefAction::Fill(value) => Self::Fill { css, value, frame_id },
                 RefAction::Select(value) => Self::Select { css, value, frame_id },
-                RefAction::Check(_) => unreachable!("check rejects css before this point"),
+                RefAction::Check(_) | RefAction::Press(_) => {
+                    unreachable!("check and press reject css before this point")
+                }
             }),
             (None, Some(ref_id), None, None) if !ref_id.trim().is_empty() && frame_id.is_none() => {
                 Ok(Self::Ref { ref_id, action })
@@ -2906,7 +2962,9 @@ impl FlowStep {
                 RefAction::Fill(_) => "fill",
                 RefAction::Select(_) => "select",
                 RefAction::Check(_) => "check",
+                RefAction::Press(_) => "press",
             },
+            Self::Press { .. } => "press",
             Self::Scroll { .. } => "scroll",
             Self::Wait { .. } | Self::WaitFor { .. } => "wait",
             Self::ReadText { .. } => "read_text",
@@ -2929,6 +2987,7 @@ struct StepLabel {
     /// `role "name"` for a step targeted by accessible role and name.
     named: Option<String>,
     checked: Option<bool>,
+    key: Option<String>,
 }
 
 impl StepLabel {
@@ -2955,11 +3014,24 @@ impl StepLabel {
             FlowStep::Named { role, name, .. } => Some(format!("{role} {name:?}")),
             _ => None,
         };
+        let key = match step {
+            FlowStep::Press { key }
+            | FlowStep::Ref {
+                action: RefAction::Press(key),
+                ..
+            }
+            | FlowStep::Named {
+                action: RefAction::Press(key),
+                ..
+            } => Some(key.clone()),
+            _ => None,
+        };
         Self {
             kind: step.kind(),
             ref_id,
             named,
             checked,
+            key,
         }
     }
 
@@ -2988,6 +3060,9 @@ impl StepLabel {
         }
         if let Some(checked) = self.checked {
             entry.insert("checked".to_string(), json!(checked));
+        }
+        if let Some(key) = &self.key {
+            entry.insert("key".to_string(), json!(key));
         }
         entry
     }
@@ -3020,7 +3095,7 @@ impl StepLabel {
             "read_text" => {
                 entry.insert("text".to_string(), value["text"].clone());
             }
-            "click" | "fill" | "select" | "check" => {
+            "click" | "fill" | "select" | "check" | "press" => {
                 for key in ["refId", "changes"] {
                     if let Some(field) = value.get(key) {
                         entry.insert(key.to_string(), field.clone());
@@ -3098,6 +3173,10 @@ pub fn render_act(value: &Value) -> String {
                 format!("unchecked {element}{changed}")
             }
             "check" => format!("checked {element}{changed}"),
+            "press" if element.is_empty() => {
+                format!("pressed {}{changed}", plain(&entry["key"]))
+            }
+            "press" => format!("pressed {} on {element}{changed}", plain(&entry["key"])),
             "scroll" => scroll_line(ref_id, &entry["result"]),
             "navigate" => format!("navigated: {}", plain(&entry["url"])),
             "evaluate" => format!("evaluated: {}", plain(&entry["result"])),
@@ -3128,6 +3207,9 @@ fn changes_line(kind: &str, changes: &Value) -> String {
     if let Some(url) = report.get("navigated").and_then(Value::as_str) {
         parts.push(format!("navigated to {url}"));
     }
+    if let Some(url) = report.get("navigating").and_then(Value::as_str) {
+        parts.push(format!("navigating to {url}"));
+    }
     for (key, verb) in [
         ("opened", "opened"),
         ("closed", "closed"),
@@ -3146,13 +3228,20 @@ fn changes_line(kind: &str, changes: &Value) -> String {
                 .join(", ")
         ));
     }
+    let controls = list("controls");
+    if !controls.is_empty() {
+        parts.push(format!("controls {}", controls.join(", ")));
+    }
+    if let Some(more) = report.get("moreControls").and_then(Value::as_str) {
+        parts.push(more.to_owned());
+    }
     let settled = report.get("settledMs").map(plain).unwrap_or_default();
     let quiet = if report.get("quiet") == Some(&json!(false)) {
         "still changing"
     } else {
         "settled"
     };
-    if parts.is_empty() && kind != "click" {
+    if parts.is_empty() && !matches!(kind, "click" | "press") {
         String::new()
     } else if parts.is_empty() {
         format!(" → no visible change ({quiet} {settled}ms)")

@@ -1007,7 +1007,8 @@ mod tests {
                             {"type":"click","refId":"kqx12"},
                             {"type":"check","refId":"kqx13"},
                             {"type":"check","refId":"kqx14","checked":false},
-                            {"type":"click","role":"menuitemradio","name":"Read and write"},
+                            {"type":"click","role":"menuitem","name":"Read and write"},
+                            {"type":"press","key":"Escape"},
                             {"type":"observe","refId":"kqx2"}
                         ]})
                         .as_object()
@@ -1029,7 +1030,7 @@ mod tests {
             &bridge,
             &click,
             "first",
-            r#"{"refId":"kqx12","changes":{"settledMs":420,"quiet":true,"opened":["menu \"Access\""]}}"#,
+            r#"{"refId":"kqx12","changes":{"settledMs":420,"quiet":true,"opened":["menu \"Access\""],"controls":["kqx20 menuitem \"Read and write\""],"moreControls":"observe kqx19 for 3 more"}}"#,
         )
         .await;
         for (ref_id, checked) in [("kqx13", true), ("kqx14", false)] {
@@ -1050,13 +1051,26 @@ mod tests {
         let named = next_call(&mut receiver).await;
         assert_eq!(
             named.args,
-            json!({"role":"menuitemradio","name":"Read and write","action":"click"})
+            json!({"role":"menuitem","name":"Read and write","action":"click"})
         );
         reply(
             &bridge,
             &named,
             "first",
             r#"{"refId":"kqx20","changes":{"settledMs":450,"quiet":true,"closed":["menu \"Access\""],"added":["Access: Read and write"]}}"#,
+        )
+        .await;
+        // An untargeted press goes to the focused element and reports changes.
+        let press = next_call(&mut receiver).await;
+        assert_eq!(
+            (press.tool.as_str(), &press.args),
+            ("act_element", &json!({"action":"press","key":"Escape"}))
+        );
+        reply(
+            &bridge,
+            &press,
+            "first",
+            r#"{"changes":{"settledMs":410,"quiet":true,"closed":["dialog \"Permissions\""]}}"#,
         )
         .await;
         let observe = next_call(&mut receiver).await;
@@ -1079,10 +1093,11 @@ mod tests {
             text,
             format!(
                 "targetId: {}\n\
-                 clicked kqx12 → opened menu \"Access\" (settled 420ms)\n\
+                 clicked kqx12 → opened menu \"Access\"; controls kqx20 menuitem \"Read and write\"; observe kqx19 for 3 more (settled 420ms)\n\
                  checked kqx13\n\
                  unchecked kqx14\n\
-                 clicked kqx20 (menuitemradio \"Read and write\") → closed menu \"Access\"; text \"Access: Read and write\" (settled 450ms)\n\
+                 clicked kqx20 (menuitem \"Read and write\") → closed menu \"Access\"; text \"Access: Read and write\" (settled 450ms)\n\
+                 pressed Escape → closed dialog \"Permissions\" (settled 410ms)\n\
                  observed:\nFrames: 1\n  [kqx13] radio \"16GB\" checked=\"true\"",
                 target.as_str().unwrap()
             )
