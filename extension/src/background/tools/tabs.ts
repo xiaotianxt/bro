@@ -422,7 +422,7 @@ async function getAnchorTab(tabId: number | undefined): Promise<chrome.tabs.Tab>
   return activeTab
 }
 
-async function ensureSessionGroup(sessionId: string, tabId: number): Promise<number> {
+async function ensureSessionGroup(sessionId: string, tabId: number, windowId: number): Promise<number> {
   let groupId = await getSessionGroupId(sessionId)
 
   if (groupId !== undefined) {
@@ -434,7 +434,9 @@ async function ensureSessionGroup(sessionId: string, tabId: number): Promise<num
   }
 
   if (groupId === undefined) {
-    groupId = await chrome.tabs.group({ tabIds: tabId })
+    // Without a window, the group goes to the focused window, which may be an
+    // app or popup window that cannot hold groups.
+    groupId = await chrome.tabs.group({ tabIds: tabId, createProperties: { windowId } })
     await setSessionGroupId(sessionId, groupId)
   } else {
     await chrome.tabs.group({ tabIds: tabId, groupId })
@@ -618,7 +620,7 @@ async function createReadyTab(
   try {
     if (sessionId !== undefined) {
       if (sessionName !== undefined) await setSessionName(sessionId, sessionName)
-      await ensureSessionGroup(sessionId, tab.id)
+      await ensureSessionGroup(sessionId, tab.id, tab.windowId)
       await addSessionTabId(sessionId, 'owned', tab.id)
     }
     if (properties.url && properties.url !== 'about:blank') {
@@ -668,7 +670,7 @@ async function executeTabsClaim(_tabId: number, rawArgs: unknown): Promise<ToolR
   }
 
   if (args.sessionId !== undefined) {
-    await ensureSessionGroup(args.sessionId, args.tabId)
+    await ensureSessionGroup(args.sessionId, args.tabId, tab.windowId)
     await addSessionTabId(args.sessionId, 'claimed', args.tabId)
   }
 

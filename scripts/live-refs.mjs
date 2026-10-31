@@ -152,6 +152,14 @@ const fixture = (req, res) => {
     res.writeHead(302, { Location: `${rootUrl}/blank` }).end()
     return
   }
+  if (url.pathname === '/popup-opener') {
+    send(`<!doctype html><title>Popup opener</title><button onclick="window.open('/popup', 'bro-popup', 'popup,width=420,height=320')">Open popup</button>`)
+    return
+  }
+  if (url.pathname === '/popup') {
+    send('<!doctype html><title>Popup</title><p>Popup window</p><script>setTimeout(() => window.close(), 4000)</script>')
+    return
+  }
   if (url.pathname === '/lazy-feed') {
     // Cards render only after IntersectionObserver and requestAnimationFrame
     // fire, which Chrome withholds from tabs that are not shown.
@@ -1135,6 +1143,17 @@ try {
     const closed = await tool('browser.close', { targetId: held.targetId })
     assert.equal((closed.structuredContent ?? JSON.parse(text(closed))).closed, true)
     return { openMs, observeMs, heldOpenMs, heldObserveMs }
+  })
+  await check('W: an owned tab groups in its own window while a popup has focus', async () => {
+    const opener = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/popup-opener` })))
+    try {
+      await tool('browser.click', { targetId: opener.targetId, role: 'button', name: 'Open popup' })
+      // The popup is the focused window; the group must not be created there.
+      const owned = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/blank`, ownerSessionId: 'popup-focus', label: 'Popup focus' })))
+      await tool('browser.close', { targetId: owned.targetId })
+    } finally {
+      await tool('browser.close', { targetId: opener.targetId })
+    }
   })
   await check('R: background tabs render lazy content', async () => {
     const extracted = JSON.parse(text(await tool('browser.extract', { url: `${rootUrl}/lazy-feed` })))

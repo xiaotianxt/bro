@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Session tab groups are created in the new tab's own window. Before, Chrome
+  put the group in the focused window, so opening a tab while an installed
+  app or popup window had focus failed with "Grouping is not supported by tabs
+  in this window".
+
 ## 1.4.2
 
 - The server now pings each extension connection every 15 s and drops one that
