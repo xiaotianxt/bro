@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.4.0 (unreleased candidate)
+## 1.4.0
 
 - Add the default `browser.open/observe/act/close` interface with explicit
   browser/tab-pinned target IDs, composable typed actions and observations.
