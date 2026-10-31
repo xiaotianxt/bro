@@ -18,7 +18,7 @@ The bearer token is read directly from `~/.bro/settings.json`. It is not copied 
 Install the tagged bro repository as a Pi package:
 
 ```bash
-pi install git:github.com/xiaotianxt/bro@v1.4.0
+pi install git:github.com/xiaotianxt/bro@v1.4.1
 ```
 
 For development from a checkout:

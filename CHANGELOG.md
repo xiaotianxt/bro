@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.4.1 (unreleased)
+## 1.4.1
 
 - Background tabs that bro creates now render: Chrome gives hidden tabs no
   frames, so `requestAnimationFrame` and `IntersectionObserver` never ran and
