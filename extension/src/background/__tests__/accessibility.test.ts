@@ -276,7 +276,7 @@ describe('document-bound accessibility snapshots', () => {
     expect(result.truncated).toBe(true)
     for (const ref of published.keys()) expect(result.text).toContain(`[${ref}]`)
     published.clear()
-    const found = renderSnapshot(store, 42, frames, { filter: 'all', depth: 10, maxChars: 4000, matchWords: ['name'], maxMatches: 1 })
+    const found = renderSnapshot(store, 42, frames, { filter: 'all', depth: 10, maxChars: 4000, match: (_role, name) => name.toLowerCase().includes('name'), maxMatches: 1 })
     expect(published.size).toBe(1)
     for (const ref of published.keys()) expect(found.text).toContain(`[${ref}]`)
   })

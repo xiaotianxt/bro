@@ -149,15 +149,18 @@ describe('computer input', () => {
     expect(commands.at(-1)).toEqual({ method: 'Emulation.setFocusEmulationEnabled', params: { enabled: false } })
   })
 
-  it('returns the screenshot coordinate space before the image', async () => {
+  it('captures a device-scaled viewport at CSS pixel size', async () => {
     await import('../tools/computer.js')
     const { dispatchTool } = await import('../tool-registry.js')
 
     const result = await dispatchTool('computer', 42, { action: 'screenshot' })
 
+    expect(commands.find((c) => c.method === 'Page.captureScreenshot')?.params).toMatchObject({
+      clip: { x: 0, y: 0, width: 1280, height: 720, scale: 0.5 },
+    })
     expect(result.content[0]).toEqual({
       type: 'text',
-      text: 'Viewport 1280x720 CSS pixels; deviceScaleFactor 2. Computer coordinates use CSS pixels from top-left (0,0); divide image-pixel coordinates by 2 when the screenshot is device-scaled.',
+      text: 'Viewport 1280x720 CSS pixels; the image is 1280x720 pixels, so image coordinates are computer coordinates (top-left 0,0).',
     })
     expect(result.content[1]).toEqual({
       type: 'image',

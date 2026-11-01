@@ -554,11 +554,10 @@ async function executeTabsContextMcp(_tabId: number, rawArgs: unknown): Promise<
   const instanceId = await getInstanceId()
   const browserIdLine = instanceId ? `browserId: ${instanceId}` : ''
 
-  if (!args.sessionId) {
-    return {
-      content: [{ type: 'text', text: 'No sessionId provided. Cannot determine session tab group.' }],
-    }
-  }
+  // Without a session there is no group to scope to; the anchor tab's context
+  // is still what the caller needs to choose a tab.
+  if (!args.sessionId)
+    return executeTabsContext(_tabId, args.tabId === undefined ? {} : { tabId: args.tabId })
 
   const groupId = await getSessionGroupId(args.sessionId)
 

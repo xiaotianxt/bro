@@ -376,6 +376,9 @@ function coordinateGuidance(viewport: ViewportMetadata): string {
   return `Viewport ${viewport.width}x${viewport.height} CSS pixels; deviceScaleFactor ${viewport.deviceScaleFactor}. Computer coordinates use CSS pixels from top-left (0,0); divide image-pixel coordinates by ${viewport.deviceScaleFactor} when the screenshot is device-scaled.`
 }
 
+// Captured at one image pixel per CSS pixel: a device-scaled viewport costs
+// deviceScaleFactor² more image data for detail `zoom` exists to provide, and
+// the image coordinates are then exactly the coordinates `computer` accepts.
 async function actionScreenshot(
   tabId: number,
   quality = DEFAULT_SCREENSHOT_QUALITY,
@@ -388,12 +391,26 @@ async function actionScreenshot(
       format: 'jpeg',
       quality,
       captureBeyondViewport: false,
+      ...(viewport.deviceScaleFactor > 1 && viewport.width > 0 && viewport.height > 0
+        ? {
+            clip: {
+              x: viewport.scrollX,
+              y: viewport.scrollY,
+              width: viewport.width,
+              height: viewport.height,
+              scale: 1 / viewport.deviceScaleFactor,
+            },
+          }
+        : {}),
     },
   )
 
   return {
     content: [
-      { type: 'text', text: coordinateGuidance(viewport) },
+      {
+        type: 'text',
+        text: `Viewport ${viewport.width}x${viewport.height} CSS pixels; the image is ${viewport.width}x${viewport.height} pixels, so image coordinates are computer coordinates (top-left 0,0).`,
+      },
       {
         type: 'image',
         data: result.data,

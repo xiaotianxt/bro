@@ -142,7 +142,7 @@ export async function withRef<T>(
 export async function readAXPage(
   tabId: number,
   raw: unknown,
-  matches?: { matchWords: string[]; maxMatches: number },
+  matches?: Pick<SnapshotOptions, 'match' | 'maxMatches'>,
 ): Promise<ToolResult> {
   const args = argsObject(raw)
   const filter = args['filter'] ?? 'all'
@@ -252,21 +252,63 @@ async function readFrames(
   return collected
 }
 
-export async function findAX(tabId: number, raw: unknown): Promise<ToolResult> {
+// Grammar and position words never appear in the accessible names they describe.
+const FIND_STOPWORDS = new Set(['a', 'an', 'the', 'at', 'on', 'in', 'of', 'to', 'for', 'with', 'and', 'or', 'near', 'top', 'bottom', 'left', 'right', 'element'])
+const TEXT_ENTRY = ['textbox', 'searchbox', 'combobox']
+// Description words that name a role rather than a label.
+const ROLE_WORDS = new Map<string, string[]>([
+  ...[...INTERACTIVE].map((role) => [role.toLowerCase(), [role]] as [string, string[]]),
+  ['heading', ['heading']],
+  ['image', ['image', 'img']],
+  ['input', TEXT_ENTRY],
+  ['field', TEXT_ENTRY],
+])
+const FIND_LIMIT = 20
+
+// Ranks nodes by how many label words they contain, so a natural description
+// ("More link at bottom") still finds `link "More"`. Role words only break
+// ties: a description need not name the role the page exposes. `strict` (wait)
+// accepts only nodes with every label word and a named role, so waiting does
+// not end on a partial match.
+function findScorer(description: string, strict: boolean): (role: string, name: string) => number {
+  const words = description.toLowerCase().split(/\s+/).map((w) => w.replace(/[.,;:!?]+$/, '')).filter(Boolean)
+  const roles = new Set(words.flatMap((w) => ROLE_WORDS.get(w) ?? []))
+  const labels = words.filter((w) => !FIND_STOPWORDS.has(w) && !ROLE_WORDS.has(w))
+  if (labels.length === 0 && roles.size === 0)
+    throw new Error(`find: description ${JSON.stringify(description)} has no label or role words`)
+  return (role, name) => {
+    const lower = name.toLowerCase()
+    const hits = labels.filter((w) => lower.includes(w)).length
+    if (labels.length > 0 && hits === 0) return 0
+    if (strict && (hits < labels.length || (roles.size > 0 && !roles.has(role)))) return 0
+    return hits * 2 + (roles.has(role) ? 1 : 0)
+  }
+}
+
+export async function findAX(tabId: number, raw: unknown, strict = false): Promise<ToolResult> {
   const args = argsObject(raw)
-  const words = stringArg(args, 'description').toLowerCase().split(/\s+/)
+  const score = findScorer(stringArg(args, 'description'), strict)
   const snapshot = await readAXPage(tabId, {
     filter: 'all',
     maxChars: 60000,
     ...(args['refId'] === undefined ? {} : { refId: stringArg(args, 'refId') }),
-  }, { matchWords: words, maxMatches: 30 })
+  }, { match: (role, name) => score(role, name) > 0, maxMatches: 200 })
   const text = snapshot.content.map((c) => (c.type === 'text' ? c.text : '')).join('\n')
-  const matches = text
+  const ranked = text
     .split('\n')
-    .filter((line) => REF_PATTERN.test(/\[([^\]]+)\]/.exec(line)?.[1] ?? ''))
+    .flatMap((line) => {
+      const parsed = /^\s*\[([^\]]+)\] (\S+) ("(?:[^"\\]|\\.)*")/.exec(line)
+      if (!parsed || !REF_PATTERN.test(parsed[1]!)) return []
+      const name = JSON.parse(parsed[3]!) as string
+      return [{ line: line.trim(), score: score(parsed[2]!, name), length: name.length }]
+    })
+    // Stable sort: equal candidates stay in document order.
+    .sort((a, b) => b.score - a.score || a.length - b.length)
+  const shown = ranked.slice(0, FIND_LIMIT).map((m) => m.line)
+  const more = ranked.length > FIND_LIMIT ? `\n(${ranked.length - FIND_LIMIT} weaker matches omitted; describe the label more exactly or scope with refId.)` : ''
   return textResult(
-    matches.length
-      ? `Matching refs (same-node refs survive rereads):\n${matches.join('\n')}`
+    shown.length
+      ? `Matching refs, best first (same-node refs survive rereads):\n${shown.join('\n')}${more}`
       : 'No matching accessible elements. Read the page to inspect its labels and frame availability.',
   )
 }
@@ -735,7 +777,7 @@ export async function waitAX(tabId: number, raw: unknown): Promise<ToolResult> {
       })
       if (visible) return textResult(`Element ${args['refId']} is visible.`)
     } else {
-      const result = await findAX(tabId, args)
+      const result = await findAX(tabId, args, true)
       if (result.content.some((c) => c.type === 'text' && c.text.startsWith('Matching refs')))
         return result
     }

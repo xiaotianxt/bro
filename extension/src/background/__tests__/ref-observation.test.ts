@@ -43,6 +43,28 @@ describe('observation identity at the browser boundary', () => {
     expect(refs(text(await findAX(42, { description: '"hello"' })))).toHaveLength(1)
   })
 
+  it('find ranks natural descriptions by label words; wait still needs every word', async () => {
+    mocks.frames.mockResolvedValue([main])
+    const page = [
+      { nodeId: '1', backendDOMNodeId: 1, role: { value: 'link' }, name: { value: 'Tips for more effective fuzzing' } },
+      { nodeId: '2', backendDOMNodeId: 2, role: { value: 'cell' }, name: { value: 'More' } },
+      { nodeId: '3', backendDOMNodeId: 3, role: { value: 'link' }, name: { value: 'More' } },
+    ]
+    mocks.send.mockImplementation(async (_tab, _frame, method) =>
+      method === 'Accessibility.getFullAXTree' ? { nodes: page } : {})
+    const { findAX, waitAX } = await import('../tools/accessibility.js')
+    const lines = text(await findAX(42, { description: 'More link at bottom' })).split('\n').slice(1)
+    expect(lines.map((l) => l.replace(/\[[^\]]+\] /, ''))).toEqual([
+      'link "More"',
+      'link "Tips for more effective fuzzing"',
+      'cell "More"',
+    ])
+    const waited = await waitAX(42, { description: 'More effective link', timeout: 1 })
+    expect(text(waited).split('\n').slice(1).map((l) => l.replace(/\[[^\]]+\] /, ''))).toEqual([
+      'link "Tips for more effective fuzzing"',
+    ])
+  })
+
   it('applies scoped depth relative to the ref, not the document root', async () => {
     const original = mocks.send.getMockImplementation()!
     mocks.frames.mockResolvedValue([main])

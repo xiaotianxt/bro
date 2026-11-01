@@ -353,7 +353,7 @@ static SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "tabs_context_mcp",
-        description: "Get tab context for MCP sessions.",
+        description: "Get the tabs in an MCP session's tab group; without sessionId, the anchor tab's window context.",
         route: ToolRoute::Forward {
             tab_id_envelope: false,
         },
@@ -429,7 +429,7 @@ static SPECS: &[ToolSpec] = &[
     ),
     forward(
         "find",
-        "Find a page element by natural language description.",
+        "Find elements by their visible label (accessible name) words, optionally with a role word such as link or button. Returns up to 20 refs, best match first.",
         "find",
     ),
     forward(

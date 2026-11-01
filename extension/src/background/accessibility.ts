@@ -116,7 +116,8 @@ export interface SnapshotOptions {
   depth: number
   maxChars: number
   compact?: boolean
-  matchWords?: string[]
+  // find: show only the nodes this accepts.
+  match?: (role: string, name: string) => boolean
   maxMatches?: number
   // Node lines to skip, from a previous truncated read of the same scope.
   cursor?: number
@@ -172,7 +173,7 @@ export function renderSnapshot(
   const rendered = new Map<string, string>()
   // The footer lists unread landmarks/headings as scope refs within its own
   // budget, reserved from maxChars; its cursor is at most 10 digits.
-  const outlineBudget = options.matchWords ? 0 : Math.min(600, Math.floor(options.maxChars / 10))
+  const outlineBudget = options.match ? 0 : Math.min(600, Math.floor(options.maxChars / 10))
   const reserve =
     `\n[Truncated at ${options.maxChars} chars; continue with cursor=0000000000, or scope with refId to an unread section:]`.length +
     outlineBudget
@@ -236,8 +237,7 @@ export function renderSnapshot(
         !(role === 'StaticText' && name !== '' && name === echo) &&
         !(options.compact !== false && structural) &&
         (options.filter === 'all' || interactive || role === 'RootWebArea' || role === 'Iframe') &&
-        (!options.matchWords || (node.backendDOMNodeId && options.matchWords.every((word) =>
-          `${role} ${name}`.toLowerCase().includes(word)))) &&
+        (!options.match || (node.backendDOMNodeId && options.match(role, rawName))) &&
         (options.maxMatches === undefined || refs.size < options.maxMatches)
       const landmark = LANDMARKS.has(role) && (name !== '' || !['region', 'form'].includes(role))
       const target = node.backendDOMNodeId && !['RootWebArea', 'StaticText', 'LineBreak'].includes(role)

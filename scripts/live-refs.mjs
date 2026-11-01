@@ -267,6 +267,10 @@ const fixture = (req, res) => {
     res.end('<!doctype html><title>Page wheel contract</title><main role="region" aria-label="Scroll panel" style="height:3000px">Long document</main><output id="scroll-state" style="position:fixed;top:0;right:0">SCROLL_TOP:0</output><script>document.addEventListener("scroll",()=>document.querySelector("#scroll-state").textContent="SCROLL_TOP:"+Math.round(scrollY));</script>')
     return
   }
+  if (url.pathname === '/bands') {
+    res.end('<!doctype html><title>Screenshot bands</title><style>body{margin:0}</style><div style="height:1500px;background:#f00"></div><div style="height:3000px;background:#00f"></div>')
+    return
+  }
   if (url.pathname === '/scroll') {
     send(
       '<!doctype html><title>Scroll contract</title><div id="panel" role="region" aria-label="Scroll panel" style="width:300px;height:80px;overflow:auto"><div style="height:1000px">Scrollable content</div></div><output id="scroll-state">SCROLL_TOP:0</output><script>document.querySelector("#panel").addEventListener("scroll",e=>document.querySelector("#scroll-state").textContent="SCROLL_TOP:"+Math.round(e.target.scrollTop));</script>',
@@ -961,6 +965,8 @@ try {
       const found = text(await tool('find', { tabId, description: 'Scroll panel' }))
       const refId = found.match(/\[([a-z]{3}\d+)\]/)?.[1]
       assert.ok(refId, found)
+      const described = text(await tool('find', { tabId, description: 'the scroll panel region at the top' }))
+      assert.equal(described.match(/\[([a-z]{3}\d+)\]/)?.[1], refId, described)
       await tool('wait_for_element', { tabId, refId })
       const info = () => tool('get_element_info', { tabId, refId }).then((r) => JSON.parse(text(r)))
       assert.equal((await info()).scroll.top, 0)
@@ -973,6 +979,24 @@ try {
       )
     },
   )
+  await check('screenshot captures the scrolled viewport at CSS pixel size', async () => {
+    await tool('navigate', { tabId, url: `${rootUrl}/bands` })
+    await tool('javascript_tool', { tabId, code: 'scrollTo(0, 1600); scrollY' })
+    const shot = await tool('computer', { tabId, action: 'screenshot' })
+    const image = shot.content.find((c) => c.type === 'image')
+    assert.ok(image, text(shot))
+    // Decode in the page: the image must be the viewport in CSS pixels and
+    // show the blue band below the scroll offset, not the red top of the page.
+    // javascript_tool returns a string result as its JSON literal.
+    const probe = JSON.parse(JSON.parse(text(await tool('javascript_tool', {
+      tabId,
+      awaitPromise: true,
+      code: `new Promise((ok, fail) => { const img = new Image(); img.onload = () => { const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; const g = c.getContext('2d'); g.drawImage(img, 0, 0); const [r, , b] = g.getImageData(img.width >> 1, img.height >> 1, 1, 1).data; ok(JSON.stringify({ size: [img.width, img.height], viewport: [innerWidth, innerHeight], dpr: devicePixelRatio, r, b })) }; img.onerror = fail; img.src = 'data:image/jpeg;base64,${image.data}' })`,
+    }))))
+    assert.deepEqual(probe.size, probe.viewport)
+    assert.ok(probe.b > 200 && probe.r < 60, `expected the scrolled blue band: ${JSON.stringify(probe)}`)
+    return { dpr: probe.dpr, base64Bytes: image.data.length }
+  })
   await check('modern target composition observes intended documents and stable scoped refs', async () => {
     const opened = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/redirect` })))
     try {
