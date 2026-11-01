@@ -106,7 +106,7 @@ describe('frame-aware DOM tools', () => {
     })
     expect(commands).toContainEqual({
       method: 'Runtime.evaluate',
-      params: expect.objectContaining({ contextId: 99, awaitPromise: true }),
+      params: expect.objectContaining({ contextId: 99, replMode: true, expression: '{\ndocument.body.innerText\n}' }),
     })
   })
 })

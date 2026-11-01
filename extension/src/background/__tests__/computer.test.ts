@@ -55,6 +55,7 @@ function installChromeMock(): void {
     tabs: {
       get: vi.fn(async () => ({ id: 42, url: 'https://example.test', windowId: 7 })),
       update: activateTab,
+      onRemoved: { addListener: vi.fn() },
     },
     windows: { update: focusWindow },
   })

@@ -86,10 +86,15 @@ function getClampedInteger(
 // ---------------------------------------------------------------------------
 
 // CDP Runtime.evaluate response shape (partial)
+const EVAL_OBJECT_GROUP = 'bro-javascript-tool'
+
 interface CDPEvaluateResult {
   result: {
     type: string
+    subtype?: string
     value?: unknown
+    unserializableValue?: string
+    objectId?: string
     description?: string
   }
   exceptionDetails?: {
@@ -170,45 +175,50 @@ async function evaluateInPage(
   if (frameId !== undefined && !frame) throw new Error(`Frame ${frameId} is no longer available`)
   const world = frame === undefined ? undefined : await sendToFrame<{ executionContextId: number }>(tabId, frame, 'Page.createIsolatedWorld', { frameId, worldName: 'bro', grantUniveralAccess: false })
   const contextId = world?.executionContextId
-  const evaluate = (params: object): Promise<CDPEvaluateResult> => (frame === undefined
-    ? cdpSession.send<CDPEvaluateResult>(tabId, 'Runtime.evaluate', params)
-    : sendToFrame<CDPEvaluateResult>(tabId, frame, 'Runtime.evaluate', params)
+  const send = <T>(method: string, params: object): Promise<T> => (frame === undefined
+    ? cdpSession.send<T>(tabId, method, params)
+    : sendToFrame<T>(tabId, frame, method, params)
   ).catch((error: unknown) => {
     if (!(error instanceof CdpCommandTimeout)) throw error
     throw new Error(
       `evaluate got no result within ${CDP_COMMAND_TIMEOUT_MS}ms: the expression awaited too long or the page's main thread was busy. Instead of a timer, use a wait step for the text or ref state you expect, then evaluate a shorter expression.`,
     )
   })
-  if (awaitPromise) {
-    // Async wrapper: await the eval result, then return {result, isError}.
-    // CDP awaitPromise:true ensures the outer Promise (from async IIFE) is
-    // awaited before returnByValue serializes the result.
-    const expression = `(async function() { try { var __r = await eval(${JSON.stringify(code)}); return { result: __r === undefined ? 'undefined' : (() => { try { return JSON.stringify(__r) } catch(e) { return String(__r) } })(), isError: false }; } catch(e) { return { result: e instanceof Error ? e.message : String(e), isError: true }; } })()`
-    const res = await evaluate({ expression, returnByValue: true, awaitPromise: true, ...(contextId === undefined ? {} : { contextId }) })
+  // replMode evaluates like the DevTools console: top-level await works and the
+  // completion value of the last statement is the result. Like the console it
+  // does not unwrap a returned Promise, so awaitPromise awaits it explicitly.
+  // The block keeps the caller's let/const out of the page's global scope,
+  // where they would collide with the page's own declarations and with the
+  // next call.
+  let res = await send<CDPEvaluateResult>('Runtime.evaluate', {
+    expression: `{\n${code}\n}`,
+    replMode: true,
+    objectGroup: EVAL_OBJECT_GROUP,
+    ...(contextId === undefined ? {} : { contextId }),
+  })
+  try {
+    if (awaitPromise && !res.exceptionDetails && res.result.subtype === 'promise' && res.result.objectId)
+      res = await send<CDPEvaluateResult>('Runtime.awaitPromise', { promiseObjectId: res.result.objectId })
     if (res.exceptionDetails) {
-      return {
-        result: res.exceptionDetails.exception?.description ?? res.exceptionDetails.text ?? 'Unknown error',
-        isError: true,
-      }
+      const detail = res.exceptionDetails.exception?.description ?? res.exceptionDetails.text
+      // Page stack frames point into the caller's own snippet; drop them and the
+      // error class prefix, as the previous eval wrapper reported e.message.
+      return { result: detail.split('\n    at ')[0]!.replace(/^[A-Za-z]*Error: /, ''), isError: true }
     }
-    const value = res.result.value as { result: string; isError: boolean } | undefined
-    if (value && typeof value.result === 'string') {
-      return value
-    }
-    // Fallback: CDP may not have returned by value properly
-    return { result: res.result.description ?? '{}', isError: false }
+    const value = res.result
+    if (value.type === 'undefined') return { result: 'undefined', isError: false }
+    if (value.objectId === undefined)
+      return { result: value.unserializableValue ?? JSON.stringify(value.value), isError: false }
+    // Same serialization as before: JSON when possible, else String().
+    const serialized = await send<CDPEvaluateResult>('Runtime.callFunctionOn', {
+      objectId: value.objectId,
+      functionDeclaration: 'function () { try { var s = JSON.stringify(this); return s === undefined ? String(this) : s } catch (e) { return String(this) } }',
+      returnByValue: true,
+    })
+    return { result: String(serialized.result.value), isError: false }
+  } finally {
+    await send('Runtime.releaseObjectGroup', { objectGroup: EVAL_OBJECT_GROUP }).catch(() => {})
   }
-
-  // Sync wrapper: eval and serialize immediately.
-  const expression = `(function() { try { var __r = eval(${JSON.stringify(code)}); return { result: __r === undefined ? 'undefined' : (() => { try { return JSON.stringify(__r) } catch(e) { return String(__r) } })(), isError: false }; } catch(e) { return { result: e instanceof Error ? e.message : String(e), isError: true }; } })()`
-  const res = await evaluate({ expression, returnByValue: true, awaitPromise: false, ...(contextId === undefined ? {} : { contextId }) })
-  if (res.exceptionDetails) {
-    return {
-      result: res.exceptionDetails.exception?.description ?? res.exceptionDetails.text ?? 'Unknown error',
-      isError: true,
-    }
-  }
-  return res.result.value as { result: string; isError: boolean }
 }
 
 // ---------------------------------------------------------------------------

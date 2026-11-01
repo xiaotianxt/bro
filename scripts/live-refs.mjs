@@ -267,6 +267,10 @@ const fixture = (req, res) => {
     res.end('<!doctype html><title>Page wheel contract</title><main role="region" aria-label="Scroll panel" style="height:3000px">Long document</main><output id="scroll-state" style="position:fixed;top:0;right:0">SCROLL_TOP:0</output><script>document.addEventListener("scroll",()=>document.querySelector("#scroll-state").textContent="SCROLL_TOP:"+Math.round(scrollY));</script>')
     return
   }
+  if (url.pathname === '/console') {
+    res.end('<!doctype html><title>Console contract</title><script>let pageOwned = 1</script><button onclick="this.textContent=\'PRESSED\'">Press me</button>')
+    return
+  }
   if (url.pathname === '/bands') {
     res.end('<!doctype html><title>Screenshot bands</title><style>body{margin:0}</style><div style="height:1500px;background:#f00"></div><div style="height:3000px;background:#00f"></div>')
     return
@@ -979,6 +983,26 @@ try {
       )
     },
   )
+  await check('javascript_tool evaluates like a console and computer clicks a ref', async () => {
+    await tool('navigate', { tabId, url: `${rootUrl}/console` })
+    const js = async (code) => text(await tool('javascript_tool', { tabId, code }))
+    // Top-level await without awaitPromise, as the DevTools console allows.
+    assert.equal(await js('await new Promise((r) => setTimeout(() => r(7), 50))'), '7')
+    const awaited = text(await tool('javascript_tool', { tabId, code: 'Promise.resolve("done")', awaitPromise: true }))
+    assert.equal(awaited, '"done"')
+    // Caller declarations stay scoped: they neither collide with the page's own
+    // top-level `let` nor with the same name in the next call.
+    assert.equal(await js('const pageOwned = 2; pageOwned'), '2')
+    assert.equal(await js('const pageOwned = 3; pageOwned'), '3')
+    assert.equal(await js('pageOwned'), '1')
+    const thrown = await tool('javascript_tool', { tabId, code: "document.querySelector('nope').x" }, true)
+    assert.equal(text(thrown), "Cannot read properties of null (reading 'x')")
+    const found = text(await tool('find', { tabId, description: 'Press me button' }))
+    const refId = found.match(/\[([a-z]{3}\d+)\]/)?.[1]
+    assert.ok(refId, found)
+    await tool('computer', { tabId, action: 'left_click', refId })
+    assert.equal(await js("document.querySelector('button').textContent"), '"PRESSED"')
+  })
   await check('screenshot captures the scrolled viewport at CSS pixel size', async () => {
     await tool('navigate', { tabId, url: `${rootUrl}/bands` })
     await tool('javascript_tool', { tabId, code: 'scrollTo(0, 1600); scrollY' })

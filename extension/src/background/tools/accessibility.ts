@@ -262,6 +262,8 @@ const ROLE_WORDS = new Map<string, string[]>([
   ['image', ['image', 'img']],
   ['input', TEXT_ENTRY],
   ['field', TEXT_ENTRY],
+  ['dropdown', ['combobox', 'listbox']],
+  ['select', ['combobox', 'listbox']],
 ])
 const FIND_LIMIT = 20
 
@@ -533,7 +535,7 @@ async function parentPoint(this: Element, point: Point): Promise<Point> {
   return { x, y }
 }
 
-async function prepareRefInput(tabId: number, ref: string): Promise<Point> {
+export async function prepareRefInput(tabId: number, ref: string): Promise<Point> {
   snapshots.resolve(tabId, ref)
   const localPoint = await withRef(tabId, ref, preparePoint)
   let point = localPoint

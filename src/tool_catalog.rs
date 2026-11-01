@@ -922,6 +922,10 @@ fn schema(kind: &str) -> JsonObject {
                 "quality",
                 json!({"type":"integer","minimum":10,"maximum":95,"default":55,"description":"JPEG quality for screenshot/zoom actions. Raise only when visual detail matters."}),
             ),
+            (
+                "refId",
+                json!({"type":"string","minLength":1,"description":"Ref from read_page/find; targets click, hover and scroll actions instead of coordinate."}),
+            ),
             ("tabId", tab_id_schema("Numeric tab ID to operate on.")),
             ("browserId", browser_id_schema()),
         ]),

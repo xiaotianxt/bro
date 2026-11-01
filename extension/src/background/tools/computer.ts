@@ -4,6 +4,7 @@ import type { ToolResult } from '@bro/shared'
 import { cdpSession } from '../cdp.js'
 import { withInput } from '../input.js'
 import { registerTool } from '../tool-registry.js'
+import { prepareRefInput } from './accessibility.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -51,6 +52,7 @@ interface ComputerArgs {
   amount?: number
   region?: [number, number, number, number] // x, y, width, height
   quality?: number
+  refId?: string
 }
 
 // CDP response types
@@ -112,6 +114,13 @@ function validateArgs(args: unknown): ComputerArgs {
       throw new Error('computer: "coordinate" must be [number, number]')
     }
     validated.coordinate = a['coordinate']
+  }
+
+  if (a['refId'] !== undefined) {
+    if (typeof a['refId'] !== 'string' || a['refId'].length === 0) {
+      throw new Error('computer: "refId" must be a non-empty string')
+    }
+    validated.refId = a['refId']
   }
 
   // Validate start_coordinate if present
@@ -710,8 +719,26 @@ async function executeComputer(tabId: number, rawArgs: unknown): Promise<ToolRes
   return withInput(tabId, () => dispatchComputer(tabId, args))
 }
 
+// Actions whose target point a refId can give instead of a coordinate.
+const POINTER_ACTIONS: ReadonlySet<ComputerAction> = new Set([
+  'left_click',
+  'right_click',
+  'middle_click',
+  'double_click',
+  'triple_click',
+  'hover',
+  'scroll',
+])
+
 async function dispatchComputer(tabId: number, args: ComputerArgs): Promise<ToolResult> {
   await cdpSession.ensure(tabId)
+  // A ref resolves to the same scrolled-into-view, hit-tested point that
+  // click_element uses, so callers need not map screenshot pixels.
+  let coordinate = args.coordinate
+  if (coordinate === undefined && args.refId !== undefined && POINTER_ACTIONS.has(args.action)) {
+    const point = await prepareRefInput(tabId, args.refId)
+    coordinate = [point.x, point.y]
+  }
   switch (args.action) {
     case 'screenshot':
       return actionScreenshot(tabId, args.quality)
@@ -722,45 +749,45 @@ async function dispatchComputer(tabId: number, args: ComputerArgs): Promise<Tool
     }
 
     case 'left_click': {
-      if (!args.coordinate) throw new Error('computer: left_click requires "coordinate"')
-      const [x, y] = args.coordinate
+      if (!coordinate) throw new Error('computer: left_click requires "coordinate" or "refId"')
+      const [x, y] = coordinate
       return actionLeftClick(tabId, x, y)
     }
 
     case 'right_click': {
-      if (!args.coordinate) throw new Error('computer: right_click requires "coordinate"')
-      const [x, y] = args.coordinate
+      if (!coordinate) throw new Error('computer: right_click requires "coordinate" or "refId"')
+      const [x, y] = coordinate
       return actionRightClick(tabId, x, y)
     }
 
     case 'middle_click': {
-      if (!args.coordinate) throw new Error('computer: middle_click requires "coordinate"')
-      const [x, y] = args.coordinate
+      if (!coordinate) throw new Error('computer: middle_click requires "coordinate" or "refId"')
+      const [x, y] = coordinate
       return actionMiddleClick(tabId, x, y)
     }
 
     case 'double_click': {
-      if (!args.coordinate) throw new Error('computer: double_click requires "coordinate"')
-      const [x, y] = args.coordinate
+      if (!coordinate) throw new Error('computer: double_click requires "coordinate" or "refId"')
+      const [x, y] = coordinate
       return actionDoubleClick(tabId, x, y)
     }
 
     case 'triple_click': {
-      if (!args.coordinate) throw new Error('computer: triple_click requires "coordinate"')
-      const [x, y] = args.coordinate
+      if (!coordinate) throw new Error('computer: triple_click requires "coordinate" or "refId"')
+      const [x, y] = coordinate
       return actionTripleClick(tabId, x, y)
     }
 
     case 'hover': {
-      if (!args.coordinate) throw new Error('computer: hover requires "coordinate"')
-      const [x, y] = args.coordinate
+      if (!coordinate) throw new Error('computer: hover requires "coordinate" or "refId"')
+      const [x, y] = coordinate
       return actionHover(tabId, x, y)
     }
 
     case 'scroll': {
-      if (!args.coordinate) throw new Error('computer: scroll requires "coordinate"')
+      if (!coordinate) throw new Error('computer: scroll requires "coordinate" or "refId"')
       if (!args.direction) throw new Error('computer: scroll requires "direction"')
-      const [x, y] = args.coordinate
+      const [x, y] = coordinate
       const amount = args.amount ?? 3
       return actionScroll(tabId, x, y, args.direction, amount)
     }
