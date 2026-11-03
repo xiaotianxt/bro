@@ -121,10 +121,23 @@ export async function fillLoginForm(input: LoginInput) {
     if (!setter) return { status: 'fill_failed' }
     // Consume before mutation. No replay even if the response is lost.
     delete (globalThis as typeof globalThis & { __broLoginState?: LoginState }).__broLoginState
-    for (const target of targets) setter.call(target.node, target.value)
+    const keys = (node: HTMLInputElement) => {
+      for (const type of ['keydown', 'keypress', 'keyup']) node.dispatchEvent(new KeyboardEvent(type, { bubbles: true, cancelable: true }))
+    }
+    const tick = () => new Promise(resolve => setTimeout(resolve, 1))
+    // One field at a time, yielding between them, as 1Password does: a
+    // controlled-input framework re-renders every field from its state on each
+    // input event, so a value written before an earlier field's event is lost.
     for (const target of targets) {
+      target.node.click()
+      target.node.focus()
+      keys(target.node)
+      setter.call(target.node, target.value)
+      keys(target.node)
       target.node.dispatchEvent(new Event('input', { bubbles: true }))
       target.node.dispatchEvent(new Event('change', { bubbles: true }))
+      target.node.blur()
+      await tick()
     }
     const matched = targets.every(target => target.node.isConnected && target.node.value === target.value)
     return { status: matched ? 'filled' : 'fill_unverified' }

@@ -36,7 +36,11 @@ const fixture = createServer(async (req, res) => {
     return
   }
   res.setHeader('Content-Type', 'text/html')
-  res.end(`<!doctype html><title>Disposable login fixture</title><label>Username<input id="user" autocomplete="username"></label><label>Password<input id="pass" type="password" autocomplete="current-password"></label><button id="submit" onclick="fetch('/submit',{method:'POST',body:JSON.stringify({username:document.querySelector('#user').value,password:document.querySelector('#pass').value})})">Sign in</button>`)
+  // Controlled inputs like React's: each input event re-renders every field
+  // from state, and an event whose value already matches state is ignored.
+  // Writing all values before any event loses the later fields (Infura).
+  res.end(`<!doctype html><title>Disposable login fixture</title><label>Username<input id="user" autocomplete="username"></label><label>Password<input id="pass" type="password" autocomplete="current-password"></label><button id="submit" onclick="fetch('/submit',{method:'POST',body:JSON.stringify({username:document.querySelector('#user').value,password:document.querySelector('#pass').value})})">Sign in</button>
+<script>const state={user:'',pass:''};document.addEventListener('input',e=>{const f=e.target;if(!(f.id in state)||f.value===state[f.id])return;state[f.id]=f.value;for(const id in state)document.getElementById(id).value=state[id]})</script>`)
 })
 async function wait(test, label, timeout = 15000) {
   const end = Date.now() + timeout
@@ -143,8 +147,9 @@ console.log(JSON.stringify(process.argv.includes('list')?[item]:item));
   await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }))
   assert.ok(!(await client.listTools()).tools.some(t => t.name.startsWith('__bro_login')))
   assert.equal((await tool('__bro_login_fill', {}, true)).error, true)
-  const flow = (await tool('browser.flow.start', { url: origin, active: false })).json()
-  const tabId = flow.tabId
+  // bro's own tab creation navigates through CDP, which the protected iframe
+  // detaches; the login tools need only a tab id.
+  const tabId = await evaluate(workerSession, `new Promise(r=>chrome.tabs.create({url:${JSON.stringify(origin)},active:false},t=>chrome.tabs.onUpdated.addListener(function l(id,c){if(id===t.id&&c.status==='complete'){chrome.tabs.onUpdated.removeListener(l);r(t.id)}})))`)
   await wait(async () => (await tool('javascript_tool', { tabId, code: 'location.origin' }, true)).error, 'protected iframe blocks CDP')
   const inspect = async () => (await tool('login_form_inspect', { browserId, tabId })).json()
   let form = await inspect()
@@ -199,7 +204,8 @@ console.log(JSON.stringify(process.argv.includes('list')?[item]:item));
   await setFixture(`document.querySelector('#user').value='already-entered'`)
   assert.equal((await tool('onepassword_fill_login', args(), true)).error, true)
   await setFixture(`document.querySelector('#user').value=''`)
-  await tool('navigate', { tabId, url: origin })
+  // The protected iframe blocks CDP, so reload through the tabs API.
+  await evaluate(workerSession, `new Promise(r=>{chrome.tabs.onUpdated.addListener(function l(id,c){if(id===${tabId}&&c.status==='complete'){chrome.tabs.onUpdated.removeListener(l);r()}});chrome.tabs.update(${tabId},{url:${JSON.stringify(origin)}})})`)
   assert.equal((await tool('onepassword_fill_login', args(), true)).error, true)
   form = await inspect()
   const filled = (await tool('onepassword_fill_login', args())).json()
@@ -213,7 +219,7 @@ console.log(JSON.stringify(process.argv.includes('list')?[item]:item));
   console.log('PASS exact-origin candidates and remembered-account inspect; private fill works with CDP blocked and no extension pause')
   console.log('PASS provider/origin failure, changed document/element, autocomplete tokens, nonempty field and replay rejected; Stop during provider wait prevented fill')
   console.log('PASS zero automatic submits; server verified one explicitly submitted test login')
-  await tool('browser.flow.finish', { sessionId: flow.sessionId })
+  await evaluate(workerSession, `chrome.tabs.remove(${tabId})`)
   await client.close(); client = undefined
   socket.close(); socket = undefined
   await stopChildren()
