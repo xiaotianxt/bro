@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.4.2
 
 - The server now pings each extension connection every 15 s and drops one that
   has been silent for 45 s. A connection that died without a close frame used
