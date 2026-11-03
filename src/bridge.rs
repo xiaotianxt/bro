@@ -14,10 +14,18 @@ use uuid::Uuid;
 use crate::native::{inspect_browser_connection, NativeBrowserInfo};
 use crate::protocol::{
     AgentDoneMessage, ConnectMessage, ConnectedMessage, ExtensionStatus, ExtensionToServer,
-    ServerToExtension, StatusResponse, ToolCallMessage,
+    PingMessage, ServerToExtension, StatusResponse, ToolCallMessage,
 };
 
 const TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Liveness probing for an authenticated extension connection.
+#[derive(Debug, Clone, Copy)]
+pub struct Heartbeat {
+    pub interval: Duration,
+    /// Silence after which the connection is treated as dead; must exceed `interval`.
+    pub timeout: Duration,
+}
 
 #[derive(Debug, Error)]
 pub enum BridgeError {
@@ -217,6 +225,7 @@ impl BrowserBridge {
         expected_token: &str,
         peer_addr: Option<SocketAddr>,
         authentication_timeout: Duration,
+        heartbeat: Heartbeat,
     ) -> Result<(), BridgeError> {
         let first_frame = match time::timeout(authentication_timeout, socket.recv()).await {
             Ok(frame) => frame,
@@ -253,6 +262,7 @@ impl BrowserBridge {
         .map_err(|_err| BridgeError::BrowserDisconnected)?;
 
         let native_info = inspect_browser_connection(peer_addr);
+        let sender = tx.clone();
         self.register_browser(connect, session_id.clone(), tx, Some(native_info));
 
         let writer = tokio::spawn(async move {
@@ -263,27 +273,61 @@ impl BrowserBridge {
             Ok::<(), BridgeError>(())
         });
 
-        while let Some(frame) = ws_rx.next().await {
-            match frame? {
-                Message::Text(text) => {
-                    self.handle_authenticated_message(&browser_id, &session_id, text.as_str())
-                        .await;
+        // A connection that dies without a close frame never ends this loop on its
+        // own, and the extension only reconnects once its socket closes. Probing
+        // with protocol pings (answered by the extension's JS, not the browser's
+        // network stack) bounds how long a dead session can keep receiving calls.
+        let mut probe = time::interval_at(
+            time::Instant::now() + heartbeat.interval,
+            heartbeat.interval,
+        );
+        let mut last_inbound = time::Instant::now();
+        let outcome = loop {
+            tokio::select! {
+                frame = ws_rx.next() => {
+                    let Some(frame) = frame else { break Ok(()) };
+                    let frame = match frame {
+                        Ok(frame) => frame,
+                        Err(err) => break Err(BridgeError::WebSocket(err)),
+                    };
+                    last_inbound = time::Instant::now();
+                    match frame {
+                        Message::Text(text) => {
+                            self.handle_authenticated_message(
+                                &browser_id,
+                                &session_id,
+                                text.as_str(),
+                            )
+                            .await;
+                        }
+                        Message::Close(_close) => break Ok(()),
+                        Message::Ping(_bytes) | Message::Pong(_bytes) => {
+                            self.touch_browser(&browser_id, &session_id);
+                        }
+                        Message::Binary(_bytes) => {}
+                    }
                 }
-                Message::Close(_close) => break,
-                Message::Ping(bytes) => {
-                    let _ignored = bytes;
-                    self.touch_browser(&browser_id, &session_id);
+                _ = probe.tick() => {
+                    let silent_for = last_inbound.elapsed();
+                    if silent_for >= heartbeat.timeout {
+                        tracing::warn!(
+                            %browser_id,
+                            silent_ms = silent_for.as_millis(),
+                            "dropping unresponsive browser extension connection"
+                        );
+                        break Ok(());
+                    }
+                    // A closed writer means the socket is gone; the next read reports how.
+                    let _ignored = sender.send(ServerToExtension::Ping(PingMessage {
+                        session_id: Some(session_id.clone()),
+                    }));
                 }
-                Message::Pong(_bytes) => {
-                    self.touch_browser(&browser_id, &session_id);
-                }
-                Message::Binary(_bytes) => {}
             }
-        }
+        };
 
         self.unregister_browser(&browser_id, &session_id).await;
         writer.abort();
-        Ok(())
+        outcome
     }
 
     async fn resolve_browser(

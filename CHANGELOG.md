@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- The server now pings each extension connection every 15 s and drops one that
+  has been silent for 45 s. A connection that died without a close frame used
+  to stay registered: every call went to it and waited out the 30 s tool
+  timeout, and the extension, still seeing an open socket, never reconnected.
+  Now its pending calls fail at once with "browser extension disconnected",
+  and closing the socket makes the extension reconnect.
+- A WebSocket error from the extension (for example "Connection reset without
+  closing handshake") now unregisters that connection and fails its pending
+  calls, instead of leaving a stale registration behind.
+
 ## 1.4.1
 
 - Background tabs that bro creates now render: Chrome gives hidden tabs no

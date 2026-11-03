@@ -17,9 +17,19 @@ use serde::Serialize;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
-use crate::{bridge::BrowserBridge, mcp};
+use crate::{
+    bridge::{BrowserBridge, Heartbeat},
+    mcp,
+};
 
 const AUTHENTICATION_TIMEOUT: Duration = Duration::from_secs(5);
+// Pinging more often than every 30s also keeps the MV3 service worker from being
+// suspended mid-session; three missed probes is long enough to ride out a busy
+// event loop without leaving a dead session that keeps taking calls.
+const HEARTBEAT: Heartbeat = Heartbeat {
+    interval: Duration::from_secs(15),
+    timeout: Duration::from_secs(45),
+};
 
 pub struct ServerConfig {
     pub bind: SocketAddr,
@@ -32,6 +42,7 @@ struct AppState {
     bridge: BrowserBridge,
     token: String,
     authentication_timeout: Duration,
+    heartbeat: Heartbeat,
 }
 
 #[derive(Serialize)]
@@ -47,6 +58,7 @@ pub async fn serve(config: ServerConfig) -> Result<()> {
         bridge: config.bridge,
         token: config.token,
         authentication_timeout: AUTHENTICATION_TIMEOUT,
+        heartbeat: HEARTBEAT,
     };
 
     let mcp_service = mcp::streamable_http_service(state.bridge.clone(), shutdown.child_token());
@@ -118,6 +130,7 @@ async fn handle_ws(socket: WebSocket, state: AppState, peer_addr: SocketAddr) {
             &state.token,
             Some(peer_addr),
             state.authentication_timeout,
+            state.heartbeat,
         )
         .await
     {
@@ -161,22 +174,33 @@ mod tests {
     use std::{net::SocketAddr, time::Duration};
 
     use axum::{routing::get, Router};
-    use futures_util::StreamExt;
-    use tokio::net::TcpListener;
-    use tokio_tungstenite::{connect_async, tungstenite::Message};
+    use futures_util::{SinkExt, StreamExt};
+    use serde_json::json;
+    use tokio::{net::TcpListener, task::JoinHandle};
+    use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
     use super::{ws, AppState};
-    use crate::bridge::BrowserBridge;
+    use crate::bridge::{BrowserBridge, Heartbeat};
 
-    #[tokio::test]
-    async fn websocket_without_authentication_frame_gets_policy_close() {
+    type TestSocket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+
+    const FAST_HEARTBEAT: Heartbeat = Heartbeat {
+        interval: Duration::from_millis(20),
+        timeout: Duration::from_millis(80),
+    };
+
+    async fn spawn_server(
+        bridge: &BrowserBridge,
+        authentication_timeout: Duration,
+        heartbeat: Heartbeat,
+    ) -> (SocketAddr, JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let bridge = BrowserBridge::new();
         let app = Router::new().route("/ws", get(ws)).with_state(AppState {
             bridge: bridge.clone(),
             token: "secret".to_string(),
-            authentication_timeout: Duration::from_millis(20),
+            authentication_timeout,
+            heartbeat,
         });
         let server = tokio::spawn(async move {
             axum::serve(
@@ -186,6 +210,107 @@ mod tests {
             .await
             .unwrap();
         });
+        (address, server)
+    }
+
+    async fn next_text(socket: &mut TestSocket) -> serde_json::Value {
+        loop {
+            let frame = tokio::time::timeout(Duration::from_secs(1), socket.next())
+                .await
+                .expect("server sent nothing")
+                .expect("websocket ended")
+                .expect("websocket failed");
+            if let Message::Text(text) = frame {
+                return serde_json::from_str(text.as_str()).unwrap();
+            }
+        }
+    }
+
+    /// Connects and authenticates like the extension, consuming `connected`.
+    async fn connect_extension(address: SocketAddr) -> TestSocket {
+        let (mut socket, _response) = connect_async(format!("ws://{address}/ws")).await.unwrap();
+        let connect = json!({
+            "type": "connect",
+            "version": "1.4.1",
+            "extensionId": "extension",
+            "instanceId": "a",
+            "token": "secret",
+            "activeTabUrl": null,
+            "browserInfo": null,
+        });
+        socket
+            .send(Message::Text(connect.to_string().into()))
+            .await
+            .unwrap();
+        assert_eq!(next_text(&mut socket).await["type"], "connected");
+        socket
+    }
+
+    #[tokio::test]
+    async fn silent_extension_connection_is_dropped_and_fails_its_pending_call() {
+        let bridge = BrowserBridge::new();
+        let (address, server) = spawn_server(&bridge, Duration::from_secs(1), FAST_HEARTBEAT).await;
+        let mut socket = connect_extension(address).await;
+        assert_eq!(bridge.extension_count(), 1);
+
+        let call = {
+            let bridge = bridge.clone();
+            tokio::spawn(
+                async move { bridge.dispatch("tabs_context", json!({}), None, None).await },
+            )
+        };
+        // The extension never answers the call or the pings, like a socket whose
+        // peer stopped processing without closing.
+        let result = tokio::time::timeout(Duration::from_secs(2), call)
+            .await
+            .expect("pending call waited for the tool timeout instead of the heartbeat")
+            .unwrap()
+            .unwrap();
+        assert!(result.is_error);
+        assert_eq!(result.result["message"], "browser extension disconnected");
+        assert_eq!(bridge.extension_count(), 0);
+
+        // Dropping the session must also end the socket so the extension reconnects.
+        let ended = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                match socket.next().await {
+                    None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
+                    Some(Ok(_)) => {}
+                }
+            }
+        })
+        .await;
+        assert!(ended.is_ok(), "server kept the dead socket open");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn extension_answering_pings_stays_connected_past_the_timeout() {
+        let bridge = BrowserBridge::new();
+        let (address, server) = spawn_server(&bridge, Duration::from_secs(1), FAST_HEARTBEAT).await;
+        let mut socket = connect_extension(address).await;
+
+        let deadline = tokio::time::Instant::now() + FAST_HEARTBEAT.timeout * 4;
+        let mut pings = 0;
+        while tokio::time::Instant::now() < deadline {
+            let message = next_text(&mut socket).await;
+            assert_eq!(message["type"], "ping");
+            pings += 1;
+            socket
+                .send(Message::Text(json!({"type": "pong"}).to_string().into()))
+                .await
+                .unwrap();
+        }
+        assert!(pings >= 4, "expected periodic pings, got {pings}");
+        assert_eq!(bridge.extension_count(), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn websocket_without_authentication_frame_gets_policy_close() {
+        let bridge = BrowserBridge::new();
+        let (address, server) =
+            spawn_server(&bridge, Duration::from_millis(20), FAST_HEARTBEAT).await;
         let (mut socket, _response) = connect_async(format!("ws://{address}/ws")).await.unwrap();
 
         assert_eq!(bridge.extension_count(), 0);
