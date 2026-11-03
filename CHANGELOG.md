@@ -1,11 +1,27 @@
 # Changelog
 
-## Unreleased
+## 1.4.3
 
+- `onepassword_fill_login` fills one field at a time: it focuses, writes and
+  dispatches events for a field, then yields before the next, as 1Password
+  does. Before, it wrote every value before dispatching any event, so on
+  controlled-input pages such as Infura's React form the username's re-render
+  wiped the password and the fill failed with "Fill dispatched but not
+  verified".
 - Session tab groups are created in the new tab's own window. Before, Chrome
   put the group in the focused window, so opening a tab while an installed
   app or popup window had focus failed with "Grouping is not supported by tabs
   in this window".
+- Screenshots of device-scaled viewports are captured at CSS pixel size, so
+  image coordinates are `computer` coordinates and payloads shrink by dpr².
+- `find` ranks nodes by matched label words instead of requiring every word,
+  so natural descriptions resolve; `wait_for_element` keeps strict matching.
+  `tabs_context_mcp` without `sessionId` falls back to the anchor window's
+  context instead of an empty answer.
+- `javascript_tool` evaluates like a console: top-level `await` works without
+  leaking declarations into the page, and a returned Promise is awaited.
+  `computer` click, hover and scroll accept `refId`. `find` maps "dropdown"
+  and "select" to combobox/listbox roles.
 
 ## 1.4.2
 
