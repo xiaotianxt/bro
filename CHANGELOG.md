@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.4.4
 
 - The MCP endpoint accepts `Host: host.docker.internal`, so agents in a
   container can reach bro on the Mac's localhost. Other names are still
@@ -105,7 +105,7 @@
   and drop text that repeats its parent's name.
 - See `docs/releases/1.4.0.md` for migration, boundaries and deferred scope.
 
-## Unreleased
+## 1.4.4
 
 - Fix Pi MCP shared-connection ownership: request cancellation and ordinary
   request failures do not disconnect sibling calls; expired sessions reconnect
