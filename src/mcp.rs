@@ -78,8 +78,11 @@ pub fn streamable_http_service(
     cancellation_token: CancellationToken,
 ) -> StreamableHttpService<BrowserMcpServer, LocalSessionManager> {
     let facade = BrowserFacade::new(bridge.clone());
+    // The Host check stops DNS rebinding: a web page can only send a Host it controls.
+    // host.docker.internal is how containers name the Mac's localhost; it sits under the
+    // reserved `.internal` TLD, so no web page can be served from it.
     let config = StreamableHttpServerConfig::default()
-        .with_allowed_hosts(["localhost", "127.0.0.1", "::1"])
+        .with_allowed_hosts(["localhost", "127.0.0.1", "::1", "host.docker.internal"])
         .with_cancellation_token(cancellation_token);
     StreamableHttpService::new(
         move || Ok(BrowserMcpServer::new(bridge.clone(), facade.clone())),
@@ -314,6 +317,50 @@ mod tests {
         let info = rmcp::ServerHandler::get_info(&server);
         assert_eq!(info.server_info.name, "bro");
         assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
+    }
+
+    /// Status line of an MCP initialize sent with `host` as the Host header.
+    async fn initialize_status(addr: std::net::SocketAddr, host: &str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#;
+        let request = format!(
+            "POST /mcp HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/json\r\n\
+             Accept: application/json, text/event-stream\r\nContent-Length: {len}\r\n\
+             Connection: close\r\n\r\n{body}",
+            port = addr.port(),
+            len = body.len(),
+        );
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut head = [0u8; 64];
+        let read = stream.read(&mut head).await.unwrap();
+        let head = String::from_utf8_lossy(&head[..read]);
+        head.lines().next().unwrap_or_default().to_string()
+    }
+
+    #[tokio::test]
+    async fn mcp_accepts_local_and_container_hosts_only() {
+        let service = super::streamable_http_service(
+            crate::bridge::BrowserBridge::new(),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let app = axum::Router::new().nest_service("/mcp", service);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        for host in ["127.0.0.1", "localhost", "host.docker.internal"] {
+            assert_eq!(
+                initialize_status(addr, host).await,
+                "HTTP/1.1 200 OK",
+                "{host}"
+            );
+        }
+        assert_eq!(
+            initialize_status(addr, "rebound.example").await,
+            "HTTP/1.1 403 Forbidden"
+        );
     }
 
     #[test]

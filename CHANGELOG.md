@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- The MCP endpoint accepts `Host: host.docker.internal`, so agents in a
+  container can reach bro on the Mac's localhost. Other names are still
+  rejected, which keeps the DNS-rebinding protection.
+
 ## 1.4.3
 
 - `onepassword_fill_login` fills one field at a time: it focuses, writes and
