@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "minimum_chrome_version": "125",
   "name": "bro",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "background": {
     "service_worker": "service-worker.js",
     "type": "module"
