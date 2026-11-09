@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.4.5
+
+- Password managers no longer break CDP. 1Password's inline menu, save
+  prompt and modal are iframes of its own pages, and Chromium refuses the
+  debugger on a tab while one is present and closes a live session when one
+  appears. bro now removes those iframes from the page and attaches; it keeps
+  their hosts, so 1Password's later redraws create no frame and clicks and
+  typing in login and payment fields keep working. Nothing is disabled or
+  reloaded, and reloading the page restores 1Password's in-page UI there. A
+  navigation whose new page draws such a frame finishes instead of failing,
+  and the focus cleanup after a click that woke 1Password no longer errors.
+- Native dialogs no longer hang a tab. bro answers each alert, confirm,
+  prompt and beforeunload as it opens and reports it: alerts and
+  beforeunload are accepted, confirm and prompt cancelled unless a
+  `browser.act` `{"type":"dialog","accept":true}` step arms an answer for the
+  rest of that call.
+
 ## 1.4.4
 
 - The MCP endpoint accepts `Host: host.docker.internal`, so agents in a
