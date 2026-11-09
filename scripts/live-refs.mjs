@@ -267,6 +267,10 @@ const fixture = (req, res) => {
     res.end('<!doctype html><title>Page wheel contract</title><main role="region" aria-label="Scroll panel" style="height:3000px">Long document</main><output id="scroll-state" style="position:fixed;top:0;right:0">SCROLL_TOP:0</output><script>document.addEventListener("scroll",()=>document.querySelector("#scroll-state").textContent="SCROLL_TOP:"+Math.round(scrollY));</script>')
     return
   }
+  if (url.pathname === '/dialogs') {
+    res.end('<!doctype html><title>Dialog contract</title><button onclick="out.textContent=confirm(\'Proceed?\')?\'OK\':\'CANCEL\'">Confirm</button><button onclick="out.textContent=\'PROMPT:\'+prompt(\'Name?\')">Prompt</button><button onclick="alert(\'Saved\');out.textContent=\'ALERTED\'">Alert</button><output id="out">NONE</output>')
+    return
+  }
   if (url.pathname === '/console') {
     res.end('<!doctype html><title>Console contract</title><script>let pageOwned = 1</script><button onclick="this.textContent=\'PRESSED\'">Press me</button>')
     return
@@ -1002,6 +1006,32 @@ try {
     assert.ok(refId, found)
     await tool('computer', { tabId, action: 'left_click', refId })
     assert.equal(await js("document.querySelector('button').textContent"), '"PRESSED"')
+  })
+  await check('native dialogs are answered, reported, and never hang the tab', async () => {
+    const opened = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/dialogs` })))
+    const act = async (steps) => text(await tool('browser.act', { targetId: opened.targetId, steps }))
+    const output = async () => (await act([{ type: 'evaluate', code: 'out.textContent' }])).match(/evaluated: (.*)/)?.[1]
+    try {
+      const dismissed = await act([{ type: 'click', role: 'button', name: 'Confirm' }])
+      assert.match(dismissed, /dialog confirm "Proceed\?" dismissed by default/)
+      assert.equal(await output(), 'CANCEL')
+      const accepted = await act([{ type: 'dialog', accept: true }, { type: 'click', role: 'button', name: 'Confirm' }])
+      assert.match(accepted, /dialog confirm "Proceed\?" accepted/)
+      assert.equal(await output(), 'OK')
+      // The armed answer ended with its act call.
+      await act([{ type: 'click', role: 'button', name: 'Confirm' }])
+      assert.equal(await output(), 'CANCEL')
+      await act([{ type: 'dialog', accept: true, promptText: 'Luna' }, { type: 'click', role: 'button', name: 'Prompt' }])
+      assert.equal(await output(), 'PROMPT:Luna')
+      // A low-level click reports the dialog in its own result and the tab stays usable.
+      const found = text(await tool('find', { tabId: opened.tabId, description: 'Alert button' }))
+      const refId = found.match(/\[([a-z]{3}\d+)\]/)?.[1]
+      const clicked = text(await tool('computer', { tabId: opened.tabId, action: 'left_click', refId }))
+      assert.match(clicked, /Native dialogs answered: alert "Saved" accepted/)
+      assert.equal(await output(), 'ALERTED')
+    } finally {
+      await tool('browser.close', { targetId: opened.targetId })
+    }
   })
   await check('screenshot captures the scrolled viewport at CSS pixel size', async () => {
     await tool('navigate', { tabId, url: `${rootUrl}/bands` })

@@ -7,6 +7,8 @@
 // The extension polls the page's mutation clock: bro tabs are usually in the
 // background, where Chrome throttles page timers to about one per second.
 
+import { takeDialogs } from './dialogs.js'
+
 export const QUIET_MS = 400
 export const CAP_MS = 3000
 
@@ -18,6 +20,8 @@ export interface ChangeReport {
   opened?: string[]
   closed?: string[]
   alerts?: string[]
+  // Native dialogs the action opened, with how bro answered them.
+  dialogs?: string[]
   added?: string[]
   // Filled in by the act tool from the AX tree: refs inside opened layers.
   controls?: string[]
@@ -194,6 +198,7 @@ export async function watchChanges<T>(
   action: () => Promise<T>,
 ): Promise<{ result: T; changes: ChangeReport }> {
   const started = Date.now()
+  takeDialogs(tabId)
   await chrome.scripting.executeScript({
     target: { tabId, frameIds: [0] },
     world: 'ISOLATED',
@@ -211,7 +216,7 @@ export async function watchChanges<T>(
       await new Promise((resolve) => setTimeout(resolve, Math.min(50, Math.max(10, QUIET_MS - ages.quiet))))
     }
     const changes = await inPage(collectWatch, [QUIET_MS])
-    if (changes) return { result, changes }
+    if (changes) return { result, changes: withDialogs(tabId, changes) }
   } catch (error) {
     // A cross-document navigation destroys the watch's world mid-collection.
     if (!/Frame with ID 0 was removed|document.*(unloaded|changed)|No frame with id/i.test(String(error)))
@@ -221,6 +226,11 @@ export async function watchChanges<T>(
   const tab = await chrome.tabs.get(tabId)
   return {
     result,
-    changes: { settledMs: Date.now() - started, quiet: false, navigated: tab.pendingUrl ?? tab.url ?? '' },
+    changes: withDialogs(tabId, { settledMs: Date.now() - started, quiet: false, navigated: tab.pendingUrl ?? tab.url ?? '' }),
   }
+}
+
+function withDialogs(tabId: number, changes: ChangeReport): ChangeReport {
+  const dialogs = takeDialogs(tabId)
+  return dialogs.length ? { ...changes, dialogs } : changes
 }

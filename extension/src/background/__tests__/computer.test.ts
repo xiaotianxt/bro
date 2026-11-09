@@ -84,7 +84,7 @@ describe('computer input', () => {
     expect(activateTab).not.toHaveBeenCalled()
     expect(focusWindow).not.toHaveBeenCalled()
     expect(commands.some((c) => c.method === 'Page.bringToFront')).toBe(false)
-    expect(commands[0]).toEqual({ method: 'Emulation.setFocusEmulationEnabled', params: { enabled: true } })
+    expect(commands.find((c) => c.method !== 'Page.enable')).toEqual({ method: 'Emulation.setFocusEmulationEnabled', params: { enabled: true } })
     expect(commands.at(-1)).toEqual({ method: 'Emulation.setFocusEmulationEnabled', params: { enabled: false } })
     const events = commands
       .filter((command) => command.method === 'Input.dispatchMouseEvent')

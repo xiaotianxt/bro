@@ -2,6 +2,7 @@
 
 import type { ToolResult } from '@bro/shared'
 import { CDP_COMMAND_TIMEOUT_MS, CdpCommandTimeout, cdpSession } from '../cdp.js'
+import { armDialogs } from '../dialogs.js'
 import { getBrowserFrames, sendToFrame } from '../frames.js'
 import { registerTool } from '../tool-registry.js'
 import { readAXPage, findAX, refTool, waitAX, actElement } from './accessibility.js'
@@ -602,3 +603,21 @@ registerTool('fill_element', (tabId, args) => refTool('fill_element', tabId, arg
 registerTool('get_element_info', (tabId, args) => refTool('get_element_info', tabId, args))
 registerTool('wait_for_element', waitAX)
 registerTool('act_element', actElement)
+// Internal to browser.act's dialog step: arms an answer for the tab's native
+// dialogs until the act call disarms it.
+registerTool('dialog_answer', async (tabId, raw) => {
+  const args = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {}
+  if (args['disarm'] === true) {
+    armDialogs(tabId, undefined)
+    return { content: [{ type: 'text', text: 'Dialog answer disarmed.' }] }
+  }
+  if (typeof args['accept'] !== 'boolean') throw new Error('dialog_answer: "accept" must be a boolean')
+  if (args['promptText'] !== undefined && typeof args['promptText'] !== 'string')
+    throw new Error('dialog_answer: "promptText" must be a string')
+  await cdpSession.ensure(tabId)
+  armDialogs(tabId, {
+    accept: args['accept'],
+    ...(args['promptText'] === undefined ? {} : { promptText: args['promptText'] as string }),
+  })
+  return { content: [{ type: 'text', text: `Dialogs will be ${args['accept'] ? 'accepted' : 'dismissed'}.` }] }
+})

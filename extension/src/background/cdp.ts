@@ -31,6 +31,10 @@ export class CDPSession {
 
   private readonly detachCallbacks = new Set<DetachCallback>()
 
+  // Events handled for every attached tab. Unlike eventListeners they do not
+  // keep a tab attached, and attachment clears none of them.
+  private readonly everyTabListeners = new Map<string, Set<(tabId: number, params: unknown) => void>>()
+
   constructor() {
     // Route raw debugger events to registered callbacks.
     chrome.debugger.onEvent.addListener(
@@ -38,6 +42,7 @@ export class CDPSession {
         const tabId = source.tabId
         // Child-target events belong to the frame transport, not root monitors.
         if (tabId === undefined || source.sessionId) return
+        for (const cb of this.everyTabListeners.get(method) ?? []) cb(tabId, params ?? null)
         const tabListeners = this.eventListeners.get(tabId)
         if (!tabListeners) return
         const callbacks = tabListeners.get(method)
@@ -96,6 +101,9 @@ export class CDPSession {
         }
       })
     })
+    // Page events include javascriptDialogOpening: without them a native dialog
+    // blocks the page and every later command on the tab times out.
+    await this.sendAttached(tabId, 'Page.enable')
   }
 
   /**
@@ -276,6 +284,16 @@ export class CDPSession {
         listeners.delete(eventName)
       }
     }
+  }
+
+  /** Subscribes to a CDP event on every tab the session attaches to. */
+  onEveryTab(eventName: string, callback: (tabId: number, params: unknown) => void): void {
+    let callbacks = this.everyTabListeners.get(eventName)
+    if (!callbacks) {
+      callbacks = new Set()
+      this.everyTabListeners.set(eventName, callbacks)
+    }
+    callbacks.add(callback)
   }
 
   onDetach(callback: DetachCallback): () => void {

@@ -658,6 +658,11 @@ impl BrowserFacade {
     ) -> Result<Value, FacadeError> {
         let mut step_results = Vec::with_capacity(steps.len());
         let mut stopped_at = None;
+        // An armed answer must not outlive this call: a later confirm would be
+        // accepted without the caller asking.
+        let armed_dialogs = steps
+            .iter()
+            .any(|step| matches!(step, FlowStep::Dialog { .. }));
 
         for (index, step) in steps.into_iter().enumerate() {
             let label = StepLabel::of(&step);
@@ -693,6 +698,18 @@ impl BrowserFacade {
                     break;
                 }
             }
+        }
+
+        if armed_dialogs {
+            let result = self
+                .dispatch(
+                    "dialog_answer",
+                    json!({"disarm": true}),
+                    Some(session.tab_id),
+                    session.browser_id.clone(),
+                )
+                .await?;
+            fail_if_tool_error("dialog_answer", &result)?;
         }
 
         let status = if stopped_at.is_some() { "failed" } else { "ok" };
@@ -1431,6 +1448,25 @@ impl BrowserFacade {
                     "text".to_string(),
                     json!(javascript_string_result(&result.result)?),
                 )]))
+            }
+            FlowStep::Dialog {
+                accept,
+                prompt_text,
+            } => {
+                let mut args = Map::from_iter([("accept".to_string(), json!(accept))]);
+                if let Some(text) = prompt_text {
+                    args.insert("promptText".to_string(), json!(text));
+                }
+                let result = self
+                    .dispatch(
+                        "dialog_answer",
+                        Value::Object(args),
+                        Some(session.tab_id),
+                        session.browser_id.clone(),
+                    )
+                    .await?;
+                fail_if_tool_error("dialog_answer", &result)?;
+                Ok(single_result(result.result))
             }
         }
     }
@@ -2644,6 +2680,11 @@ enum FlowStep {
         #[serde(default, rename = "frameId")]
         frame_id: Option<String>,
     },
+    /// Arms how native dialogs opened by the following steps are answered.
+    Dialog {
+        accept: bool,
+        prompt_text: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -2786,6 +2827,10 @@ enum RawFlowStep {
         target: RawTarget,
         key: String,
     },
+    Dialog {
+        accept: bool,
+        prompt_text: Option<String>,
+    },
 }
 
 /// One of css (+ frameId), refId, or role + name.
@@ -2866,6 +2911,13 @@ impl TryFrom<RawFlowStep> for FlowStep {
             RawFlowStep::Select { target, value } => {
                 Self::from_target(target, RefAction::Select(value))
             }
+            RawFlowStep::Dialog {
+                accept,
+                prompt_text,
+            } => Ok(Self::Dialog {
+                accept,
+                prompt_text,
+            }),
         }
     }
 }
@@ -2968,6 +3020,7 @@ impl FlowStep {
             Self::Scroll { .. } => "scroll",
             Self::Wait { .. } | Self::WaitFor { .. } => "wait",
             Self::ReadText { .. } => "read_text",
+            Self::Dialog { .. } => "dialog",
         }
     }
 }
@@ -3080,6 +3133,9 @@ impl StepLabel {
                 let url = text.strip_prefix("Navigated to ").unwrap_or(&text);
                 entry.insert("url".to_string(), json!(url));
             }
+            "dialog" => {
+                entry.insert("result".to_string(), json!(text()));
+            }
             "evaluate" | "scroll" => {
                 let text = text();
                 let result = serde_json::from_str(&text).unwrap_or(Value::String(text));
@@ -3182,6 +3238,7 @@ pub fn render_act(value: &Value) -> String {
             "evaluate" => format!("evaluated: {}", plain(&entry["result"])),
             "observe" => format!("observed:\n{}", plain(&entry["content"])),
             "wait" => wait_line(entry),
+            "dialog" => format!("dialog: {}", plain(&entry["result"])),
             other => format!("{other}: {entry}"),
         });
     }
@@ -3214,6 +3271,7 @@ fn changes_line(kind: &str, changes: &Value) -> String {
         ("opened", "opened"),
         ("closed", "closed"),
         ("alerts", "alert"),
+        ("dialogs", "dialog"),
     ] {
         parts.extend(list(key).into_iter().map(|item| format!("{verb} {item}")));
     }

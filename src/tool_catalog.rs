@@ -301,7 +301,7 @@ static SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "browser.act",
-        description: "Run 1–32 ordered steps on a target: navigate, evaluate, wait, observe, and click/fill/select/check/scroll. Target elements by refId, or by role + name (e.g. {type:click, role:menuitem, name:\"Read and write\"}), which resolves when the step runs and survives re-renders. Each click/fill/select/check waits for the page to settle and reports what visibly changed (opened/closed dialogs and menus, alerts, new text, navigation, including a form post it started); a click that opens a menu or dialog lists refs for its controls, so act on them without observing. \"no visible change\" means it likely missed. So chain the next steps directly: no delays and no evaluate to read the page back. Use wait only for content that arrives later. All steps validate before any effect; the first failure stops the rest. Prefer these trusted actions over evaluate, whose synthetic events frameworks like React can ignore. Covered clicks fail and name the covering element; check sets a native radio/checkbox without a pointer click. scroll moves the ref's nearest scrollable container, else the page.",
+        description: "Run 1–32 ordered steps on a target: navigate, evaluate, wait, observe, and click/fill/select/check/scroll. Target elements by refId, or by role + name (e.g. {type:click, role:menuitem, name:\"Read and write\"}), which resolves when the step runs and survives re-renders. Each click/fill/select/check waits for the page to settle and reports what visibly changed (opened/closed dialogs and menus, alerts, new text, navigation, including a form post it started); a click that opens a menu or dialog lists refs for its controls, so act on them without observing. \"no visible change\" means it likely missed. So chain the next steps directly: no delays and no evaluate to read the page back. Use wait only for content that arrives later. All steps validate before any effect; the first failure stops the rest. Prefer these trusted actions over evaluate, whose synthetic events frameworks like React can ignore. Covered clicks fail and name the covering element; check sets a native radio/checkbox without a pointer click. scroll moves the ref's nearest scrollable container, else the page. Native dialogs are answered as they open and reported: alerts accepted, confirm/prompt cancelled unless a dialog step before the action says accept.",
         route: ToolRoute::Act,
         schema: "browser_act",
     },
@@ -1321,6 +1321,10 @@ fn interaction_steps_schema() -> Value {
         step("check", &[], check),
         step("press", &["key"], press),
         step("scroll", &["refId"], scroll),
+        step("dialog", &["accept"], props(&[
+            ("accept", json!({"type":"boolean","description":"Answer native dialogs (alert/confirm/prompt) opened by the following steps of this call with OK (true) or Cancel (false). Without this step confirm and prompt are cancelled."})),
+            ("promptText", json!({"type":"string","description":"Text entered into a prompt dialog that is accepted."})),
+        ])),
         step("wait", &[], props(&[
             ("text", json!({"type":"string","minLength":1,"description":"Exactly one condition: text appears, textGone disappears, or refId reaches state."})),
             ("textGone", json!({"type":"string","minLength":1})),
@@ -1581,7 +1585,7 @@ mod tests {
         let steps = act["properties"]["steps"]["items"]["oneOf"]
             .as_array()
             .unwrap();
-        assert_eq!(steps.len(), 10);
+        assert_eq!(steps.len(), 11);
         let wait = steps
             .iter()
             .find(|step| step["properties"]["type"]["const"] == "wait")

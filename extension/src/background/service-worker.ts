@@ -4,6 +4,7 @@ import { isToolCallMessage, isAgentDoneMessage } from '@bro/shared'
 import { cdpSession } from './cdp.js'
 import { bridgeClient } from './bridge-client.js'
 import { dispatchTool } from './tool-registry.js'
+import { installDialogAnswers, takeDialogs } from './dialogs.js'
 import { ALARM_KEEPALIVE, ALARM_WS_RECONNECT } from './bridge-client.js'
 import { ActiveRequestTracker } from './request-tracker.js'
 import { restoreUserScripts } from '../userscripts.js'
@@ -23,6 +24,7 @@ import { authorizeLoginFill, revokeLoginForms } from './tools/login.js'
 chrome.tabs.onRemoved.addListener((tabId) => revokeLoginForms([tabId]))
 import { PAUSE_ALARM, recoverPause } from './extension-pause.js'
 
+installDialogAnswers()
 void recoverPause().catch((error: unknown) => {
   console.error('[ExtensionPause] Recovery needs attention:', error)
 })
@@ -172,7 +174,13 @@ bridgeClient.onMessage(async (msg) => {
       sendIndicatorMessage(resolvedTabId, 'INDICATOR_SHOW')
     }
 
-    const result = await dispatchTool(tool, resolvedTabId ?? 0, args)
+    if (resolvedTabId !== undefined) takeDialogs(resolvedTabId)
+    const handled = await dispatchTool(tool, resolvedTabId ?? 0, args)
+    // Tools that report changes (act_element) have taken their dialogs already.
+    const dialogs = resolvedTabId === undefined ? [] : takeDialogs(resolvedTabId)
+    const result = dialogs.length
+      ? { ...handled, content: [...handled.content, { type: 'text' as const, text: `Native dialogs answered: ${dialogs.join('; ')}` }] }
+      : handled
 
     // Check if the tool was stopped by the user
     if (!activeRequests.isActive(requestId)) {
