@@ -38,6 +38,27 @@ await rm(resolve(output, 'control.json'), { force: true })
 const brokerHome = resolve(output, 'bro-home')
 const settingsPath = resolve(brokerHome, '.bro/settings.json')
 await mkdir(brokerHome, { recursive: true, mode: 0o700 })
+// Mirrors 1Password 8's in-page UI: a closed shadow host holding an iframe of
+// the extension's own page, drawn at load and on username focus, erased on
+// blur, and reusing the same iframe element on every redraw.
+const passwordManager = resolve(output, 'password-manager-extension')
+await mkdir(passwordManager, { recursive: true, mode: 0o700 })
+await writeFile(resolve(passwordManager, 'manifest.json'), JSON.stringify({
+  manifest_version: 3, name: 'Password manager fixture', version: '1',
+  content_scripts: [{ matches: ['http://127.0.0.1/password-manager*'], js: ['inline.js'], run_at: 'document_end' }],
+  web_accessible_resources: [{ resources: ['menu.html'], matches: ['http://127.0.0.1/*'] }],
+}))
+await writeFile(resolve(passwordManager, 'menu.html'), '<!doctype html><p>Fixture menu</p>')
+await writeFile(resolve(passwordManager, 'inline.js'), `let root, menu
+function draw() {
+  root ??= document.createElement('fixture-password-menu').attachShadow({ mode: 'closed' })
+  if (!menu) { menu = document.createElement('iframe'); root.appendChild(menu) }
+  menu.src = chrome.runtime.getURL('menu.html')
+  if (!root.host.parentElement) document.body.appendChild(root.host)
+}
+draw()
+document.addEventListener('focusin', (event) => { if (event.target.id === 'username') draw() })
+document.addEventListener('focusout', (event) => { if (event.target.id === 'username') root?.host.remove() })`)
 let token = ''
 const log = await open(resolve(output, 'processes.log'), 'a')
 const processes = []
@@ -267,6 +288,10 @@ const fixture = (req, res) => {
     res.end('<!doctype html><title>Page wheel contract</title><main role="region" aria-label="Scroll panel" style="height:3000px">Long document</main><output id="scroll-state" style="position:fixed;top:0;right:0">SCROLL_TOP:0</output><script>document.addEventListener("scroll",()=>document.querySelector("#scroll-state").textContent="SCROLL_TOP:"+Math.round(scrollY));</script>')
     return
   }
+  if (url.pathname === '/password-manager') {
+    res.end('<!doctype html><title>Password manager contract</title><form onsubmit="event.preventDefault();out.textContent=\'SIGNED_IN:\'+username.value+\'/\'+password.value.length"><label>Username <input id="username" autocomplete="username"></label><label>Password <input id="password" type="password" autocomplete="current-password"></label><button>Sign in</button></form><output id="out">SIGNED_OUT</output>')
+    return
+  }
   if (url.pathname === '/dialogs') {
     res.end('<!doctype html><title>Dialog contract</title><button onclick="out.textContent=confirm(\'Proceed?\')?\'OK\':\'CANCEL\'">Confirm</button><button onclick="out.textContent=\'PROMPT:\'+prompt(\'Name?\')">Prompt</button><button onclick="alert(\'Saved\');out.textContent=\'ALERTED\'">Alert</button><output id="out">NONE</output>')
     return
@@ -453,8 +478,8 @@ try {
   launch(chromeBinary, [
     `--user-data-dir=${profile}`,
     '--remote-debugging-port=0',
-    `--load-extension=${resolve(extension)}`,
-    `--disable-extensions-except=${resolve(extension)}`,
+    `--load-extension=${resolve(extension)},${passwordManager}`,
+    `--disable-extensions-except=${resolve(extension)},${passwordManager}`,
     '--use-mock-keychain',
     '--no-first-run',
     '--no-default-browser-check',
@@ -1006,6 +1031,29 @@ try {
     assert.ok(refId, found)
     await tool('computer', { tabId, action: 'left_click', refId })
     assert.equal(await js("document.querySelector('button').textContent"), '"PRESSED"')
+  })
+  await check('password manager iframe neither blocks CDP nor drops it mid-login', async () => {
+    await tool('navigate', { tabId, url: `${rootUrl}/password-manager` })
+    const js = async (code) => text(await tool('javascript_tool', { tabId, code }))
+    // The overlay drawn at load would reject attach; bro removes its iframe.
+    assert.equal(await js('out.textContent'), '"SIGNED_OUT"')
+    const ref = async (description) => {
+      const found = text(await tool('find', { tabId, description }))
+      const refId = found.match(/\[([a-z]{3}\d+)\]/)?.[1]
+      assert.ok(refId, found)
+      return refId
+    }
+    const username = await ref('Username textbox'), password = await ref('Password textbox')
+    // Focusing the username redraws the overlay, the blur erases it and the
+    // next focus re-adds it; none of these may close the session mid-input.
+    await tool('computer', { tabId, action: 'left_click', refId: username })
+    await tool('computer', { tabId, action: 'type', text: 'luna' })
+    await tool('computer', { tabId, action: 'left_click', refId: password })
+    await tool('computer', { tabId, action: 'left_click', refId: username })
+    await tool('computer', { tabId, action: 'left_click', refId: password })
+    await tool('computer', { tabId, action: 'type', text: 'secret' })
+    await tool('computer', { tabId, action: 'left_click', refId: await ref('Sign in button') })
+    assert.equal(await js('out.textContent'), '"SIGNED_IN:luna/6"')
   })
   await check('native dialogs are answered, reported, and never hang the tab', async () => {
     const opened = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/dialogs` })))

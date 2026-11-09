@@ -147,10 +147,10 @@ console.log(JSON.stringify(process.argv.includes('list')?[item]:item));
   await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }))
   assert.ok(!(await client.listTools()).tools.some(t => t.name.startsWith('__bro_login')))
   assert.equal((await tool('__bro_login_fill', {}, true)).error, true)
-  // bro's own tab creation navigates through CDP, which the protected iframe
-  // detaches; the login tools need only a tab id.
+  // The login tools need only a tab id.
   const tabId = await evaluate(workerSession, `new Promise(r=>chrome.tabs.create({url:${JSON.stringify(origin)},active:false},t=>chrome.tabs.onUpdated.addListener(function l(id,c){if(id===t.id&&c.status==='complete'){chrome.tabs.onUpdated.removeListener(l);r(t.id)}})))`)
-  await wait(async () => (await tool('javascript_tool', { tabId, code: 'location.origin' }, true)).error, 'protected iframe blocks CDP')
+  // bro removes the protected iframe from the page instead of failing CDP.
+  assert.equal(JSON.parse((await tool('javascript_tool', { tabId, code: 'location.origin' })).text), origin)
   const inspect = async () => (await tool('login_form_inspect', { browserId, tabId })).json()
   let form = await inspect()
   assert.equal(form.fields.length, 2)
@@ -204,7 +204,7 @@ console.log(JSON.stringify(process.argv.includes('list')?[item]:item));
   await setFixture(`document.querySelector('#user').value='already-entered'`)
   assert.equal((await tool('onepassword_fill_login', args(), true)).error, true)
   await setFixture(`document.querySelector('#user').value=''`)
-  // The protected iframe blocks CDP, so reload through the tabs API.
+  // Reload through the tabs API, independent of CDP.
   await evaluate(workerSession, `new Promise(r=>{chrome.tabs.onUpdated.addListener(function l(id,c){if(id===${tabId}&&c.status==='complete'){chrome.tabs.onUpdated.removeListener(l);r()}});chrome.tabs.update(${tabId},{url:${JSON.stringify(origin)}})})`)
   assert.equal((await tool('onepassword_fill_login', args(), true)).error, true)
   form = await inspect()
@@ -216,7 +216,7 @@ console.log(JSON.stringify(process.argv.includes('list')?[item]:item));
   await wait(async () => submissions === 1, 'explicit test submission')
   assert.ok(submittedCorrectly, 'fixture server must verify exact credentials')
   assert.equal((await tool('extensions_status', { browserId })).json().pause, null)
-  console.log('PASS exact-origin candidates and remembered-account inspect; private fill works with CDP blocked and no extension pause')
+  console.log('PASS exact-origin candidates and remembered-account inspect; private fill works beside a protected iframe without extension pause')
   console.log('PASS provider/origin failure, changed document/element, autocomplete tokens, nonempty field and replay rejected; Stop during provider wait prevented fill')
   console.log('PASS zero automatic submits; server verified one explicitly submitted test login')
   await evaluate(workerSession, `chrome.tabs.remove(${tabId})`)

@@ -117,32 +117,21 @@ try {
   assert.ok(target)
   const flow = (await tool('browser.flow.start', { url, active: false })).json()
   const tabId = flow.tabId
-  const blocked = await wait(async () => {
-    const value = await tool('javascript_tool', { tabId, code: 'location.origin' }, true)
-    return value.error && /Cannot access a chrome-extension/.test(value.text) && value
-  }, 'cross-extension rejection')
-  assert.equal(blocked.error, true)
-  assert.match(blocked.text, /CDP_FOREIGN_EXTENSION/)
-  assert.match(blocked.text, /CDP extension recovery/)
-  assert.match(blocked.text, /keep it enabled/)
-  assert.match(blocked.text, /explicit user authorization/)
-  assert.equal((await tool('extensions_status')).json().pause, null, 'attach failure must not auto-pause')
+  // The fixture's iframe would reject attach; bro removes it from the page.
+  assert.equal(JSON.parse((await tool('javascript_tool', { tabId, code: 'location.origin' })).text), url)
+  assert.equal((await tool('extensions_status')).json().pause, null, 'frame removal must not pause anything')
   const inventory = (await tool('debugger_diagnose', { tabId })).json()
   assert.equal(inventory.completeness, 'not-guaranteed')
   assert.ok(inventory.warning)
-  console.log('PASS attach rejected; independent diagnostic reports inventory limits')
+  console.log('PASS foreign iframe removed without pause or reload; diagnostic reports inventory limits')
   const paused = (await tool('extensions_pause', { extensionId: target.id, confirmProfileWide: true, durationSeconds: 30 })).json().pause
-  await tool('navigate', { tabId, url }) // Only the disposable fixture is refreshed.
-  await tool('javascript_tool', { tabId, code: 'location.origin' })
-  console.log('PASS profile pause restores attach after fixture navigation')
+  assert.equal((await tool('extensions_status')).json().extensions.find(e => e.id === target.id).enabled, false)
   await tool('extensions_resume', { resumeToken: paused.resumeToken })
   assert.equal((await tool('extensions_status')).json().pause, null)
-  await tool('navigate', { tabId, url })
-  await wait(async () => {
-    const value = await tool('javascript_tool', { tabId, code: 'location.origin' }, true)
-    return value.error && /Cannot access a chrome-extension/.test(value.text)
-  }, 'restored iframe rejects attach')
-  console.log('PASS explicit restoration reintroduces boundary')
+  assert.equal((await tool('extensions_status')).json().extensions.find(e => e.id === target.id).enabled, true)
+  await tool('navigate', { tabId, url }) // Re-injects the fixture iframe.
+  assert.equal(JSON.parse((await tool('javascript_tool', { tabId, code: 'location.origin' })).text), url)
+  console.log('PASS explicit pause/resume; re-injected iframe removed again')
   await tool('extensions_pause', { extensionId: target.id, confirmProfileWide: true, durationSeconds: 30 })
   await wait(async () => {
     const state = (await tool('extensions_status')).json()

@@ -3,25 +3,59 @@
 ## Problem and boundary
 
 A normal web tab can contain another extension's `chrome-extension://` iframe,
-including inside a closed shadow root. Chromium can reject bro's initial
-`chrome.debugger.attach` with:
+including inside a closed shadow root. 1Password 8 draws its inline menu, save
+prompt, modal and universal sign-on UI this way (`com-1password-menu`,
+`-notification`, `-modal`, `-uso`), at load on some login pages and on field
+focus on others. Chromium then:
 
-```
-Cannot access a chrome-extension:// URL of different extension
-```
+- rejects `chrome.debugger.attach` with
+  `Cannot access a chrome-extension:// URL of different extension`;
+- closes a live session (`onDetach` reason `target_closed`, or commands failing
+  with the same access error) the moment such a frame is created, even when
+  the iframe is removed in the next microtask.
 
-This is not an MCP transport failure. Skipping frames after attachment cannot
-fix it. Screenshot and input tools use the same attachment path. Do not weaken
-browser isolation, remove third-party UI, or automatically disable extensions.
+The attach check reads committed frame URLs, so an attach can also succeed
+while the frame is still loading and then be closed when it commits. Hiding
+the iframe does not help, and disabling the extension does not remove a frame
+it already injected: until now the only recovery was pausing the extension and
+reloading the page.
+
+## Page-local removal (automatic)
+
+`foreign-frames.ts` removes other extensions' iframes from every frame of the
+tab, searching closed shadow roots through `chrome.dom.openOrClosedShadowRoot`,
+and **leaves their host elements in place**. 1Password keeps its iframe element
+and reuses it, so its later redraws in the same document set `src` on a
+detached iframe and create no frame: the session stays attached while the
+agent clicks and types into login fields. Removing the host instead would make
+1Password re-add it with the iframe inside, closing the session again.
+
+`CDPSession.attach` runs the removal when attach is rejected for this reason
+and retries once. A tab where such a frame rejected or closed a session is
+remembered, and later attaches to it remove frames first, which also catches
+frames that have not committed yet. Commands failing because Chrome closed the
+session raise `CdpSessionClosed` with a hint, and are never replayed. Navigation
+treats a session closed after commit as unfinished readiness: it reattaches and
+confirms the same loader's document is ready.
+
+Effects and limits:
+
+- Nothing is disabled or reloaded, and no other tab changes. The extension
+  keeps working elsewhere; reloading or navigating the page restores its
+  in-page UI there. While bro drives a tab, that UI stays gone from that page.
+- An extension that recreates its iframe on every draw closes the session on
+  each draw; bro reattaches on the next call but cannot keep a long-lived
+  monitor attached through it.
+- Frames bro cannot script, or extension frames navigated without a
+  `chrome-extension://` `src`, still fail attach with `[CDP_FOREIGN_EXTENSION]`
+  and the recovery guidance below.
 
 ## Agent recovery guidance
 
-The attach boundary preserves the browser's original error and appends
-`[CDP_FOREIGN_EXTENSION]` with actionable recovery guidance only for this exact
-cross-extension rejection. Unrelated failures (another debugger attached,
-missing tab, etc.) are unchanged. The error reaches callers through existing
-tool-error handling; no automatic pause, navigation, reconnect or input replay
-is introduced.
+When the automatic removal could not clear the blocker, the attach boundary
+preserves the browser's original error and appends `[CDP_FOREIGN_EXTENSION]`
+with recovery guidance. Unrelated failures (another debugger attached, missing
+tab, etc.) are unchanged. No automatic pause, reload or input replay happens.
 
 In Pi, search `CDP extension recovery` with `bro_search_tools` to discover the
 complete `extensions` capability pack: diagnosis, status, pause, and resume.
@@ -53,7 +87,8 @@ controlled enable/disable comparison remain important evidence.
 
 The extension now requires the `management` permission. Browser reapproval may
 be necessary on reload/update. This is broad authority over other extensions,
-not a tab-scoped host permission. There is no automatic pause on attach failure.
+not a tab-scoped host permission. There is no automatic pause on attach failure;
+page-local removal makes a pause unnecessary for 1Password's in-page UI.
 
 Use the **Temporary extension pause** section of bro Settings, or:
 
@@ -61,8 +96,8 @@ Use the **Temporary extension pause** section of bro Settings, or:
 2. `extensions_pause {browserId, extensionId, confirmProfileWide:true,
    durationSeconds:300}` — only after explicit user authorization. Range: 30–900
    seconds; the Settings button uses five minutes.
-3. Run the authorized task. Existing injected UI may require a page reload to
-   clear; bro never refreshes automatically. Do not refresh unsaved user work.
+3. Run the authorized task. bro removes iframes the paused extension already
+   injected on its next attach; it never refreshes pages.
 4. `extensions_resume {browserId, resumeToken}` — use the returned ownership
    token. The outcome is `enabled` or `uninstalled`, not an unverified success.
 5. Verify the actual page/task result separately from extension enabled state.
@@ -97,12 +132,16 @@ use the browser's extension manager directly.
 
 - Unit tests cover restoration ordering, ownership, pre-disabled targets,
   interrupted disable, alarm failure, expired recovery, blocked restoration,
-  uninstall during pause, confirmation, and origin-only diagnostics.
-- Opt-in real-browser regression uses a disposable profile, a local HTTP page,
-  and a credential-free extension injecting a closed-shadow extension iframe.
-  It verifies attach rejection, successful attach after pause/navigation,
-  renewed rejection after explicit restoration, alarm restoration, and Settings
-  recovery state through the actual MCP bridge.
+  uninstall during pause, confirmation, and origin-only diagnostics; attach
+  retry after removal, guidance when nothing was removable, and navigation that
+  finishes after its new document closed the session.
+- `make live-refs CHECKS="password manager"` loads a fixture extension shaped
+  like 1Password (closed shadow host, reused iframe, drawn at load and on focus,
+  erased on blur) and logs in through `navigate`, `find` and `computer` clicks
+  and typing in one tab. With the removal disabled the same check fails.
+- `scripts/live-extension-pause.mjs` (disposable profile, credential-free
+  fixture) verifies removal without pause, pause/resume, removal after
+  re-injection, alarm restoration and Settings recovery state.
 
 ```
 pnpm --filter @bro/extension exec vite build --outDir "$TMPDIR/bro-pause-build"
@@ -110,11 +149,10 @@ cargo build
 node scripts/live-extension-pause.mjs "$TMPDIR/bro-pause-build" "$CHROME_BIN"
 ```
 
-The test never loads real login state or modifies the production broker. Passing
-this fixture does not establish that every 1Password UI lifecycle or Helium
-version behaves identically; verify the real profile after loading the feature.
+Fixtures do not establish that every 1Password version behaves identically;
+verify the real profile after loading the extension.
 
-### Real-profile verification: Helium 155
+### Real-profile verification before page-local removal: Helium 155
 
 After the user reloaded the development extension, its live Settings page
 confirmed the new UI and `management` permission. A newly opened background

@@ -1,4 +1,4 @@
-import { cdpSession } from './cdp.js'
+import { CdpSessionClosed, cdpSession } from './cdp.js'
 import { getUnsupportedDebuggerTargetReason } from './debug-target.js'
 
 interface NavigationResult { frameId: string; loaderId?: string; errorText?: string; isDownload?: boolean }
@@ -35,7 +35,26 @@ async function navigateWithDebugger(tabId: number, url: string): Promise<string>
   let resolve!: (url: string) => void
   let reject!: (error: unknown) => void
   const completion = new Promise<string>((yes, no) => { resolve = yes; reject = no })
-  const fail = (error: unknown): void => { settled = true; reject(error) }
+  const settle = (error: unknown): void => { if (!settled) { settled = true; reject(error) } }
+  let recovering = false
+  const fail = (error: unknown): void => {
+    if (settled) return
+    // Chrome also closes the session when the new document embeds another
+    // extension's frame, as password managers do at load. The committed
+    // navigation is unaffected: verify the same document after reattaching.
+    if (navigation && error instanceof CdpSessionClosed) {
+      // The detach event and the in-flight command both report one closure.
+      if (recovering) return
+      recovering = true
+      void readyAfterReattach(tabId, navigation, () => settled).then((url) => {
+        if (url === undefined || settled) return
+        settled = true
+        resolve(url)
+      }, settle)
+      return
+    }
+    settle(error)
+  }
   const check = (): void => {
     if (settled || checking || !navigation) return
     if (!readyDocuments.has(`${navigation.frameId}:${navigation.loaderId}`)) return
@@ -58,7 +77,7 @@ async function navigateWithDebugger(tabId: number, url: string): Promise<string>
     check()
   })
   const offDetach = cdpSession.onDetach((id) => {
-    if (id === tabId) fail(new Error('Navigation interrupted: debugger detached or tab closed'))
+    if (id === tabId) fail(new CdpSessionClosed('Navigation interrupted: debugger detached or tab closed'))
   })
   const timer = setTimeout(() => fail(new ReadinessTimeout()), 10000)
   // Listeners precede lifecycle enablement and dispatch, including cached pages.
@@ -78,7 +97,7 @@ async function navigateWithDebugger(tabId: number, url: string): Promise<string>
       // "interactive" alone is not DOMContentLoaded: deferred scripts may
       // still be running. Use the recorded milestone for an already-ready page.
       const state = await cdpSession.send<{ result: { value?: boolean } }>(tabId, 'Runtime.evaluate', {
-        expression: 'document.readyState === "complete" || (performance.getEntriesByType("navigation")[0]?.domContentLoadedEventEnd ?? 0) > 0',
+        expression: DOCUMENT_READY,
         returnByValue: true,
       })
       if (settled) return
@@ -95,6 +114,44 @@ async function navigateWithDebugger(tabId: number, url: string): Promise<string>
     offLifecycle()
     offDetach()
   }
+}
+
+const DOCUMENT_READY = 'document.readyState === "complete" || (performance.getEntriesByType("navigation")[0]?.domContentLoadedEventEnd ?? 0) > 0'
+
+// Lifecycle events died with the old session, so poll the reattached one.
+// Resolves undefined once the caller has settled (e.g. its readiness timeout).
+async function readyAfterReattach(
+  tabId: number,
+  navigation: { frameId: string; loaderId: string },
+  settled: () => boolean,
+): Promise<string | undefined> {
+  try {
+    await chrome.tabs.get(tabId)
+  } catch {
+    throw new Error('Navigation interrupted: tab closed')
+  }
+  while (!settled()) {
+    try {
+      const { frameTree } = await cdpSession.send<{ frameTree: { frame: MainFrame } }>(tabId, 'Page.getFrameTree')
+      const frame = frameTree.frame
+      if (frame.id !== navigation.frameId || frame.loaderId !== navigation.loaderId) {
+        throw new Error('Navigation was superseded before its document became ready')
+      }
+      const state = await cdpSession.send<{ result: { value?: boolean } }>(tabId, 'Runtime.evaluate', {
+        expression: DOCUMENT_READY,
+        returnByValue: true,
+      })
+      if (state.result.value === true) return frame.url + (frame.urlFragment ?? '')
+    } catch (error) {
+      // Attach checks committed frame URLs only, so a reattach can land while
+      // the extension frame is still loading and be closed again when it
+      // commits. The next attach sees and removes it; the caller's readiness
+      // timeout bounds this loop.
+      if (!(error instanceof CdpSessionClosed)) throw error
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  return undefined
 }
 
 // Internal source pages cannot be attached to. Navigate with the tabs API and

@@ -16,8 +16,10 @@ Discover the `login` capability pack (Pi search: `1Password login`):
    `accountSwitchers` entry (`select` with `optionValue`, or click its `css`) and
    inspect again, instead of debugging the username input's DOM. With no
    fillable inputs but visible iframes, the hint says the form is embedded: open
-   the site's top-level sign-in page in the tab and inspect again. It uses extension ISOLATED-world scripting, not CDP, so
-   a foreign-extension iframe need not be disabled to inspect/fill this form.
+   the site's top-level sign-in page in the tab and inspect again. It uses extension ISOLATED-world scripting, not CDP.
+   CDP tools work on the same page too: bro removes 1Password's in-page iframes
+   instead of failing attach (see `extension-pause.md`), so the extension stays
+   enabled and nothing is reloaded.
 2. `onepassword_find_logins {url, vault?, account?, confirmMetadataSearch:true}`
    lists Login metadata locally and returns only same-site candidate
    item/vault IDs, bounded titles and usernames, and `match: exact-origin|same-site`,
@@ -124,7 +126,7 @@ enable the test feature.
 
 An isolated Chrome profile and local HTTP fixture verify:
 
-- A protected extension iframe blocks CDP but not form inspection/private fill.
+- A protected extension iframe is removed for CDP and does not affect form inspection/private fill.
 - Exact-origin metadata matching, and refusal of an item whose saved origin changed.
 - Remembered-account state: hidden username, visible password and an "other user"
   select produce `hiddenFields`, `accountSwitchers` and a `hint`.

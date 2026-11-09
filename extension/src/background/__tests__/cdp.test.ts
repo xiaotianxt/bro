@@ -21,20 +21,44 @@ beforeEach(() => {
   })
 })
 
+const foreignRejection = 'Cannot access a chrome-extension:// URL of different extension'
+
+function rejectAttach(times: number) {
+  let remaining = times
+  vi.mocked(chrome.debugger.attach).mockImplementation((_target, _version, done) => {
+    if (remaining-- > 0) Object.assign(chrome.runtime, { lastError: { message: foreignRejection } })
+    done!()
+    Object.assign(chrome.runtime, { lastError: undefined })
+  })
+}
+
+function removeFrames(perFrame: number[]) {
+  Object.assign(chrome, { scripting: { executeScript: vi.fn(async () => perFrame.map((result) => ({ result }))) } })
+}
+
 describe('CDP attachment lifecycle', () => {
-  it('guides cross-extension recovery at the attach boundary without sending or replaying input', async () => {
+  it('removes a foreign extension iframe and attaches without reload or pause', async () => {
     const { cdpSession } = await import('../cdp.js')
-    const browserMessage = 'Cannot access a chrome-extension:// URL of different extension'
-    vi.mocked(chrome.debugger.attach).mockImplementation((_target, _version, done) => {
-      Object.assign(chrome.runtime, { lastError: { message: browserMessage } })
-      done!()
-      Object.assign(chrome.runtime, { lastError: undefined })
-    })
+    rejectAttach(1)
+    removeFrames([1, 0])
+    await cdpSession.send(42, 'Runtime.evaluate')
+    expect(chrome.scripting.executeScript).toHaveBeenCalledWith(expect.objectContaining({
+      target: { tabId: 42, allFrames: true }, world: 'ISOLATED',
+    }))
+    expect(chrome.debugger.attach).toHaveBeenCalledTimes(2)
+    expect(chrome.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 42 }, 'Runtime.evaluate', {})
+  })
+
+  it('guides cross-extension recovery when no frame could be removed, without sending or replaying input', async () => {
+    const { cdpSession } = await import('../cdp.js')
+    rejectAttach(Infinity)
+    removeFrames([0])
     let message = ''
     try { await cdpSession.send(42, 'Input.dispatchMouseEvent') }
     catch (error) { message = (error as Error).message }
-    expect(message).toContain(`CDP attach failed for tab 42: ${browserMessage}`)
+    expect(message).toContain(`CDP attach failed for tab 42: ${foreignRejection}`)
     expect(message).toContain('[CDP_FOREIGN_EXTENSION]')
+    expect(message).toContain('already removed')
     expect(message).toContain('bro_search_tools')
     expect(message).toContain('extensions_status')
     expect(message).toContain('keep it enabled')
@@ -42,6 +66,23 @@ describe('CDP attachment lifecycle', () => {
     expect(message).toContain('extensions_resume')
     expect(chrome.debugger.attach).toHaveBeenCalledTimes(1)
     expect(chrome.debugger.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it('treats focus cleanup on a session Chrome closed as done, since the closure cleared emulation', async () => {
+    const { cdpSession } = await import('../cdp.js')
+    await cdpSession.ensure(7)
+    vi.mocked(chrome.debugger.sendCommand).mockRejectedValueOnce(new Error('Debugger is not attached to the tab with id: 7.'))
+    await expect(cdpSession.resetInputFocus(7)).resolves.toBeUndefined()
+    expect(chrome.debugger.detach).not.toHaveBeenCalled()
+  })
+
+  it('keeps the attach rejection when removing frames fails', async () => {
+    const { cdpSession } = await import('../cdp.js')
+    rejectAttach(Infinity)
+    Object.assign(chrome, { scripting: { executeScript: vi.fn(async () => { throw new Error('Cannot access contents of the page') }) } })
+    await expect(cdpSession.ensure(42)).rejects.toThrow(
+      /\[CDP_FOREIGN_EXTENSION\][\s\S]*Removing foreign extension frames failed: Error: Cannot access contents of the page/,
+    )
   })
 
   it('invalidates frame state before idle detach and blocks the next attach until cleanup finishes', async () => {

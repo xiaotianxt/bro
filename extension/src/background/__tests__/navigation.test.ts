@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const mock = vi.hoisted(() => ({ send: vi.fn(), events: new Map<string, (value: unknown) => void>(), detached: new Set<(id: number) => void>() }))
-vi.mock('../cdp.js', () => ({ cdpSession: {
+const mock = vi.hoisted(() => ({ SessionClosed: class extends Error {}, send: vi.fn(), events: new Map<string, (value: unknown) => void>(), detached: new Set<(id: number) => void>() }))
+vi.mock('../cdp.js', () => ({ CdpSessionClosed: mock.SessionClosed, cdpSession: {
   send: mock.send,
   onEvent: (_tab: number, event: string, callback: (value: unknown) => void) => {
     mock.events.set(event, callback)
@@ -94,8 +94,29 @@ describe('document readiness at navigation dispatch', () => {
       : { frameId: 'main', loaderId: 'intended' })
     const interrupted = navigateDocument(42, 'https://start.test')
     await flush()
+    vi.mocked(chrome.tabs.get).mockRejectedValueOnce(new Error('No tab with id: 42'))
     for (const callback of mock.detached) callback(42)
-    await expect(interrupted).rejects.toThrow(/interrupted/)
+    await expect(interrupted).rejects.toThrow(/interrupted: tab closed/)
+    expectClean()
+  })
+
+  it('finishes a committed navigation whose new document closed the session', async () => {
+    // A password manager's frame in the new document makes Chrome close the
+    // session after commit; the reattached session sees the same document.
+    let ready = false
+    mock.send.mockImplementation(async (_tab, method) => {
+      if (method === 'Page.navigate') return { frameId: 'main', loaderId: 'intended' }
+      if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'main', loaderId: 'intended', url: 'https://login.test/' } } }
+      if (method === 'Runtime.evaluate') return { result: { value: ready } }
+      return {}
+    })
+    const pending = navigateDocument(42, 'https://login.test/')
+    await flush()
+    for (const callback of mock.detached) callback(42)
+    await flush()
+    ready = true
+    await vi.advanceTimersByTimeAsync(100)
+    await expect(pending).resolves.toBe('https://login.test/')
     expectClean()
   })
 
