@@ -1423,6 +1423,23 @@ try {
     assert.match(JSON.stringify(batch.results[1].results), /Scroll contract/)
   })
   await tool('browser.flow.finish', { sessionId: flow.sessionId })
+  resetFixture = undefined
+  // Last: it closes every remaining tab. Chrome unloads the profile, and with it
+  // the extension worker and its alarms, once the last window closes.
+  await check('Z: closing every tab keeps a window, so the extension stays connected', async () => {
+    const listed = text(await tool('tabs_context', { all: true }))
+    const ids = [...listed.matchAll(/^ {2}[ *] \[(\d+)\]/gm)].map((m) => Number(m[1]))
+    assert.ok(ids.length > 0, `the window must list its tabs: ${listed}`)
+    for (const id of ids) await tool('tabs_close', { tabId: id })
+    // Profile teardown follows the window close asynchronously; give it time to
+    // drop the connection before asserting that it did not.
+    await new Promise((r) => setTimeout(r, 5000))
+    const status = await (await fetch(`http://127.0.0.1:${port}/status`, { signal: cancellation.signal })).json()
+    assert.equal(status.extensionCount, 1, 'the extension must stay connected after its tabs close')
+    const remaining = text(await tool('tabs_context', { all: true }))
+    assert.match(remaining, /Tabs \(1\):\n {2}[ *] \[\d+\] chrome:\/\/newtab\//,
+      `only a New Tab page should keep the last window open: ${remaining}`)
+  })
   await writeFile(
     resolve(output, 'results.json'),
     JSON.stringify({ checks, pass: checks.every((c) => c.pass) }, null, 2),

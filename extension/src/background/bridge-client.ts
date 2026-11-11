@@ -5,6 +5,8 @@
 // suspension) instead of setTimeout (which is lost on suspension).
 // A 'keepalive' alarm fires every ~6 seconds (periodInMinutes: 0.1).
 // When the alarm fires and the client is disconnected, it triggers reconnect.
+// Alarms stop with the profile: Chrome unloads it when its last window closes,
+// and only a new window restarts this worker (see removeTab in tools/tabs.ts).
 
 import {
   type ExtensionToServerMessage,

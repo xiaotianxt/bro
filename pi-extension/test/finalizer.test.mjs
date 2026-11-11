@@ -19,7 +19,7 @@ it('warns on actual finalization failure and retains only failed cleanup ownersh
       set: vi.fn(async (values) => { Object.assign(state, values); }),
       remove: vi.fn(async (keys) => { for (const key of keys) delete state[key]; }),
     } },
-    tabs: { remove, query: vi.fn(async () => [{ id: 42 }]) },
+    tabs: { remove, query: vi.fn(async () => [{ id: 1 }, { id: 42 }]) },
   });
   try {
     await import('../../extension/src/background/tools/tabs.js');

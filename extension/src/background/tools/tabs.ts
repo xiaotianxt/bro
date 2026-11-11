@@ -602,6 +602,17 @@ async function executeTabsCreateMcp(_tabId: number, rawArgs: unknown): Promise<T
   return { content: [{ type: 'text', text: `Created tab: ${tab.id}` }] }
 }
 
+// Closing the last tab closes the last window, and Chrome then unloads the
+// profile (DestroyProfileOnBrowserClose): this worker and its alarms stop, and
+// nothing restarts them until a window opens, so bro stays disconnected. Every
+// bro tab removal therefore leaves a New Tab page behind in that case.
+async function removeTab(tabId: number): Promise<void> {
+  const tabs = await chrome.tabs.query({})
+  if (tabs.length === 1 && tabs[0]!.id === tabId)
+    await chrome.tabs.create({ windowId: tabs[0]!.windowId, active: false })
+  await chrome.tabs.remove(tabId)
+}
+
 // `allowNotReady` keeps a tab whose dispatched navigation only timed out, so an
 // owner can still observe or close it; every other failure removes the tab.
 // `defer` returns once navigation is dispatched: the caller owns readiness.
@@ -631,7 +642,7 @@ async function createReadyTab(
     if (readiness === 'allowNotReady' && error instanceof ReadinessTimeout)
       return { tab, notReady: error.message }
     try {
-      await chrome.tabs.remove(tab.id)
+      await removeTab(tab.id)
     } catch (cleanupError) {
       throw new Error(`Tab ${tab.id} failed to initialize and cleanup failed: ${String(cleanupError)}`, { cause: error })
     }
@@ -699,7 +710,7 @@ async function executeTabsFinalize(_tabId: number, rawArgs: unknown): Promise<To
   for (const tabId of closeIds) {
     if (keepIds.has(tabId)) continue
     try {
-      await chrome.tabs.remove(tabId)
+      await removeTab(tabId)
       closed.push(tabId)
     } catch (err) {
       // Removal of an already-closed tab is complete, not a cleanup failure.
@@ -779,7 +790,7 @@ async function executeTabsClose(_tabId: number, rawArgs: unknown): Promise<ToolR
   }
 
   const tab = await chrome.tabs.get(targetTabId)
-  await chrome.tabs.remove(targetTabId)
+  await removeTab(targetTabId)
 
   return {
     content: [{ type: 'text', text: `Closed tab ${targetTabId}: ${tab.url ?? '(no URL)'}` }],
