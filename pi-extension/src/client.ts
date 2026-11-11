@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import type { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import { DEFAULT_BRO_MCP_URL, defaultBroSettingsPath, readBroToken } from "./settings.ts";
@@ -9,6 +9,26 @@ const CONNECT_TIMEOUT_MS = 3_000;
 const LIST_TIMEOUT_MS = 5_000;
 const CLOSE_TIMEOUT_MS = 1_000;
 const TOOL_TIMEOUT_MS = 120_000;
+
+// The MCP SDK (with zod and ajv) costs tens of milliseconds to evaluate, and Pi loads extensions
+// before it draws the editor. Load it on the first connection instead of at extension import.
+let sdk: Promise<{
+  Client: typeof Client;
+  StreamableHTTPClientTransport: typeof StreamableHTTPClientTransport;
+  StreamableHTTPError: typeof import("@modelcontextprotocol/sdk/client/streamableHttp.js").StreamableHTTPError;
+}> | undefined;
+
+function loadSdk() {
+  sdk ??= Promise.all([
+    import("@modelcontextprotocol/sdk/client/index.js"),
+    import("@modelcontextprotocol/sdk/client/streamableHttp.js"),
+  ]).then(([client, http]) => ({
+    Client: client.Client,
+    StreamableHTTPClientTransport: http.StreamableHTTPClientTransport,
+    StreamableHTTPError: http.StreamableHTTPError,
+  }));
+  return sdk;
+}
 
 interface BroMcpClientOptions {
   endpoint?: URL;
@@ -135,7 +155,10 @@ export class BroMcpClient implements BroToolClient {
   }
 
   private async openConnection(): Promise<Connection> {
-    const token = await readBroToken(this.settingsPath);
+    const [token, { Client, StreamableHTTPClientTransport }] = await Promise.all([
+      readBroToken(this.settingsPath),
+      loadSdk(),
+    ]);
     if (this.closed) throw new Error("bro MCP client is closed");
     const transport = new StreamableHTTPClientTransport(this.endpoint, {
       requestInit: {
@@ -182,6 +205,8 @@ export class BroMcpClient implements BroToolClient {
   private async invalidateExpiredSession(connection: Connection, error: unknown): Promise<void> {
     // Request cancellation, timeout, JSON-RPC errors and transient HTTP failures
     // are not evidence that the shared transport is dead. Never replay actions.
+    // A connection exists, so the SDK is already loaded and this await does not import.
+    const { StreamableHTTPError } = await loadSdk();
     if (!(error instanceof StreamableHTTPError) || error.code !== 404 || !connection.transport.sessionId) return;
     if (this.connection !== connection) return;
     this.connection = undefined;
