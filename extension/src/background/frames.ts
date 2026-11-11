@@ -49,9 +49,15 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     state.errors.push(`Frame limit exceeded (${MAX_FRAMES})`)
     return
   }
-  // Auto-attach is recursive only when enabled on each child target too.
-  const operation = cdpSession
-    .sendToSession(source.tabId, event.sessionId, 'Target.setAutoAttach', autoAttach)
+  // Auto-attach is recursive only when enabled on each child target too. A
+  // cross-site frame raises its own dialogs and file choosers (see cdp.ts attach).
+  const send = (method: string, params?: object) =>
+    cdpSession.sendToSession(source.tabId!, event.sessionId, method, params)
+  const operation = Promise.all([
+    send('Target.setAutoAttach', autoAttach),
+    send('Page.enable'),
+    send('Page.setInterceptFileChooserDialog', { enabled: true }),
+  ])
     .then(
       () => {},
       (error) => {

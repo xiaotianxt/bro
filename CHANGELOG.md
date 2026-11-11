@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.6.0
+
+- `file_upload` takes the control a user clicks to pick files, not the file
+  input. Most pages hide that input, create it on click, or cover it with a
+  drop label, so an agent often had no ref for it. Pass the ref of the upload
+  button, drop zone, or input; or a `coordinate` when the control has no ref
+  (a canvas app's menu text). bro clicks it with a real pointer, catches the
+  file chooser the page opens, and fills that chooser's input; a ref to the
+  input itself is filled directly. `drop: true` drags the files onto the target instead, for drop-only
+  zones and pages that ask through `showOpenFilePicker`, which no file input
+  can answer.
+- File choosers no longer open an OS window under automation. Like native
+  dialogs, every chooser on a tab bro controls is intercepted; one that no
+  `file_upload` asked for is cancelled and reported in the action's result.
+- Native dialogs raised inside cross-site iframes are answered too.
+
 ## 1.5.0
 
 - `file_upload` takes local files by path. Pass absolute paths in `paths`;

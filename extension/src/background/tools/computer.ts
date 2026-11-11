@@ -81,7 +81,7 @@ const MAX_SCREENSHOT_QUALITY = 95
 // Input validation
 // ---------------------------------------------------------------------------
 
-function isCoordinate(value: unknown): value is Coordinate {
+export function isCoordinate(value: unknown): value is Coordinate {
   return (
     Array.isArray(value) &&
     value.length === 2 &&
@@ -232,6 +232,11 @@ function mouseButtonMask(button: 'none' | 'left' | 'middle' | 'right'): number {
     case 'middle': return 4
     case 'none': return 0
   }
+}
+
+/** A left click at a viewport point, as computer left_click performs it. Call inside withInput. */
+export function leftClick(tabId: number, [x, y]: Coordinate): Promise<void> {
+  return singleClick(tabId, x, y, 'left')
 }
 
 /**

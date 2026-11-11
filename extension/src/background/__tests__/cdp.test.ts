@@ -88,8 +88,10 @@ describe('CDP attachment lifecycle', () => {
   it('invalidates frame state before idle detach and blocks the next attach until cleanup finishes', async () => {
     const { cdpSession } = await import('../cdp.js')
     await cdpSession.ensure(1)
-    // Attachment enables page events, so native dialogs can be answered.
+    // Attachment enables page events and chooser interception, so native
+    // dialogs and file choosers are answered instead of blocking.
     expect(chrome.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 1 }, 'Page.enable', {})
+    expect(chrome.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 1 }, 'Page.setInterceptFileChooserDialog', { enabled: true })
     vi.mocked(chrome.debugger.sendCommand).mockClear()
     const started = deferred(), finish = deferred()
     vi.mocked(chrome.debugger.detach).mockImplementation((_target, done) => {

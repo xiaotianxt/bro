@@ -6,6 +6,8 @@ import { isForeignExtensionRejection, removeForeignExtensionFrames } from './for
 
 type EventCallback = (params: unknown) => void
 type DetachCallback = (tabId: number) => void
+/** sessionId names the child (cross-site frame) session that sent the event; undefined for the tab itself. */
+type EveryTabCallback = (tabId: number, params: unknown, sessionId: string | undefined) => void
 
 // Shared by every CDP command; a timeout also detaches the debugger, so a
 // longer bound would hold up recovery for all commands, not just evaluations.
@@ -41,16 +43,17 @@ export class CDPSession {
 
   // Events handled for every attached tab. Unlike eventListeners they do not
   // keep a tab attached, and attachment clears none of them.
-  private readonly everyTabListeners = new Map<string, Set<(tabId: number, params: unknown) => void>>()
+  private readonly everyTabListeners = new Map<string, Set<EveryTabCallback>>()
 
   constructor() {
     // Route raw debugger events to registered callbacks.
     chrome.debugger.onEvent.addListener(
       (source: chrome.debugger.DebuggerSession, method: string, params?: object) => {
         const tabId = source.tabId
-        // Child-target events belong to the frame transport, not root monitors.
-        if (tabId === undefined || source.sessionId) return
-        for (const cb of this.everyTabListeners.get(method) ?? []) cb(tabId, params ?? null)
+        if (tabId === undefined) return
+        for (const cb of this.everyTabListeners.get(method) ?? []) cb(tabId, params ?? null, source.sessionId)
+        // Other child-target events belong to the frame transport, not root monitors.
+        if (source.sessionId) return
         const tabListeners = this.eventListeners.get(tabId)
         if (!tabListeners) return
         const callbacks = tabListeners.get(method)
@@ -119,9 +122,10 @@ export class CDPSession {
       if (removed > 0) failure = await this.attachDebugger(tabId)
     }
     if (failure !== undefined) throw new Error(formatDebuggerAttachError(tabId, failure))
-    // Page events include javascriptDialogOpening: without them a native dialog
-    // blocks the page and every later command on the tab times out.
+    // Native dialogs block the page, and file choosers open an OS window no
+    // tool can reach; dialogs.ts answers both from these Page events.
     await this.sendAttached(tabId, 'Page.enable')
+    await this.sendAttached(tabId, 'Page.setInterceptFileChooserDialog', { enabled: true })
   }
 
   /** Attaches once; returns the browser's rejection message, if any. */
@@ -329,7 +333,7 @@ export class CDPSession {
   }
 
   /** Subscribes to a CDP event on every tab the session attaches to. */
-  onEveryTab(eventName: string, callback: (tabId: number, params: unknown) => void): void {
+  onEveryTab(eventName: string, callback: EveryTabCallback): void {
     let callbacks = this.everyTabListeners.get(eventName)
     if (!callbacks) {
       callbacks = new Set()

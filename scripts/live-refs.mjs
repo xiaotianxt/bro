@@ -292,6 +292,33 @@ const fixture = (req, res) => {
     res.end('<!doctype html><title>Password manager contract</title><form onsubmit="event.preventDefault();out.textContent=\'SIGNED_IN:\'+username.value+\'/\'+password.value.length"><label>Username <input id="username" autocomplete="username"></label><label>Password <input id="password" type="password" autocomplete="current-password"></label><button>Sign in</button></form><output id="out">SIGNED_OUT</output>')
     return
   }
+  if (url.pathname === '/uploads') {
+    // The upload patterns of real pages: an input hidden behind a button, one
+    // created on click and never attached, a single-file input, an input under
+    // its own drop label (FilePond), a button that ignores untrusted clicks
+    // (plupload), a role-less menu item (canvas apps), showOpenFilePicker, and
+    // a drop-only zone.
+    send(`<!doctype html><title>Upload patterns</title><style>button,.zone{display:block;margin:4px}</style>
+    <button id="hidden">Pick hidden</button><input id="hidden-input" type="file" multiple style="display:none">
+    <button id="created">Pick created</button><button id="single">Pick single</button><input id="single-input" type="file" hidden>
+    <div style="position:relative;width:240px;height:40px"><input id="covered" type="file" aria-label="Covered input" style="width:100%;height:100%"><div id="covered-label" style="position:absolute;inset:0;background:#eee">Drop or browse</div></div>
+    <button id="trusted">Pick trusted</button><span id="menu" style="display:inline-block;padding:6px">Open from computer</span>
+    <button id="inert">No chooser</button><button id="fsa">Pick system</button>
+    <div class="zone" role="region" aria-label="Drop zone" style="width:240px;height:60px;border:1px dashed">Drop files here</div>
+    <output id="upload-result" aria-live="polite">none</output><script>
+    const show=async (label,files)=>document.querySelector('#upload-result').textContent=label+':'+(await Promise.all([...files].map(async f=>f.name+'='+await f.text()))).join(',');
+    const $=s=>document.querySelector(s),hidden=$('#hidden-input'),single=$('#single-input'),covered=$('#covered');
+    $('#hidden').onclick=()=>hidden.click();hidden.onchange=()=>show('HIDDEN',hidden.files);
+    $('#single').onclick=()=>single.click();single.onchange=()=>show('SINGLE',single.files);
+    $('#created').onclick=()=>{const i=document.createElement('input');i.type='file';i.multiple=true;i.onchange=()=>show('CREATED',i.files);i.click()};
+    $('#covered-label').onclick=()=>covered.click();covered.onchange=()=>show('COVERED',covered.files);
+    $('#trusted').onclick=e=>{if(e.isTrusted)hidden.click()};
+    $('#menu').onclick=()=>single.click();
+    $('#fsa').onclick=()=>showOpenFilePicker().then(()=>show('FSA',[]),e=>$('#upload-result').textContent='FSA_ERROR:'+e.name);
+    const zone=$('.zone');zone.ondragover=e=>e.preventDefault();zone.ondrop=e=>{e.preventDefault();show('DROPPED',e.dataTransfer.files)};
+    </script>`)
+    return
+  }
   if (url.pathname === '/dialogs') {
     res.end('<!doctype html><title>Dialog contract</title><button onclick="out.textContent=confirm(\'Proceed?\')?\'OK\':\'CANCEL\'">Confirm</button><button onclick="out.textContent=\'PROMPT:\'+prompt(\'Name?\')">Prompt</button><button onclick="alert(\'Saved\');out.textContent=\'ALERTED\'">Alert</button><output id="out">NONE</output>')
     return
@@ -924,9 +951,10 @@ try {
       refId: refFor(snapshot, 'button', 'Cross File'),
       paths: [local],
     })
-    assert.match(
-      text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 })),
-      /upload-ref.txt:REF_PATH_UPLOAD_OK/,
+    // onchange reads the file asynchronously.
+    await waitUntil(
+      async () => /upload-ref.txt:REF_PATH_UPLOAD_OK/.test(text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))),
+      'cross-site upload result',
     )
     await tool('file_upload', { tabId, refId: refFor(snapshot, 'button', 'Cross File'), paths: ['relative.txt'] }, /must be absolute/)
   })
@@ -1080,6 +1108,44 @@ try {
       const clicked = text(await tool('computer', { tabId: opened.tabId, action: 'left_click', refId }))
       assert.match(clicked, /Native dialogs answered: alert "Saved" accepted/)
       assert.equal(await output(), 'ALERTED')
+    } finally {
+      await tool('browser.close', { targetId: opened.targetId })
+    }
+  })
+  await check('U: file_upload clicks the visible control; stray choosers are cancelled', async () => {
+    const opened = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/uploads` })))
+    const tabId = opened.tabId
+    const one = resolve(output, 'upload-one.txt'), two = resolve(output, 'upload-two.txt')
+    await writeFile(one, 'ONE')
+    await writeFile(two, 'TWO')
+    const page = async () => text(await tool('read_page', { tabId, filter: 'all', maxChars: 8000 }))
+    const shows = (pattern, label) => waitUntil(async () => pattern.test(await page()), label)
+    try {
+      const snapshot = await page()
+      const ref = (name, role = 'button') => refFor(snapshot, role, name)
+      await tool('file_upload', { tabId, refId: ref('Pick hidden'), paths: [one, two] })
+      await shows(/HIDDEN:upload-one.txt=ONE,upload-two.txt=TWO/, 'hidden input upload')
+      await tool('file_upload', { tabId, refId: ref('Pick created'), paths: [two] })
+      await shows(/CREATED:upload-two.txt=TWO/, 'created input upload')
+      await tool('file_upload', { tabId, refId: ref('Covered input'), paths: [one] })
+      await shows(/COVERED:upload-one.txt=ONE/, 'input under its own drop label')
+      await tool('file_upload', { tabId, refId: ref('Pick trusted'), paths: [two] })
+      await shows(/HIDDEN:upload-two.txt=TWO/, 'trusted-click-only button')
+      const menu = JSON.parse(text(await tool('javascript_tool', {
+        tabId,
+        code: 'const r=document.querySelector("#menu").getBoundingClientRect();[r.x+r.width/2,r.y+r.height/2]',
+      })))
+      await tool('file_upload', { tabId, coordinate: menu, paths: [one] })
+      await shows(/SINGLE:upload-one.txt=ONE/, 'coordinate-targeted menu item')
+      await tool('file_upload', { tabId, refId: ref('Drop zone', 'region'), paths: [one, two], drop: true })
+      await shows(/DROPPED:upload-one.txt=ONE,upload-two.txt=TWO/, 'drop zone')
+      await tool('file_upload', { tabId, refId: ref('Pick single'), paths: [one, two] }, /asked for one file, got 2/)
+      await tool('file_upload', { tabId, refId: ref('No chooser'), paths: [one] }, /opened no file chooser within 3s/)
+      await tool('file_upload', { tabId, refId: ref('Pick system'), paths: [one] }, /showOpenFilePicker[\s\S]*drop: true/)
+      await tool('file_upload', { tabId, paths: [one] }, /exactly one of .*refId.* or .*coordinate/)
+      // A plain click never opens the OS picker; its result says how to choose files.
+      const clicked = text(await tool('computer', { tabId, action: 'left_click', refId: ref('Pick hidden') }))
+      assert.match(clicked, /file chooser cancelled/)
     } finally {
       await tool('browser.close', { targetId: opened.targetId })
     }

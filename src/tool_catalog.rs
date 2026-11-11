@@ -574,7 +574,7 @@ static SPECS: &[ToolSpec] = &[
     ),
     ToolSpec {
         name: "file_upload",
-        description: "Set local files on a file input identified by refId. Pass absolute paths; the browser reads the files itself.",
+        description: "Choose local files through the control a user clicks to pick them. Target it by refId (an upload button, drop zone, or file input) or by coordinate (CSS pixels, as computer uses) when it has no ref. bro activates it, catches the file chooser it opens (no OS dialog appears), and fills it with paths. Pass absolute paths; the browser reads the files itself.",
         route: ToolRoute::FileUpload,
         schema: "file_upload",
     },
@@ -1149,8 +1149,16 @@ fn schema(kind: &str) -> JsonObject {
         "file_upload" => props(&[
             ("refId", json!({"type":"string","minLength":1})),
             (
+                "coordinate",
+                json!({"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2,"description":"Click point when the control has no refId; give refId or coordinate, not both."}),
+            ),
+            (
                 "paths",
-                json!({"type":"array","minItems":1,"items":{"type":"string","minLength":1},"description":"Absolute paths of local files to set on the input."}),
+                json!({"type":"array","minItems":1,"items":{"type":"string","minLength":1},"description":"Absolute paths of the local files to choose."}),
+            ),
+            (
+                "drop",
+                json!({"type":"boolean","description":"Drag the files onto the target instead of clicking it, for pages that take files only by drop or through showOpenFilePicker."}),
             ),
             ("tabId", tab_id_schema("Numeric tab ID.")),
             ("browserId", browser_id_schema()),
@@ -1241,7 +1249,7 @@ fn required_fields(kind: &str) -> Option<&'static [&'static str]> {
         "browser_press" => Some(&["key"]),
         "browser_flow_observe" | "browser_flow_finish" => Some(&["sessionId"]),
         "browser_flow_act" => Some(&["sessionId", "steps"]),
-        "file_upload" => Some(&["refId", "paths"]),
+        "file_upload" => Some(&["paths"]),
         _ => None,
     }
 }

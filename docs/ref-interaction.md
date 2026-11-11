@@ -102,7 +102,7 @@ Each contract resets the fixture to a fresh document, so a failed group cannot p
 4. Clone/replacement/disconnected-node rejection without changing the replacement field.
 5. Covered/disabled clicks, read-only controls and invalid options, with error reasons and unchanged page state.
 6. Iframe navigation invalidating its former document's refs.
-7. Cross-site file upload with decoded filename/content verification.
+7. Cross-site file upload with decoded filename/content verification, and the upload patterns of real pages (`U:`): hidden, click-created and label-covered inputs, trusted-click-only buttons, coordinate targets, drop zones, and `showOpenFilePicker`.
 8. Default flow observation, ref-only flow steps, parse-before-effect validation and runtime fail-fast behavior.
 9. `find`/info/wait/scroll interoperability, actual scroll offsets and explicit no-movement boundary reporting.
 10. Fresh-background-tab scrolling delivers event-driven visible UI before returning.

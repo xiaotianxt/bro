@@ -115,13 +115,8 @@ function callNode<T>(
   )
 }
 
-export interface RefNode {
-  frame: BrowserFrame
-  backendNodeId: number
-}
-
 /** The live frame and node of a ref; throws when its document has been replaced. */
-export async function refNode(tabId: number, ref: string): Promise<RefNode> {
+export async function refNode(tabId: number, ref: string): Promise<{ frame: BrowserFrame; backendNodeId: number }> {
   const target = snapshots.resolve(tabId, ref)
   const frames = await getBrowserFrames(tabId)
   const frame = frames.find((f) => f.id === target.frameId)
@@ -136,17 +131,7 @@ export async function withRef<T>(
   fn: (this: Element, ...args: any[]) => T,
   args: unknown[] = [],
 ): Promise<T> {
-  return callRef(tabId, ref, await refNode(tabId, ref), fn, args)
-}
-
-/** Runs fn on a node already resolved by refNode, so a caller can act on that same node next. */
-export async function callRef<T>(
-  tabId: number,
-  ref: string,
-  { frame, backendNodeId }: RefNode,
-  fn: (this: Element, ...args: any[]) => T,
-  args: unknown[] = [],
-): Promise<T> {
+  const { frame, backendNodeId } = await refNode(tabId, ref)
   try {
     return await callNode(tabId, frame, backendNodeId, fn, args)
   } catch (error) {
