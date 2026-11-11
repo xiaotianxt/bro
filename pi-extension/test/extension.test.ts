@@ -156,6 +156,31 @@ describe("bro Pi extension", () => {
     expect(calls.at(-1)?.name).toBe("tabs_finalize");
   });
 
+  it("does not close again at shutdown a target a close:true call already closed", async () => {
+    const calls: string[] = [];
+    const tools = ["browser.open", "browser.observe", "browser.close"].map((name) => ({
+      ...upstreamTool(name), _meta: { "bro/default": true },
+    }));
+    const client: BroToolClient = {
+      connected: true,
+      async listTools() { return tools; },
+      async callTool(name) {
+        calls.push(name);
+        const closed = name === "browser.observe" ? { closed: true } : {};
+        return { content: [{ type: "text", text: "ok" }], structuredContent: { targetId: "target-1", ...closed } } as CallToolResult;
+      },
+      close: vi.fn(async () => {}),
+    };
+    const harness = createPiHarness();
+    const context = createContext();
+    installBroPiExtension(harness.pi, { createClient: () => client });
+    await harness.emit("session_start", {}, context);
+    await harness.tools.get("bro_browser_open")!.execute("open", { url: "https://example.test" }, undefined, undefined, context);
+    await harness.tools.get("bro_browser_observe")!.execute("read", { targetId: "target-1", close: true }, undefined, undefined, context);
+    await harness.emit("session_shutdown", { reason: "quit" }, context);
+    expect(calls).not.toContain("browser.close");
+  });
+
   it("enables matching low-level tools additively", async () => {
     const client: BroToolClient = {
       connected: true,

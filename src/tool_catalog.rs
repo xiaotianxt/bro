@@ -279,7 +279,7 @@ static SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "browser.extract",
-        description: "Open one URL, use browser-side DOM quiet readiness, then return compact text and extraction diagnostics. Links and a11y fallback are opt-in. Defaults: cleanup true, active false.",
+        description: "Read one URL: open it in a background tab, wait until its content settles, return its visible text as rendered (a table row stays on one line), and close the tab. Up to maxChars (20000). Use it instead of open + evaluate to read or search a page. Links and a11y fallback are opt-in.",
         route: ToolRoute::Extract,
         schema: "browser_extract",
     },
@@ -291,7 +291,7 @@ static SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "browser.batch.extract",
-        description: "Extract multiple URLs in parallel using browser-side DOM quiet readiness. Returns compact text by default; links and a11y fallback are opt-in. Defaults: concurrency 6, cleanup true, active false.",
+        description: "Read several URLs in parallel, each as browser.extract does (visible text, 8000 chars per page by default). Links and a11y fallback are opt-in. Defaults: concurrency 6.",
         route: ToolRoute::BatchExtract,
         schema: "browser_batch_extract",
     },
@@ -309,7 +309,7 @@ static SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "browser.open",
-        description: "Open one URL in an owned background tab for interaction and return targetId as soon as it starts loading; the first observe/act waits up to 4 s for the page to load. Close it when done.",
+        description: "Open one URL in an owned background tab for interaction and return its targetId with the first observation (a11y refs by default; observe takes browser.observe's options, e.g. {mode:\"text\"}), so act next without observing. observe:false returns as soon as loading starts. Close it with close:true on its last observe/act/click/fill/press.",
         route: ToolRoute::Open,
         schema: "browser_open",
     },
@@ -345,7 +345,7 @@ static SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "browser.close",
-        description: "Close an owned target's tab and release its server state. Does not close unrelated tabs. Failed cleanup remains available for an explicit retry.",
+        description: "Close an owned target's tab and release its server state; close:true on the target's last call does this without a separate turn. Does not close unrelated tabs. Failed cleanup remains available for an explicit retry.",
         route: ToolRoute::Close,
         schema: "browser_close",
     },
@@ -677,7 +677,7 @@ fn schema(kind: &str) -> JsonObject {
             ),
             (
                 "maxChars",
-                json!({"type":"integer","minimum":1,"maximum":60000,"default":8000}),
+                json!({"type":"integer","minimum":1,"maximum":60000,"default":20000}),
             ),
             (
                 "maxLinks",
@@ -706,7 +706,7 @@ fn schema(kind: &str) -> JsonObject {
             ),
             (
                 "maxChars",
-                json!({"type":"integer","minimum":1,"maximum":60000,"default":8000}),
+                json!({"type":"integer","minimum":1,"maximum":60000,"default":20000}),
             ),
             (
                 "maxLinks",
@@ -813,15 +813,13 @@ fn schema(kind: &str) -> JsonObject {
             ("active", json!({"type":"boolean","default":false})),
             ("ownerSessionId", json!({"type":"string","minLength":1,"description":"Owner identity; Pi supplies it."})),
             ("label", json!({"type":"string","minLength":1,"description":"Tab-group label; Pi supplies it."})),
+            ("observe", json!({"anyOf":[{"type":"boolean"},{"type":"object","properties":observation_properties()}],"default":true})),
         ]),
-        "browser_observe" => {
-            let mut properties = observation_properties();
-            properties.insert("targetId".to_string(), target_id_schema());
-            properties
-        }
+        "browser_observe" => with_target(observation_properties()),
         "browser_act" => props(&[
             ("targetId", target_id_schema()),
             ("steps", interaction_steps_schema()),
+            ("close", close_schema()),
         ]),
         "browser_click" => with_target(element_target()),
         "browser_fill" => {
@@ -1291,9 +1289,15 @@ fn target_id_schema() -> Value {
     json!({"type":"string","minLength":1,"description":"From browser.open. Defaults to the target this session last opened or used."})
 }
 
+/// Target calls on browser.open's tabs; close ends one on its last call.
 fn with_target(mut properties: Map<String, Value>) -> Map<String, Value> {
     properties.insert("targetId".to_string(), target_id_schema());
+    properties.insert("close".to_string(), close_schema());
     properties
+}
+
+fn close_schema() -> Value {
+    json!({"type":"boolean","default":false,"description":"Close the target once this call succeeds, instead of a separate browser.close."})
 }
 
 /// Element steps take refId, or role + name resolved when the step runs.

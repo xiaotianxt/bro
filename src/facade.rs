@@ -24,7 +24,10 @@ const OPEN_SETTLE_TIMEOUT_MS: u64 = 4_000;
 const DEFAULT_TEXT_READY_MIN_CHARS: usize = 120;
 const MAX_TEXT_READY_MIN_CHARS: usize = 10_000;
 const EXTRACT_PAGE_GUARD_MS: u64 = 8_000;
-const DEFAULT_EXTRACT_MAX_CHARS: u64 = 8_000;
+// One page is read whole when it can be: a long table or doc page past the cap
+// costs the model extra turns. Batches stay smaller per page.
+const DEFAULT_EXTRACT_MAX_CHARS: u64 = 20_000;
+const DEFAULT_BATCH_EXTRACT_MAX_CHARS: u64 = 8_000;
 const MAX_EXTRACT_MAX_CHARS: u64 = 60_000;
 const DEFAULT_EXTRACT_MAX_LINKS: u64 = 20;
 const MAX_EXTRACT_MAX_LINKS: u64 = 200;
@@ -392,6 +395,7 @@ impl BrowserFacade {
                 "ownerSessionId and label must be nonempty when supplied".to_string(),
             ));
         }
+        let observe = args.observe_options()?;
         let session = self
             .start_owned(
                 FlowStartArgs {
@@ -405,7 +409,23 @@ impl BrowserFacade {
                 true,
             )
             .await?;
-        Ok(json!({"targetId": session.session_id, "tabId": session.tab_id, "url": session.url}))
+        let mut value =
+            json!({"targetId": session.session_id, "tabId": session.tab_id, "url": session.url});
+        let Some(options) = observe else {
+            return Ok(value);
+        };
+        // The tab is open and owned either way, so a failed first read is
+        // reported beside its targetId instead of hiding the target.
+        let observed = async {
+            let session = self.settled(&session.session_id).await?;
+            self.observe(&session, options, OBSERVE_MAX_CHARS).await
+        }
+        .await;
+        match observed {
+            Ok(content) => value["content"] = json!(content),
+            Err(error) => value["observeError"] = json!(error.to_string()),
+        }
+        Ok(value)
     }
 
     /// `defer_readiness` returns once navigation is dispatched; the target is
@@ -516,7 +536,23 @@ impl BrowserFacade {
         let options = args.options.within_ceiling()?;
         let session = self.settled(&args.target_id).await?;
         let content = self.observe(&session, options, OBSERVE_MAX_CHARS).await?;
-        Ok(json!({"targetId": session.session_id, "content": content}))
+        let mut value = json!({"targetId": session.session_id, "content": content});
+        if args.close {
+            self.close_after(&mut value).await?;
+        }
+        Ok(value)
+    }
+
+    /// `close: true` on a target's last call saves the model a browser.close
+    /// turn. A failed close leaves the target registered for an explicit retry.
+    async fn close_after(&self, value: &mut Value) -> Result<(), FacadeError> {
+        let target_id = plain(&value["targetId"]);
+        let (_session, _cleanup, error) = self.finish(&target_id, Some(true)).await?;
+        match error {
+            None => value["closed"] = json!(true),
+            Some(error) => value["closeError"] = json!(error),
+        }
+        Ok(())
     }
 
     async fn observe(
@@ -631,7 +667,12 @@ impl BrowserFacade {
             }
         }
         let session = self.settled(&args.target_id).await?;
-        self.act_steps(session, steps, StepShape::Slim).await
+        let mut value = self.act_steps(session, steps, StepShape::Slim).await?;
+        // A failed step keeps the target open: the caller may want to retry.
+        if args.close && value["status"] != json!("failed") {
+            self.close_after(&mut value).await?;
+        }
+        Ok(value)
     }
 
     /// browser.click/fill/press: one act step, so one rendering and one
@@ -642,10 +683,14 @@ impl BrowserFacade {
         mut args: Map<String, Value>,
     ) -> Result<Value, FacadeError> {
         let target_id = args.remove("targetId");
+        let close = args.remove("close");
         args.insert("type".to_string(), json!(kind));
         let mut act = Map::from_iter([("steps".to_string(), json!([args]))]);
         if let Some(target_id) = target_id {
             act.insert("targetId".to_string(), target_id);
+        }
+        if let Some(close) = close {
+            act.insert("close".to_string(), close);
         }
         self.act(act).await
     }
@@ -1057,10 +1102,17 @@ impl BrowserFacade {
                 diagnostics.text_attempts = 1;
                 diagnostics.dom_chars = snapshot.text.chars().count();
                 diagnostics.dom_attempted = true;
+                // The extension watched the page settle; its short, stable text
+                // is the page's content, not a reason to read again.
+                let settled = snapshot.readiness.reason == "dom_quiet";
                 diagnostics.extension_reason = snapshot.readiness.reason;
                 links.extend(snapshot.links);
                 best_text = snapshot.text;
-                text_quality(&best_text, options.min_chars)
+                let quality = text_quality(&best_text, options.min_chars);
+                TextQuality {
+                    ready: quality.ready || (settled && !best_text.trim().is_empty()),
+                    ..quality
+                }
             }
             Err(error) => {
                 diagnostics.errors.push(format!("extract_page: {error}"));
@@ -1621,7 +1673,24 @@ impl BrowserFacade {
             return Ok(session);
         }
         let deadline = time::Instant::now() + Duration::from_millis(OPEN_SETTLE_TIMEOUT_MS);
-        while !self.document_ready(&session).await? && time::Instant::now() < deadline {
+        let mut previous: Option<String> = None;
+        loop {
+            let probe = self.document_probe(&session).await?;
+            // Enough readable text passes at once; a complete document's short
+            // text passes once it holds still across two probes.
+            if let Some(probe) = probe {
+                if probe.has_content()
+                    || (probe.settled_short() && previous.as_deref() == Some(probe.text.as_str()))
+                {
+                    break;
+                }
+                previous = Some(probe.text);
+            } else {
+                previous = None;
+            }
+            if time::Instant::now() >= deadline {
+                break;
+            }
             tokio::select! {
                 biased;
                 _ = self.cancellation.cancelled() => return Err(BridgeError::Cancelled.into()),
@@ -1635,14 +1704,17 @@ impl BrowserFacade {
         Ok(session)
     }
 
-    /// DOMContentLoaded of the navigated document plus readable text; a probe
-    /// that fails mid-navigation means not yet.
-    async fn document_ready(&self, session: &FlowSession) -> Result<bool, FacadeError> {
+    /// The navigated document's load state and text; None while a navigation
+    /// makes the probe fail.
+    async fn document_probe(
+        &self,
+        session: &FlowSession,
+    ) -> Result<Option<DocumentProbe>, FacadeError> {
         let result = self
             .dispatch(
                 "javascript_tool",
                 javascript_tool_args(
-                    "({loading: document.readyState === 'loading', blank: location.href === 'about:blank', text: (document.body?.innerText ?? '').slice(0, 2000)})".to_string(),
+                    "({state: document.readyState, blank: location.href === 'about:blank', text: (document.body?.innerText ?? '').slice(0, 2000)})".to_string(),
                     false,
                     None,
                 ),
@@ -1651,14 +1723,10 @@ impl BrowserFacade {
             )
             .await?;
         if tool_error_message(&result).is_some() {
-            return Ok(false);
+            return Ok(None);
         }
-        let probe = extract_text(&result.result)
-            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-            .unwrap_or_default();
-        Ok(probe["loading"] == json!(false)
-            && probe["blank"] == json!(false)
-            && probe["text"].as_str().is_some_and(has_page_text))
+        Ok(extract_text(&result.result)
+            .and_then(|text| serde_json::from_str::<DocumentProbe>(&text).ok()))
     }
 
     async fn session(&self, session_id: &str) -> Result<FlowSession, FacadeError> {
@@ -1984,7 +2052,7 @@ impl RawExtractArgs {
     fn options(&self) -> ExtractOptions {
         ExtractOptions {
             min_chars: clamp_min_chars(self.min_chars),
-            max_chars: clamp_max_chars(self.max_chars),
+            max_chars: clamp_max_chars(self.max_chars, DEFAULT_EXTRACT_MAX_CHARS),
             max_links: clamp_max_links(self.max_links),
             include_a11y: self.include_a11y.unwrap_or(false),
             include_links: self.include_links.unwrap_or(false),
@@ -2011,7 +2079,7 @@ impl RawCurrentExtractArgs {
     fn options(&self) -> ExtractOptions {
         ExtractOptions {
             min_chars: clamp_min_chars(self.min_chars),
-            max_chars: clamp_max_chars(self.max_chars),
+            max_chars: clamp_max_chars(self.max_chars, DEFAULT_EXTRACT_MAX_CHARS),
             max_links: clamp_max_links(self.max_links),
             include_a11y: self.include_a11y.unwrap_or(false),
             include_links: self.include_links.unwrap_or(false),
@@ -2042,7 +2110,7 @@ impl RawBatchExtractArgs {
     fn options(&self) -> ExtractOptions {
         ExtractOptions {
             min_chars: clamp_min_chars(self.min_chars),
-            max_chars: clamp_max_chars(self.max_chars),
+            max_chars: clamp_max_chars(self.max_chars, DEFAULT_BATCH_EXTRACT_MAX_CHARS),
             max_links: clamp_max_links(self.max_links),
             include_a11y: self.include_a11y.unwrap_or(false),
             include_links: self.include_links.unwrap_or(false),
@@ -2305,6 +2373,28 @@ struct DomSnapshot {
     readiness: DomReadiness,
 }
 
+#[derive(Deserialize)]
+struct DocumentProbe {
+    state: String,
+    blank: bool,
+    text: String,
+}
+
+impl DocumentProbe {
+    fn has_content(&self) -> bool {
+        self.state != "loading" && !self.blank && has_page_text(&self.text)
+    }
+
+    /// Short text of a fully loaded document that is not a placeholder.
+    fn settled_short(&self) -> bool {
+        self.state == "complete"
+            && !self.blank
+            && !self.text.trim().is_empty()
+            && !is_loading_placeholder(&self.text)
+            && !is_probable_nav_shell(&self.text)
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DomReadiness {
@@ -2471,12 +2561,35 @@ struct OpenArgs {
     active: bool,
     owner_session_id: Option<String>,
     label: Option<String>,
+    /// false: return at dispatch. true or absent: observe with defaults.
+    /// An object: observe with those options.
+    observe: Option<Value>,
+}
+
+impl OpenArgs {
+    fn observe_options(&self) -> Result<Option<ObserveOptions>, FacadeError> {
+        let options = match &self.observe {
+            Some(Value::Bool(false)) => return Ok(None),
+            None | Some(Value::Bool(true)) => json!({}),
+            Some(value @ Value::Object(_)) => value.clone(),
+            Some(_) => {
+                return Err(FacadeError::InvalidInput(
+                    "observe must be a boolean or an observation object".to_string(),
+                ));
+            }
+        };
+        let options: ObserveOptions = serde_json::from_value(options)
+            .map_err(|error| FacadeError::InvalidInput(format!("observe: {error}")))?;
+        Ok(Some(options.within_ceiling()?))
+    }
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TargetObserveArgs {
     target_id: String,
+    #[serde(default)]
+    close: bool,
     #[serde(flatten)]
     options: ObserveOptions,
 }
@@ -2486,6 +2599,8 @@ struct TargetObserveArgs {
 struct TargetActArgs {
     target_id: String,
     steps: Vec<FlowStep>,
+    #[serde(default)]
+    close: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3242,7 +3357,7 @@ pub fn render_act(value: &Value) -> String {
             other => format!("{other}: {entry}"),
         });
     }
-    lines.join("\n")
+    format!("{}{}", lines.join("\n"), closed_line(value))
 }
 
 /// `→ opened …; alert …; text …` after an element action. A click with no
@@ -3352,7 +3467,30 @@ fn scroll_line(ref_id: &str, result: &Value) -> String {
 
 /// Model-facing text for a browser.observe result: the observation itself.
 pub fn render_observe(value: &Value) -> String {
-    plain(&value["content"])
+    format!("{}{}", plain(&value["content"]), closed_line(value))
+}
+
+fn closed_line(value: &Value) -> String {
+    if value["closed"] == json!(true) {
+        format!("\nclosed {}", plain(&value["targetId"]))
+    } else if let Some(error) = value["closeError"].as_str() {
+        format!("\nclose failed: {error}; retry with browser.close")
+    } else {
+        String::new()
+    }
+}
+
+/// The ids on one line, then the first observation as observe renders it.
+pub fn render_open(value: &Value) -> String {
+    let Some(content) = value.get("content") else {
+        return value.to_string();
+    };
+    format!(
+        "targetId: {}  url: {}\n\n{}",
+        plain(&value["targetId"]),
+        plain(&value["url"]),
+        plain(content)
+    )
 }
 
 fn plain(value: &Value) -> String {
@@ -3456,10 +3594,8 @@ fn clamp_min_chars(value: Option<usize>) -> usize {
         .clamp(1, MAX_TEXT_READY_MIN_CHARS)
 }
 
-fn clamp_max_chars(value: Option<u64>) -> u64 {
-    value
-        .unwrap_or(DEFAULT_EXTRACT_MAX_CHARS)
-        .clamp(1, MAX_EXTRACT_MAX_CHARS)
+fn clamp_max_chars(value: Option<u64>, default: u64) -> u64 {
+    value.unwrap_or(default).clamp(1, MAX_EXTRACT_MAX_CHARS)
 }
 
 fn clamp_max_links(value: Option<u64>) -> u64 {
@@ -3689,6 +3825,18 @@ fn text_quality(text: &str, min_chars: usize) -> TextQuality {
     TextQuality { ready, score }
 }
 
+/// Short text that announces content still on its way.
+fn is_loading_placeholder(text: &str) -> bool {
+    let text = text.trim();
+    let lower = text.to_lowercase();
+    text.chars().count() < 200
+        && (["loading", "please wait", "just a moment"]
+            .iter()
+            .any(|marker| lower.contains(marker))
+            || text.ends_with("...")
+            || text.ends_with('…'))
+}
+
 fn is_probable_nav_shell(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     let shell_markers = [
@@ -3915,8 +4063,8 @@ mod tests {
         click_script, enforce_extract_limits, extract_tab_id, fill_script, has_page_text,
         new_flow_session_id, parse_args, parse_dom_snapshot, reject_condition_waits, select_script,
         single_result, BatchFlowArgs, BatchRunArgs, CurrentExtractArgs, ExtractArgs, ExtractLink,
-        ExtractOptions, FlowActArgs, FlowStep, NetworkCaptureArgs, RefAction, StepLabel,
-        TargetActArgs,
+        ExtractOptions, FlowActArgs, FlowStep, NetworkCaptureArgs, ObserveMode, OpenArgs,
+        RefAction, StepLabel, TargetActArgs,
     };
 
     #[test]
@@ -4282,6 +4430,38 @@ mod tests {
     }
 
     #[test]
+    fn open_observes_by_default_and_false_returns_at_dispatch() {
+        let open = |extra: Value| {
+            let mut args = json!({"url":"https://example.test"});
+            args.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            parse_args::<OpenArgs>(args.as_object().unwrap().clone())
+                .unwrap()
+                .observe_options()
+        };
+        assert!(matches!(
+            open(json!({})).unwrap().unwrap().mode,
+            ObserveMode::A11y
+        ));
+        assert!(open(json!({"observe":true})).unwrap().is_some());
+        assert!(open(json!({"observe":false})).unwrap().is_none());
+        assert!(matches!(
+            open(json!({"observe":{"mode":"text"}}))
+                .unwrap()
+                .unwrap()
+                .mode,
+            ObserveMode::Text
+        ));
+        for invalid in [
+            json!({"observe":"text"}),
+            json!({"observe":{"mode":"text","depth":3}}),
+        ] {
+            assert!(open(invalid).is_err());
+        }
+    }
+
+    #[test]
     fn extract_args_default_to_short_dom_path() {
         let args = ExtractArgs::parse(
             json!({
@@ -4295,7 +4475,7 @@ mod tests {
 
         assert!(!args.options.include_a11y);
         assert!(!args.options.include_links);
-        assert_eq!(args.options.max_chars, 8_000);
+        assert_eq!(args.options.max_chars, 20_000);
         assert_eq!(args.options.max_links, 20);
     }
 
@@ -4306,7 +4486,7 @@ mod tests {
         assert_eq!(args.id, "current");
         assert!(!args.options.include_a11y);
         assert!(!args.options.include_links);
-        assert_eq!(args.options.max_chars, 8_000);
+        assert_eq!(args.options.max_chars, 20_000);
         assert_eq!(args.options.max_links, 20);
         assert!(!args.options.cleanup);
         assert!(!args.options.active);

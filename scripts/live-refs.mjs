@@ -1087,7 +1087,7 @@ try {
     assert.equal(await js('out.textContent'), '"SIGNED_IN:luna/6"')
   })
   await check('native dialogs are answered, reported, and never hang the tab', async () => {
-    const opened = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/dialogs` })))
+    const opened = (await tool('browser.open', { url: `${rootUrl}/dialogs`, observe: false })).structuredContent
     const act = async (steps) => text(await tool('browser.act', { targetId: opened.targetId, steps }))
     const output = async () => (await act([{ type: 'evaluate', code: 'out.textContent' }])).match(/evaluated: (.*)/)?.[1]
     try {
@@ -1113,7 +1113,7 @@ try {
     }
   })
   await check('U: file_upload clicks the visible control; stray choosers are cancelled', async () => {
-    const opened = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/uploads` })))
+    const opened = (await tool('browser.open', { url: `${rootUrl}/uploads`, observe: false })).structuredContent
     const tabId = opened.tabId
     const one = resolve(output, 'upload-one.txt'), two = resolve(output, 'upload-two.txt')
     await writeFile(one, 'ONE')
@@ -1169,7 +1169,7 @@ try {
     return { dpr: probe.dpr, base64Bytes: image.data.length }
   })
   await check('modern target composition observes intended documents and stable scoped refs', async () => {
-    const opened = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/redirect` })))
+    const opened = (await tool('browser.open', { url: `${rootUrl}/redirect`, observe: false })).structuredContent
     try {
       const actResult = await tool('browser.act', { targetId: opened.targetId, steps: [
         { type: 'evaluate', code: 'document.title' },
@@ -1196,7 +1196,7 @@ try {
     }
   })
   await check('covered options name the overlay; check sets them without a pointer click', async () => {
-    const opened = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/overlay` })))
+    const opened = (await tool('browser.open', { url: `${rootUrl}/overlay`, observe: false })).structuredContent
     try {
       const page = text(await tool('browser.observe', { targetId: opened.targetId }))
       const option = refFor(page, 'radio', '16GB')
@@ -1220,7 +1220,7 @@ try {
     }
   })
   await check('T: role/name targets and change reports chain a form without waits', async () => {
-    const opened = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/token-form` })))
+    const opened = (await tool('browser.open', { url: `${rootUrl}/token-form` })).structuredContent
     const targetId = opened.targetId
     try {
       const started = performance.now()
@@ -1272,7 +1272,7 @@ try {
     }
   })
   await check('F: scroll, hit acceptance, scope replacement and text cursor', async () => {
-    const opened = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/f-contract` })))
+    const opened = (await tool('browser.open', { url: `${rootUrl}/f-contract`, observe: false })).structuredContent
     const targetId = opened.targetId
     const act = async (steps, errorExpected) => text(await tool('browser.act', { targetId, steps }, errorExpected))
     try {
@@ -1309,9 +1309,9 @@ try {
       await tool('browser.close', { targetId })
     }
   })
-  await check('H2: open returns at dispatch; the first observe settles readiness', async () => {
+  await check('H2: open observe:false returns at dispatch; the first observe settles readiness', async () => {
     let started = performance.now()
-    const opened = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/h-slow` })))
+    const opened = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/h-slow`, observe: false })))
     const openMs = Math.round(performance.now() - started)
     assert.deepEqual(Object.keys(opened).sort(), ['tabId', 'targetId', 'url'])
     let observeMs
@@ -1327,7 +1327,7 @@ try {
     // A document whose DOMContentLoaded is held past the cap: open still
     // returns at once, the first read proceeds after about 4 s, close works.
     started = performance.now()
-    const held = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/slow-ready` })))
+    const held = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/slow-ready`, observe: false })))
     const heldOpenMs = Math.round(performance.now() - started)
     assert.ok(held.ready === undefined && heldOpenMs < 100, `${heldOpenMs}ms ${JSON.stringify(held)}`)
     started = performance.now()
@@ -1339,12 +1339,46 @@ try {
     assert.equal((closed.structuredContent ?? JSON.parse(text(closed))).closed, true)
     return { openMs, observeMs, heldOpenMs, heldObserveMs }
   })
+  await check('S: a small, loaded page is ready at once; no length threshold to wait out', async () => {
+    // /blank is five characters. Readiness used to require 120, so every
+    // small page waited out the cap: 8 s for extract, 4 s for a first observe.
+    let started = performance.now()
+    const extracted = JSON.parse(text(await tool('browser.extract', { url: `${rootUrl}/blank?s=1` })))
+    const extractMs = Math.round(performance.now() - started)
+    assert.equal(extracted.status, 'ok', JSON.stringify(extracted))
+    assert.equal(extracted.diagnostics.ready, true)
+    assert.ok(extractMs < 2000, `extract took ${extractMs}ms`)
+    // open returns the first observation, and close:true on the last call
+    // ends the target: open, read, close in two calls, not four.
+    started = performance.now()
+    const opened = await tool('browser.open', { url: `${rootUrl}/blank?s=2` })
+    const openMs = Math.round(performance.now() - started)
+    const targetId = opened.structuredContent.targetId
+    let closed = false
+    try {
+      const first = text(opened)
+      assert.match(first, /^targetId: \S+  url: /)
+      assert.match(first, /StaticText "Ready"/)
+      assert.ok(openMs < 1500, `open with its first observation took ${openMs}ms`)
+      // bro's own "Agent is active" overlay is not part of the page.
+      assert.doesNotMatch(first, /Agent is active/)
+      const read = await tool('browser.observe', { targetId, mode: 'text', close: true })
+      assert.equal(read.structuredContent.closed, true, text(read))
+      assert.match(text(read), /Ready\nclosed /)
+      closed = true
+      const again = await tool('browser.observe', { targetId }, /unknown flow session/)
+      assert.equal(again.isError, true, text(again))
+      return { extractMs, openMs }
+    } finally {
+      if (!closed) await tool('browser.close', { targetId })
+    }
+  })
   await check('W: an owned tab groups in its own window while a popup has focus', async () => {
-    const opener = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/popup-opener` })))
+    const opener = (await tool('browser.open', { url: `${rootUrl}/popup-opener`, observe: false })).structuredContent
     try {
       await tool('browser.click', { targetId: opener.targetId, role: 'button', name: 'Open popup' })
       // The popup is the focused window; the group must not be created there.
-      const owned = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/blank`, ownerSessionId: 'popup-focus', label: 'Popup focus' })))
+      const owned = (await tool('browser.open', { url: `${rootUrl}/blank`, ownerSessionId: 'popup-focus', label: 'Popup focus', observe: false })).structuredContent
       await tool('browser.close', { targetId: owned.targetId })
     } finally {
       await tool('browser.close', { targetId: opener.targetId })
@@ -1353,7 +1387,7 @@ try {
   await check('R: background tabs render lazy content', async () => {
     const extracted = JSON.parse(text(await tool('browser.extract', { url: `${rootUrl}/lazy-feed` })))
     assert.match(extracted.text, /LAZY_CARD_11/, JSON.stringify(extracted))
-    const opened = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/lazy-feed` })))
+    const opened = (await tool('browser.open', { url: `${rootUrl}/lazy-feed`, observe: false })).structuredContent
     try {
       assert.match(text(await tool('browser.observe', { targetId: opened.targetId, mode: 'text' })), /LAZY_CARD_11/)
     } finally {
@@ -1362,7 +1396,7 @@ try {
     return { extractMs: extracted.diagnostics.elapsedMs }
   })
   await check('G: truncation footer lists scoped refs; ceilings', async () => {
-    const opened = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/g-long` })))
+    const opened = (await tool('browser.open', { url: `${rootUrl}/g-long`, observe: false })).structuredContent
     const targetId = opened.targetId
     try {
       const page = text(await tool('browser.observe', { targetId, maxChars: 20000 }))
@@ -1385,7 +1419,7 @@ try {
     }
   })
   await check('H1: act wait returns when its condition holds; a timeout continues', async () => {
-    const opened = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/h-delayed` })))
+    const opened = (await tool('browser.open', { url: `${rootUrl}/h-delayed`, observe: false })).structuredContent
     const targetId = opened.targetId
     try {
       const page = text(await tool('browser.observe', { targetId, filter: 'interactive' }))
@@ -1425,7 +1459,7 @@ try {
     }
   })
   await check('G: observe rereads once when the document changes mid-read', async () => {
-    const opened = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/g-churn` })))
+    const opened = (await tool('browser.open', { url: `${rootUrl}/g-churn`, observe: false })).structuredContent
     const targetId = opened.targetId
     try {
       await tool('browser.act', { targetId, steps: [{ type: 'evaluate', code: "(()=>{document.querySelector('#f').src='/g-held-frame';return 1})()" }] })

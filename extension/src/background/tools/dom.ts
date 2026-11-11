@@ -306,30 +306,12 @@ function pageExtractSnapshot(options: {
     return hits >= 4 && !hasContentMarker
   }
 
-  function isHidden(element: Element): boolean {
-    const style = window.getComputedStyle(element)
-    return (
-      style.display === 'none' ||
-      style.visibility === 'hidden' ||
-      style.opacity === '0'
-    )
-  }
-
   function snapshot(): ExtractPageResult {
-    const textParts: string[] = []
     const links: Array<{ text: string; url: string; source: string }> = []
-    const seenNodes = new Set<Node>()
     const seenLinks = new Set<string>()
-    const ignoredTextTags = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE'])
-    let visited = 0
-    const maxVisitedNodes = 5000
-
-    function addText(value: unknown): void {
-      const text = cleanText(value)
-      if (text) textParts.push(text)
-    }
 
     function addLink(element: HTMLAnchorElement): void {
+      if (!element.checkVisibility()) return
       const rawUrl = element.href || element.getAttribute('href') || ''
       const url = redactUrl(rawUrl)
       if (!url || seenLinks.has(url) || url.startsWith('javascript:')) return
@@ -342,54 +324,27 @@ function pageExtractSnapshot(options: {
       links.push({ text, url, source: 'dom' })
     }
 
-    function walk(node: Node, depth: number): void {
-      if (seenNodes.has(node) || depth > 80) return
-      if (visited >= maxVisitedNodes) return
-      visited += 1
-      seenNodes.add(node)
-
-      if (node.nodeType === Node.TEXT_NODE) {
-        const parent = node.parentElement
-        if (
-          parent &&
-          (ignoredTextTags.has(parent.tagName) || isHidden(parent))
-        ) {
-          return
-        }
-        addText(node.textContent)
-        return
-      }
-
-      if (
-        node.nodeType !== Node.ELEMENT_NODE &&
-        node.nodeType !== Node.DOCUMENT_NODE &&
-        node.nodeType !== Node.DOCUMENT_FRAGMENT_NODE
-      ) {
-        return
-      }
-
-      const element = node.nodeType === Node.ELEMENT_NODE ? (node as Element) : null
-      if (element) {
-        if (ignoredTextTags.has(element.tagName)) return
-        if (isHidden(element)) return
-        addText(element.getAttribute('aria-label'))
+    // Visible text as rendered (innerText): a table row stays on one line and
+    // repeated cells stay, so rows can be read off by position. innerText
+    // stops at shadow roots; their text follows the document's.
+    const parts = [(document.body ?? document.documentElement)?.innerText ?? '']
+    function visit(root: Document | ShadowRoot): void {
+      for (const element of Array.from(root.querySelectorAll('*'))) {
         if (element instanceof HTMLAnchorElement) addLink(element)
-      }
-
-      for (const child of Array.from(node.childNodes)) {
-        walk(child, depth + 1)
-      }
-
-      const maybeShadow = element as (Element & { shadowRoot?: ShadowRoot }) | null
-      if (maybeShadow?.shadowRoot) {
-        walk(maybeShadow.shadowRoot, depth + 1)
+        if (!element.shadowRoot) continue
+        for (const child of Array.from(element.shadowRoot.children))
+          if (child instanceof HTMLElement) parts.push(child.innerText)
+        visit(element.shadowRoot)
       }
     }
+    visit(document)
 
-    const root = document.body || document.documentElement
-    if (root) walk(root, 0)
-
-    const text = Array.from(new Set(textParts)).join('\n').slice(0, maxChars)
+    const text = parts
+      .join('\n')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+      .slice(0, maxChars)
     return {
       title: document.title || '',
       url: redactUrl(location.href),
@@ -441,6 +396,15 @@ async function executeGetPageText(
 // ---------------------------------------------------------------------------
 // extract_page tool
 // ---------------------------------------------------------------------------
+
+/** Short text that announces content still on its way. */
+function isLoadingPlaceholder(text: string): boolean {
+  const trimmed = text.trim()
+  return (
+    trimmed.length < 200 &&
+    (/\b(loading|please wait|just a moment)\b/i.test(trimmed) || /(\.\.\.|…)$/.test(trimmed))
+  )
+}
 
 async function executeExtractPage(
   tabId: number,
@@ -511,11 +475,14 @@ async function executeExtractPage(
     }
     const { text, links, readiness } = result
     const signature = `${text.length}:${links.length}:${readiness.documentReadyState}:${text.slice(0, 160)}:${text.slice(-160)}`
+    // A complete document's short, stable text is its content; only a short
+    // loading placeholder ("Loading…") keeps waiting for the real page.
     const ready =
       signature === lastSignature &&
-      text.length >= minChars &&
       readiness.documentReadyState !== 'loading' &&
-      !result.shell
+      !result.shell &&
+      (text.length >= minChars ||
+        (readiness.documentReadyState === 'complete' && text.trim() !== '' && !isLoadingPlaceholder(text)))
     if (ready || Date.now() >= deadline) {
       result.readiness.reason = ready ? 'dom_quiet' : 'guard'
       break

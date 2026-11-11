@@ -24,12 +24,17 @@ scripts run. Navigation out of a browser-internal source uses webNavigation
 document identity without weakening debugger-access checks.
 
 `browser.open` defers readiness (`tabs_create` `deferReadiness`): the tab is
-registered and owned before navigation is dispatched, and open returns once it
-is, so close, Pi shutdown cleanup and late-allocation reclaim apply unchanged.
-The target's first observe or act settles it: a main-frame probe polls every
+registered and owned before navigation is dispatched, so close, Pi shutdown
+cleanup and late-allocation reclaim apply unchanged. By default open then
+settles the target and returns its first observation; a failed first read is
+reported as `observeError` beside the `targetId`, since the tab is open and
+owned either way. With `observe: false` open returns at dispatch, and the
+target's first observe or act settles it: a main-frame probe polls every
 250 ms, up to 4000 ms, until the document left `about:blank`, passed
-DOMContentLoaded (`readyState` is not `loading`), and shows readable text (the
-same 120-character rule as text observation). At the cap the call proceeds and
+DOMContentLoaded (`readyState` is not `loading`), and shows readable text:
+120 characters, or a complete document whose short, unchanged text is neither
+a nav shell nor a loading placeholder ("Loading…"), so a small page is ready
+at once instead of waiting out the cap. At the cap the call proceeds and
 shows whatever the page has; it never fails for slowness. A page that loaded
 during the model's turn costs one probe. Every other caller (batch, extract,
 `flow.start`) still waits for readiness inside `tabs_create` and closes the tab
@@ -51,7 +56,9 @@ Results are split by audience:
   (`clicked kqx12`, `navigated: URL`, `evaluated: VALUE`, `observed:` + text).
 - `structuredContent`: `{targetId, status, stoppedAt?, results[]}` where each
   result is `{type, refId?, checked?, url?, result?, content?, error?}`.
-  Adapters track targets from `browser.open`/`browser.close` structured content.
+  Adapters track targets from `browser.open`/`browser.close` structured content,
+  and drop a target whose call reports `closed: true` (`close: true` on its
+  last observe/act/click/fill/press).
 
 Connection identity (`browserId`), cleanup flags and per-step acknowledgements
 are deliberately absent: `status: ok` means the steps executed, not that the

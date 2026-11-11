@@ -259,13 +259,14 @@ and Unix-like systems this includes fields such as `appName`, `processId`,
 - `browser.network.capture`: open a page, trigger requests, and collect matching
   request metadata and bounded response bodies in one call
 - `browser.open`: create an owned background tab and return a browser/tab-pinned
-  `targetId` at once; the first observe or act waits for document readiness
+  `targetId` with the first observation (`observe: false` returns at dispatch)
 - `browser.observe`: scoped, bounded a11y observations with short stable refs
   (`kqx12`) and cursor continuation; text mode for reading main-frame content
 - `browser.act`: compose ordered `navigate`, `evaluate`, `wait`, ref
   `click/fill/select/check/scroll`, and `observe` steps; validate before
   effects, stop on runtime failure, and report one line per step
-- `browser.close`: close the owned target
+- `browser.close`: close the owned target; `close: true` on a target's last
+  observe/act/click/fill/press does it in the same call
 
 Legacy `browser.flow.start/observe/act/finish` keep their `sessionId` signatures
 and CSS/wait/read_text steps on the same executor. See the [facade
@@ -290,7 +291,8 @@ Use `frames_list` frame IDs with frame-aware flow steps for iframe interaction.
 
 Extraction defaults are intentionally compact for agent workflows:
 
-- text is capped at 8,000 characters by default
+- text is capped at 20,000 characters for one page (`browser.extract`,
+  `browser.current.extract`) and 8,000 per page in `browser.batch.extract`
 - links are omitted unless `includeLinks:true`
 - accessibility-tree fallback is omitted unless `includeA11y:true`
 - screenshots default to lower JPEG quality; pass `quality` only when visual

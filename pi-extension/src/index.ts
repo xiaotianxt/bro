@@ -260,6 +260,11 @@ function trackFlowResult(
   params: unknown,
   result: CallToolResult,
 ): void {
+  const closed = closedTarget(result.structuredContent);
+  if (closed) {
+    runtime.activeTargets.delete(closed);
+    return;
+  }
   const modern = upstreamName === "browser.open" || upstreamName === "browser.close";
   const key = modern ? "targetId" : "sessionId";
   const id = stringProperty(result.structuredContent, key) ?? stringProperty(params, key);
@@ -271,11 +276,21 @@ function trackFlowResult(
   }
 }
 
+/** A target call with close:true (or browser.close) reports the target it ended. */
+function closedTarget(content: unknown): string | undefined {
+  return isRecord(content) && content.closed === true ? stringProperty(content, "targetId") : undefined;
+}
+
 function restoreActiveTargets(ctx: PiExtensionContext): RuntimeState["activeTargets"] {
   const active: RuntimeState["activeTargets"] = new Map();
   for (const entry of ctx.sessionManager.getBranch()) {
     const details = broDetailsFromBranchEntry(entry);
     if (!details) continue;
+    const closed = closedTarget(details.structuredContent);
+    if (closed) {
+      active.delete(closed);
+      continue;
+    }
     const modern = details.upstreamTool === "browser.open" || details.upstreamTool === "browser.close";
     const id = stringProperty(details.structuredContent, modern ? "targetId" : "sessionId");
     if (!id) continue;

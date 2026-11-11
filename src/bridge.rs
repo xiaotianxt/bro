@@ -665,7 +665,7 @@ mod tests {
         let opening = {
             let facade = facade.clone();
             tokio::spawn(async move {
-                facade.open(json!({"url":"https://start.test", "ownerSessionId":"pi-owner", "label":"Task"}).as_object().unwrap().clone()).await.unwrap()
+                facade.open(json!({"url":"https://start.test", "ownerSessionId":"pi-owner", "label":"Task","observe":false}).as_object().unwrap().clone()).await.unwrap()
             })
         };
         let ServerToExtension::ToolCall(create) = receiver.recv().await.unwrap() else {
@@ -720,7 +720,7 @@ mod tests {
             ("javascript_tool", Some(42))
         );
         let ready =
-            json!({"loading":false,"blank":false,"text":"Readable page sentence. ".repeat(12)});
+            json!({"state":"complete","blank":false,"text":"Readable page sentence. ".repeat(12)});
         bridge
             .complete_pending(
                 &probe.request_id,
@@ -971,7 +971,12 @@ mod tests {
         let facade = facade.clone();
         let opening = tokio::spawn(async move {
             facade
-                .open(json!({"url":"about:blank"}).as_object().unwrap().clone())
+                .open(
+                    json!({"url":"about:blank","observe":false})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                )
                 .await
                 .unwrap()
         });
@@ -989,7 +994,7 @@ mod tests {
         let opening = tokio::spawn(async move {
             facade
                 .open(
-                    json!({"url":"https://test.invalid"})
+                    json!({"url":"https://test.invalid","observe":false})
                         .as_object()
                         .unwrap()
                         .clone(),
@@ -1597,9 +1602,9 @@ mod tests {
         };
         let page = "Readable page sentence. ".repeat(12);
         for probe in [
-            json!({"loading":true,"blank":false,"text":""}),
-            json!({"loading":false,"blank":false,"text":"Loading…"}),
-            json!({"loading":false,"blank":false,"text":page}),
+            json!({"state":"loading","blank":false,"text":""}),
+            json!({"state":"complete","blank":false,"text":"Loading…"}),
+            json!({"state":"complete","blank":false,"text":page}),
         ] {
             let call = next_call(&mut receiver).await;
             assert_eq!(call.tool, "javascript_tool");
@@ -1770,7 +1775,7 @@ mod tests {
         let opening = tokio::spawn(async move {
             facade
                 .open(
-                    json!({"url":"https://test.invalid"})
+                    json!({"url":"https://test.invalid","observe":false})
                         .as_object()
                         .unwrap()
                         .clone(),
@@ -1801,7 +1806,7 @@ mod tests {
         let opening = tokio::spawn(async move {
             facade
                 .open(
-                    json!({"url":"https://test.invalid"})
+                    json!({"url":"https://test.invalid","observe":false})
                         .as_object()
                         .unwrap()
                         .clone(),

@@ -188,6 +188,9 @@ function showIndicator(): void {
   if (!document.getElementById(TOOLBAR_ID)) {
     const toolbar = document.createElement('div')
     toolbar.id = TOOLBAR_ID
+    // bro's own overlay, for the person watching: kept out of the
+    // accessibility tree the agent reads as the page.
+    toolbar.setAttribute('aria-hidden', 'true')
 
     const dot = document.createElement('span')
     dot.className = 'obm-dot'
@@ -232,6 +235,7 @@ function showStaticBanner(): void {
 
   const banner = document.createElement('div')
   banner.id = BANNER_ID
+  banner.setAttribute('aria-hidden', 'true')
 
   const label = document.createElement('span')
   label.textContent = 'Agent is active'

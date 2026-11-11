@@ -10,9 +10,9 @@ invariants (ownership, reconnect authority, ref retention, cleanup) live in
 - Known URLs, reading only: `browser.extract` (one) or `browser.batch.extract`
   (several, in parallel).
 - The same interaction on several pages: `browser.batch.flow`.
-- One interactive page: `browser.open` → `browser.observe` →
+- One interactive page: `browser.open` (returns the first observation) →
   `browser.click` / `browser.fill` / `browser.press` (or `browser.act` for
-  several steps at once) → `browser.close`.
+  several steps at once), with `close: true` on the last call.
 - A page the user already opened: `browser.current.extract`.
 - Console or network evidence: `browser.console.capture` /
   `browser.network.capture`.
@@ -21,9 +21,12 @@ Tool search is for advanced capabilities, not ordinary page work.
 
 ## Interaction: open → observe → click/fill/press → close
 
-`browser.open` takes a `url`, opens an owned background tab, and returns
-`targetId` as soon as the page starts loading; the first observe or act waits
-(up to 4 s) for the page to load and show text.
+`browser.open` takes a `url`, opens an owned background tab, waits (up to
+4 s) for the page to load and show text, and returns `targetId` with the
+first observation, so the next call can act on its refs. `observe` takes
+browser.observe's options (`{"mode":"text"}` to read); `observe: false`
+returns as soon as the page starts loading, and the first observe or act then
+waits for it.
 
 `browser.observe` reads the target as compact accessibility text with short
 refs such as `kqx12`. Read content with `mode: text`; use a11y only to find
@@ -116,8 +119,10 @@ small as `{"refId":"kqx12"}`. `targetId` is optional on observe, act and these
 three: it defaults to the target this MCP session last opened or used.
 `browser.close` still names its target.
 
-`browser.close` closes the owned tab. Pi closes unfinished targets at session
-end.
+`close: true` on observe, act, click, fill or press closes the target once
+that call succeeds (a failed act step keeps it open for a retry), which saves
+a separate `browser.close` turn. `browser.close` closes the owned tab on its
+own. Pi closes unfinished targets at session end.
 
 ## Batch Flow
 
@@ -163,7 +168,11 @@ only when links are part of the answer), `maxLinks` (default 20),
 ## Single and Current-Tab Extraction
 
 `browser.extract` is the one-URL version. It returns `status` (`ok`,
-`partial`, `failed`), `text`, `links` and `diagnostics`.
+`partial`, `failed`), `text`, `links` and `diagnostics`. Text is the page's
+rendered `innerText` (a table row stays on one line), plus open Shadow DOM,
+up to `maxChars` (default 20000, so a long table or doc page fits one call).
+A small page is ready as soon as its complete document's text stops changing;
+only a short loading placeholder keeps waiting.
 
 `browser.current.extract` reads the current/default active tab in one call, for
 pages the user already opened (`maxChars`, `includeLinks`).

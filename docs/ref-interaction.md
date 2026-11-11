@@ -27,7 +27,7 @@ The refs identify their own frames. Do not supply `css` or `frameId` with `refId
 Typical sequence:
 
 ```text
-browser.open → browser.observe → browser.act(refs + observe) → browser.close
+browser.open (first observation) → browser.act(refs + observe, close: true)
 ```
 
 Ref-only `scroll` steps are also supported in `flow.act`; pair them with

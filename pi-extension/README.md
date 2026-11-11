@@ -43,7 +43,7 @@ entry with `pi remove /absolute/path/to/bro` to avoid loading both copies.
 - MCP errors become failed Pi tool results. Text output is bounded to Pi's 50 KB / 2,000-line limit.
 - Session shutdown closes unfinished owned targets and Pi-owned tabs, reporting failures; `/reload` preserves them.
 
-Routing: known URLs → `browser.extract` / `browser.batch.extract`; the same interaction on several pages → `browser.batch.flow`; one interactive page → `browser.open`, then `browser.act` with `observe` steps, then `browser.close`. See [Browser facade](../docs/browser-facade.md).
+Routing: known URLs → `browser.extract` / `browser.batch.extract`; the same interaction on several pages → `browser.batch.flow`; one interactive page → `browser.open` (returns the first observation), then `browser.act` with `observe` steps and `close: true` on the last call. See [Browser facade](../docs/browser-facade.md).
 
 ## Development
 

@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.7.0
+
+- `browser.open` returns the first observation with the `targetId`, so the
+  next call can act on its refs without a separate `browser.observe` turn.
+  `observe` takes browser.observe's options (`{"mode":"text"}` to read);
+  `observe: false` keeps the old return-at-dispatch behavior.
+- `close: true` on `browser.observe`, `act`, `click`, `fill` or `press`
+  closes the target once that call succeeds, instead of a separate
+  `browser.close` turn. A failed act step keeps the target open.
+- Small pages no longer wait out the readiness cap. Readiness required 120
+  characters of text, so a short page cost 8 s in `browser.extract` and 4 s on
+  its first observe; a complete document whose text has stopped changing is
+  now ready at once (0.5 s and 0.3 s measured). A short "Loading…" placeholder
+  still waits.
+- `browser.extract` reads the page's rendered `innerText`, so table rows stay
+  on one line and repeated cells are kept; the old text walker split every
+  cell onto its own line, dropped repeated text, and stopped after 5000 nodes.
+  One page now returns up to 20,000 characters by default (batch stays at
+  8,000 per page).
+- bro's "Agent is active" indicator is hidden from accessibility snapshots.
+
 ## 1.6.0
 
 - `file_upload` takes the control a user clicks to pick files, not the file
