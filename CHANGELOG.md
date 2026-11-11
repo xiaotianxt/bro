@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.5.0
+
+- `file_upload` takes local files by path. Pass absolute paths in `paths`;
+  bro checks each is a regular file and the browser reads it itself, so the
+  page sees real files and trusted `input`/`change` events, and nothing is
+  copied through the model. Several paths need a `multiple` input.
+  **Breaking:** the base64 `fileName`/`mimeType`/`data` arguments and
+  `upload_image` are removed; to upload a screenshot or generated content,
+  save it to a file first.
+- bro no longer goes dead after closing the browser's last tab. On macOS,
+  closing the last window unloads the profile, which stopped the extension
+  and its reconnect alarm until a window opened. bro now leaves a background
+  New Tab page when it closes the last tab.
+- The Pi adapter loads the MCP SDK on its first connection, taking about
+  65 ms off every Pi start.
+
 ## 1.4.5
 
 - Password managers no longer break CDP. 1Password's inline menu, save
