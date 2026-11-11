@@ -115,19 +115,28 @@ function callNode<T>(
   )
 }
 
+/** The live frame and node of a ref; throws when its document has been replaced. */
+export async function refNode(
+  tabId: number,
+  ref: string,
+): Promise<{ frame: BrowserFrame; backendNodeId: number }> {
+  const target = snapshots.resolve(tabId, ref)
+  const frames = await getBrowserFrames(tabId)
+  const frame = frames.find((f) => f.id === target.frameId)
+  if (!frame || !frame.loaderId || frame.loaderId !== target.loaderId)
+    throw new Error(`Stale ref ${ref}: its frame navigated or disappeared. Read a fresh snapshot.`)
+  return { frame, backendNodeId: target.backendNodeId }
+}
+
 export async function withRef<T>(
   tabId: number,
   ref: string,
   fn: (this: Element, ...args: any[]) => T,
   args: unknown[] = [],
 ): Promise<T> {
-  const target = snapshots.resolve(tabId, ref)
-  const frames = await getBrowserFrames(tabId)
-  const frame = frames.find((f) => f.id === target.frameId)
-  if (!frame || !frame.loaderId || frame.loaderId !== target.loaderId)
-    throw new Error(`Stale ref ${ref}: its frame navigated or disappeared. Read a fresh snapshot.`)
+  const { frame, backendNodeId } = await refNode(tabId, ref)
   try {
-    return await callNode(tabId, frame, target.backendNodeId, fn, args)
+    return await callNode(tabId, frame, backendNodeId, fn, args)
   } catch (error) {
     if (
       /No node with given id|Could not find node|Cannot find context|Could not find object/.test(

@@ -47,8 +47,7 @@ def prompt_for(task, product, control, run, work):
     }
     common = f'Open {url}. {tasks[task]} Close your task-owned flow/tabs/session when finished.'
     if task == 'upload':
-        common += (f' The exact file is prepared at {work/"compare.txt"}.' if product == 'agent'
-                   else ' fileName=compare.txt, mimeType=text/plain, data=Q09NUEFSRV9VUExPQURfT0s=.')
+        common += f' The exact file is prepared at {work/"compare.txt"}.'
     if product == 'agent':
         return (f'Read {SKILLS[product]}/SKILL.md, then load agent-browser skills get core. Browser access is ONLY via agent-browser in bash. AGENT_BROWSER_SESSION is already set to your unique owned session; do not change it. A headed browser is already prepared; do not reinstall or relaunch it. read may access official skills/references and your screenshots; file artifacts must stay in {work}. No bro, Playwright, curl, external HTTP clients or eval.\n\n'+common)
     return f'Read {SKILLS[product]}/SKILL.md. Use only native bro_* browser tools, including normal capability discovery if needed. read is only for the official skill and references.\n\n'+common

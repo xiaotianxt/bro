@@ -913,7 +913,24 @@ try {
     )
     await tool('form_input', { tabId, refId: ref, value: 'wrong' }, true)
   })
-  await check('file upload uses the same cross-site document-bound refs', async () => {
+  await check('file upload sets a local path through cross-site document-bound refs', async () => {
+    // A real file read by the browser itself; the page's onchange only runs on the
+    // change event the browser fires for it.
+    const local = resolve(output, 'upload-ref.txt')
+    await writeFile(local, 'REF_PATH_UPLOAD_OK')
+    snapshot = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
+    await tool('file_upload', {
+      tabId,
+      refId: refFor(snapshot, 'button', 'Cross File'),
+      paths: [local],
+    })
+    assert.match(
+      text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 })),
+      /upload-ref.txt:REF_PATH_UPLOAD_OK/,
+    )
+    await tool('file_upload', { tabId, refId: refFor(snapshot, 'button', 'Cross File'), paths: ['relative.txt'] }, /must be absolute/)
+  })
+  await check('file upload still accepts inline data for files not on this machine', async () => {
     snapshot = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
     await tool('file_upload', {
       tabId,

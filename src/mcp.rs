@@ -71,6 +71,29 @@ impl BrowserMcpServer {
         }
         result
     }
+
+    async fn forward(
+        &self,
+        tool_name: String,
+        args: serde_json::Map<String, serde_json::Value>,
+        tab_id_envelope: bool,
+    ) -> CallToolResult {
+        let (forwarded_args, tab_id, browser_id) =
+            tool_catalog::prepare_forward_args(&tool_name, args);
+        if tab_id_envelope && tab_id.is_none() {
+            return tool_error(format!("{tool_name} requires tabId"));
+        }
+        into_call_tool_result(
+            self.bridge
+                .dispatch(
+                    tool_name,
+                    serde_json::Value::Object(forwarded_args),
+                    tab_id,
+                    browser_id,
+                )
+                .await,
+        )
+    }
 }
 
 pub fn streamable_http_service(
@@ -179,22 +202,14 @@ impl ServerHandler for BrowserMcpServer {
                     self.bridge.agent_done(tab_ids, browser_id).await,
                 ))
             }
-            ToolRoute::Forward { tab_id_envelope } => {
-                let (forwarded_args, tab_id, browser_id) =
-                    tool_catalog::prepare_forward_args(&tool_name, args);
-                if tab_id_envelope && tab_id.is_none() {
-                    return Ok(tool_error(format!("{tool_name} requires tabId")));
+            ToolRoute::FileUpload => {
+                if let Err(message) = tool_catalog::resolve_upload_paths(&mut args) {
+                    return Ok(tool_error(message));
                 }
-                Ok(into_call_tool_result(
-                    self.bridge
-                        .dispatch(
-                            tool_name,
-                            serde_json::Value::Object(forwarded_args),
-                            tab_id,
-                            browser_id,
-                        )
-                        .await,
-                ))
+                Ok(self.forward(tool_name, args, true).await)
+            }
+            ToolRoute::Forward { tab_id_envelope } => {
+                Ok(self.forward(tool_name, args, tab_id_envelope).await)
             }
         }
     }

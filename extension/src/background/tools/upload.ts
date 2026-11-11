@@ -2,8 +2,9 @@
 
 import type { ToolResult } from '@bro/shared'
 import { cdpSession } from '../cdp.js'
+import { sendToFrame } from '../frames.js'
 import { registerTool } from '../tool-registry.js'
-import { withRef } from './accessibility.js'
+import { refNode, withRef } from './accessibility.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -44,20 +45,22 @@ function getString(
 }
 
 // ---------------------------------------------------------------------------
-// Page-side function: inject a File into a file input element
-// This runs in the page's MAIN world, so it must be self-contained.
+// Page-side function: check that the ref is an enabled file input and, for an
+// inline upload, inject the decoded File. Runs in the page, so it must be
+// self-contained.
 // ---------------------------------------------------------------------------
 
-type FileInjectResult =
-  | { success: true; message: string }
+type FileInputResult =
+  | { success: true; multiple: boolean; message: string }
   | { success: false; error: string }
 
-function pageInjectFileIntoInput(
-  this: Element,
-  fileName: string,
-  mimeType: string,
-  base64Data: string,
-): FileInjectResult {
+interface InlineFile {
+  fileName: string
+  mimeType: string
+  base64Data: string
+}
+
+function pageFileInput(this: Element, inline: InlineFile | null): FileInputResult {
   const el = this
   for (let node: Element | null = el; node; node = node.parentElement ?? (node.getRootNode() instanceof ShadowRoot ? (node.getRootNode() as ShadowRoot).host : null)) {
     if (node.matches(':disabled') || node.hasAttribute('inert')) return { success: false, error: 'File input is disabled or inert' }
@@ -78,6 +81,8 @@ function pageInjectFileIntoInput(
       error: `file_upload: element is an <input type="${inputEl.type}">, expected type="file"`,
     }
   }
+  if (!inline) return { success: true, multiple: inputEl.multiple, message: '' }
+  const { fileName, mimeType, base64Data } = inline
 
   try {
     // Decode base64 string to binary
@@ -105,6 +110,7 @@ function pageInjectFileIntoInput(
 
     return {
       success: true,
+      multiple: inputEl.multiple,
       message: `File "${fileName}" injected; observe the page's ingestion result.`,
     }
   } catch (err) {
@@ -126,12 +132,9 @@ async function injectFile(
   mimeType: string,
   base64Data: string,
 ): Promise<ToolResult> {
-  const result = await withRef(
-    tabId,
-    refId,
-    pageInjectFileIntoInput,
-    [fileName, mimeType, base64Data],
-  )
+  const result = await withRef(tabId, refId, pageFileInput, [
+    { fileName, mimeType, base64Data } satisfies InlineFile,
+  ])
 
   if (!result.success) {
     return {
@@ -159,11 +162,33 @@ async function executeFileUpload(
       : {}
 
   const refId = getString(args, 'refId', true)
-  const fileName = getString(args, 'fileName', true)
-  const mimeType = getString(args, 'mimeType', true)
-  const data = getString(args, 'data', true)
+  const paths = args['paths']
+  if (paths === undefined) {
+    const fileName = getString(args, 'fileName', true)
+    const mimeType = getString(args, 'mimeType', true)
+    const data = getString(args, 'data', true)
+    return injectFile(tabId, refId, fileName, mimeType, data)
+  }
+  // The server resolved these to absolute regular files on this machine.
+  if (!Array.isArray(paths) || paths.length === 0 || !paths.every((p) => typeof p === 'string'))
+    throw new Error('"paths" must be a non-empty array of strings')
 
-  return injectFile(tabId, refId, fileName, mimeType, data)
+  const checked = await withRef(tabId, refId, pageFileInput, [null])
+  if (!checked.success)
+    return { content: [{ type: 'text', text: checked.error }], isError: true } as ToolResult & { isError: true }
+  if (paths.length > 1 && !checked.multiple)
+    return {
+      content: [{ type: 'text', text: `file_upload: the input accepts one file, got ${paths.length}` }],
+      isError: true,
+    } as ToolResult & { isError: true }
+
+  // The browser reads the files itself and fires trusted input and change events.
+  const { frame, backendNodeId } = await refNode(tabId, refId)
+  await sendToFrame(tabId, frame, 'DOM.setFileInputFiles', { files: paths, backendNodeId })
+  const names = paths.map((path) => path.split(/[\\/]/).pop()).join(', ')
+  return {
+    content: [{ type: 'text', text: `Set ${paths.length} file(s) (${names}); observe the page's ingestion result.` }],
+  }
 }
 
 // ---------------------------------------------------------------------------

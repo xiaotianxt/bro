@@ -54,6 +54,8 @@ pub enum ToolRoute {
     FlowAct,
     FlowFinish,
     AgentDone,
+    /// file_upload: local paths are validated here, then forwarded like any tab tool.
+    FileUpload,
     Forward {
         tab_id_envelope: bool,
     },
@@ -97,6 +99,47 @@ pub fn prepare_forward_args(
         None
     };
     (args, tab_id, browser_id)
+}
+
+/// Validates file_upload's source at the server boundary: either `paths`, replaced by their
+/// canonical forms so the browser reads exactly the regular files checked here, or inline `data`.
+/// The browser runs on this machine (bro binds to localhost), so these paths are its paths.
+pub fn resolve_upload_paths(args: &mut JsonObject) -> Result<(), String> {
+    let inline = args.contains_key("data");
+    let Some(paths) = args.get_mut("paths") else {
+        return if inline {
+            Ok(())
+        } else {
+            Err("file_upload requires paths (absolute local file paths) or inline data".to_string())
+        };
+    };
+    if inline {
+        return Err("file_upload takes either paths or inline data, not both".to_string());
+    }
+    let Some(paths) = paths.as_array_mut().filter(|paths| !paths.is_empty()) else {
+        return Err("file_upload.paths must be a non-empty array of absolute paths".to_string());
+    };
+    for entry in paths {
+        let Some(raw) = entry.as_str() else {
+            return Err("file_upload.paths must contain strings".to_string());
+        };
+        let path = std::path::Path::new(raw);
+        if !path.is_absolute() {
+            return Err(format!("file_upload path must be absolute: {raw}"));
+        }
+        let canonical = std::fs::canonicalize(path)
+            .map_err(|error| format!("file_upload cannot open {raw}: {error}"))?;
+        if !canonical.is_file() {
+            return Err(format!("file_upload path is not a regular file: {raw}"));
+        }
+        let Some(canonical) = canonical.to_str() else {
+            return Err(format!(
+                "file_upload path is not valid UTF-8 after resolving: {raw}"
+            ));
+        };
+        *entry = Value::String(canonical.to_string());
+    }
+    Ok(())
 }
 
 pub fn take_agent_done_args(mut args: JsonObject) -> Result<(Vec<i64>, Option<String>), String> {
@@ -534,11 +577,12 @@ static SPECS: &[ToolSpec] = &[
         "Retrieve a network response body by request ID while the originating debugger session is still available. Prefer browser.network.capture for trigger-and-body workflows.",
         "get_response_body",
     ),
-    forward(
-        "file_upload",
-        "Inject a file into a file input identified by refId.",
-        "file_upload",
-    ),
+    ToolSpec {
+        name: "file_upload",
+        description: "Set files on a file input identified by refId. Pass absolute local file paths in paths; the browser reads the files itself. Use fileName, mimeType and base64 data instead only when the file does not exist on the browser's machine.",
+        route: ToolRoute::FileUpload,
+        schema: "file_upload",
+    },
     forward(
         "upload_image",
         "Upload screenshot or image data through a file input.",
@@ -1114,9 +1158,22 @@ fn schema(kind: &str) -> JsonObject {
         ]),
         "file_upload" => props(&[
             ("refId", json!({"type":"string","minLength":1})),
-            ("fileName", json!({"type":"string","minLength":1})),
-            ("mimeType", json!({"type":"string","minLength":1})),
-            ("data", json!({"type":"string","minLength":1})),
+            (
+                "paths",
+                json!({"type":"array","minItems":1,"items":{"type":"string","minLength":1},"description":"Absolute paths of local files to set on the input."}),
+            ),
+            (
+                "fileName",
+                json!({"type":"string","minLength":1,"description":"Inline upload only: the file name."}),
+            ),
+            (
+                "mimeType",
+                json!({"type":"string","minLength":1,"description":"Inline upload only: the MIME type."}),
+            ),
+            (
+                "data",
+                json!({"type":"string","minLength":1,"description":"Inline upload only: base64 file content, for a file that is not on the browser's machine."}),
+            ),
             ("tabId", tab_id_schema("Numeric tab ID.")),
             ("browserId", browser_id_schema()),
         ]),
@@ -1448,7 +1505,37 @@ fn take_i64(args: &mut JsonObject, key: &str) -> Option<i64> {
 mod tests {
     use serde_json::json;
 
-    use super::{find_tool, prepare_forward_args, route_for, schema, ToolRoute};
+    use super::{
+        find_tool, prepare_forward_args, resolve_upload_paths, route_for, schema, ToolRoute,
+    };
+
+    fn upload(args: serde_json::Value) -> Result<serde_json::Value, String> {
+        let mut args = args.as_object().expect("object").clone();
+        resolve_upload_paths(&mut args).map(|()| serde_json::Value::Object(args))
+    }
+
+    #[test]
+    fn upload_paths_resolve_to_canonical_regular_files() {
+        let dir = std::env::temp_dir().join(format!("bro-upload-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.txt");
+        std::fs::write(&file, "A").unwrap();
+        let canonical = std::fs::canonicalize(&file).unwrap();
+        let dotted = dir.join(".").join("a.txt");
+
+        let resolved = upload(json!({"refId": "r", "paths": [dotted]})).unwrap();
+        assert_eq!(resolved["paths"], json!([canonical]));
+
+        let error = |args| upload(args).unwrap_err();
+        assert!(error(json!({"paths": ["a.txt"]})).contains("must be absolute"));
+        assert!(error(json!({"paths": [dir.join("missing.txt")]})).contains("cannot open"));
+        assert!(error(json!({"paths": [&dir]})).contains("not a regular file"));
+        assert!(error(json!({"paths": []})).contains("non-empty"));
+        assert!(error(json!({"paths": [file], "data": "QQ=="})).contains("not both"));
+        assert!(error(json!({"refId": "r"})).contains("requires paths"));
+        assert!(upload(json!({"fileName": "a", "mimeType": "text/plain", "data": "QQ=="})).is_ok());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn every_tab_enveloped_tool_extracts_tab_and_browser_ids() {
