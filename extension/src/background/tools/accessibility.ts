@@ -34,12 +34,12 @@ function unwrap<T>(response: RemoteResult<T>): T {
   return response.result.value as T
 }
 
-function argsObject(value: unknown): Record<string, unknown> {
+export function argsObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new Error('Expected tool arguments object')
   return value as Record<string, unknown>
 }
-function stringArg(args: Record<string, unknown>, name: string): string {
+export function stringArg(args: Record<string, unknown>, name: string): string {
   const value = args[name]
   if (typeof value !== 'string' || !value.trim())
     throw new Error(`${name} must be a nonempty string`)
@@ -115,11 +115,13 @@ function callNode<T>(
   )
 }
 
+export interface RefNode {
+  frame: BrowserFrame
+  backendNodeId: number
+}
+
 /** The live frame and node of a ref; throws when its document has been replaced. */
-export async function refNode(
-  tabId: number,
-  ref: string,
-): Promise<{ frame: BrowserFrame; backendNodeId: number }> {
+export async function refNode(tabId: number, ref: string): Promise<RefNode> {
   const target = snapshots.resolve(tabId, ref)
   const frames = await getBrowserFrames(tabId)
   const frame = frames.find((f) => f.id === target.frameId)
@@ -134,7 +136,17 @@ export async function withRef<T>(
   fn: (this: Element, ...args: any[]) => T,
   args: unknown[] = [],
 ): Promise<T> {
-  const { frame, backendNodeId } = await refNode(tabId, ref)
+  return callRef(tabId, ref, await refNode(tabId, ref), fn, args)
+}
+
+/** Runs fn on a node already resolved by refNode, so a caller can act on that same node next. */
+export async function callRef<T>(
+  tabId: number,
+  ref: string,
+  { frame, backendNodeId }: RefNode,
+  fn: (this: Element, ...args: any[]) => T,
+  args: unknown[] = [],
+): Promise<T> {
   try {
     return await callNode(tabId, frame, backendNodeId, fn, args)
   } catch (error) {

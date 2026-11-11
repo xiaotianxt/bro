@@ -36,7 +36,7 @@ clear keep/close intent. Bro now exposes equivalent primitives:
 | Accessibility tree | Yes | Yes: `read_page` and extract fallback | Yes |
 | Screenshots / low-level input | Yes | Yes: `computer` screenshot/input | Yes |
 | Console/network diagnostics | Available through browser APIs | Yes: `read_console_messages`, `read_network_requests`, `get_response_body` | Yes |
-| File upload | Yes | Yes: `file_upload`, `upload_image` | Yes |
+| File upload | Yes | Yes: `file_upload` (local paths) | Yes |
 | User-visible stop/indicator | Yes | Yes | Yes |
 | Avoid reading cookies/password stores | Required safety rule | Required safety rule | Required safety rule |
 

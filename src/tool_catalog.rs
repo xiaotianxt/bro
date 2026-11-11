@@ -24,7 +24,6 @@ const ENVELOPE_TAB_TOOLS: &[&str] = &[
     "read_network_requests",
     "get_response_body",
     "file_upload",
-    "upload_image",
     "gif_creator",
     "shortcuts_list",
     "shortcuts_execute",
@@ -101,23 +100,19 @@ pub fn prepare_forward_args(
     (args, tab_id, browser_id)
 }
 
-/// Validates file_upload's source at the server boundary: either `paths`, replaced by their
-/// canonical forms so the browser reads exactly the regular files checked here, or inline `data`.
-/// The browser runs on this machine (bro binds to localhost), so these paths are its paths.
+/// Validates file_upload's `paths` at the server boundary and replaces each with its canonical
+/// form, so the browser reads exactly the regular files checked here. The browser runs on this
+/// machine (bro binds to localhost), so these paths are its paths.
 pub fn resolve_upload_paths(args: &mut JsonObject) -> Result<(), String> {
-    let inline = args.contains_key("data");
-    let Some(paths) = args.get_mut("paths") else {
-        return if inline {
-            Ok(())
-        } else {
-            Err("file_upload requires paths (absolute local file paths) or inline data".to_string())
-        };
-    };
-    if inline {
-        return Err("file_upload takes either paths or inline data, not both".to_string());
-    }
-    let Some(paths) = paths.as_array_mut().filter(|paths| !paths.is_empty()) else {
-        return Err("file_upload.paths must be a non-empty array of absolute paths".to_string());
+    let Some(paths) = args
+        .get_mut("paths")
+        .and_then(Value::as_array_mut)
+        .filter(|paths| !paths.is_empty())
+    else {
+        return Err(
+            "file_upload requires paths: a non-empty array of absolute local file paths"
+                .to_string(),
+        );
     };
     for entry in paths {
         let Some(raw) = entry.as_str() else {
@@ -230,7 +225,7 @@ fn capability_for(name: &str) -> Option<&'static str> {
             Some("network")
         }
         "computer" | "gif_creator" => Some("visual"),
-        "file_upload" | "upload_image" => Some("upload"),
+        "file_upload" => Some("upload"),
         "shortcuts_list" | "shortcuts_execute" => Some("shortcuts"),
         "userscripts_register" | "userscripts_unregister" | "userscripts_list" => {
             Some("userscripts")
@@ -579,15 +574,10 @@ static SPECS: &[ToolSpec] = &[
     ),
     ToolSpec {
         name: "file_upload",
-        description: "Set files on a file input identified by refId. Pass absolute local file paths in paths; the browser reads the files itself. Use fileName, mimeType and base64 data instead only when the file does not exist on the browser's machine.",
+        description: "Set local files on a file input identified by refId. Pass absolute paths; the browser reads the files itself.",
         route: ToolRoute::FileUpload,
         schema: "file_upload",
     },
-    forward(
-        "upload_image",
-        "Upload screenshot or image data through a file input.",
-        "upload_image",
-    ),
     forward(
         "gif_creator",
         "Record browser automation operations as a GIF.",
@@ -1162,24 +1152,6 @@ fn schema(kind: &str) -> JsonObject {
                 "paths",
                 json!({"type":"array","minItems":1,"items":{"type":"string","minLength":1},"description":"Absolute paths of local files to set on the input."}),
             ),
-            (
-                "fileName",
-                json!({"type":"string","minLength":1,"description":"Inline upload only: the file name."}),
-            ),
-            (
-                "mimeType",
-                json!({"type":"string","minLength":1,"description":"Inline upload only: the MIME type."}),
-            ),
-            (
-                "data",
-                json!({"type":"string","minLength":1,"description":"Inline upload only: base64 file content, for a file that is not on the browser's machine."}),
-            ),
-            ("tabId", tab_id_schema("Numeric tab ID.")),
-            ("browserId", browser_id_schema()),
-        ]),
-        "upload_image" => props(&[
-            ("refId", json!({"type":"string","minLength":1})),
-            ("screenshotData", json!({"type":"string"})),
             ("tabId", tab_id_schema("Numeric tab ID.")),
             ("browserId", browser_id_schema()),
         ]),
@@ -1269,6 +1241,7 @@ fn required_fields(kind: &str) -> Option<&'static [&'static str]> {
         "browser_press" => Some(&["key"]),
         "browser_flow_observe" | "browser_flow_finish" => Some(&["sessionId"]),
         "browser_flow_act" => Some(&["sessionId", "steps"]),
+        "file_upload" => Some(&["refId", "paths"]),
         _ => None,
     }
 }
@@ -1531,9 +1504,7 @@ mod tests {
         assert!(error(json!({"paths": [dir.join("missing.txt")]})).contains("cannot open"));
         assert!(error(json!({"paths": [&dir]})).contains("not a regular file"));
         assert!(error(json!({"paths": []})).contains("non-empty"));
-        assert!(error(json!({"paths": [file], "data": "QQ=="})).contains("not both"));
         assert!(error(json!({"refId": "r"})).contains("requires paths"));
-        assert!(upload(json!({"fileName": "a", "mimeType": "text/plain", "data": "QQ=="})).is_ok());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -238,7 +238,7 @@ Keep these 30 model-facing capabilities available through dynamic loading:
   `find`, `frames_list`, `javascript_tool`, `form_input`, `click_element`, `scroll_element`,
   `fill_element`, `get_element_info`, `wait_for_element`
 - diagnostics and media: `browser.console.capture`, `read_console_messages`,
-  `file_upload`, `upload_image`, `gif_creator`, `shortcuts_list`, `shortcuts_execute`
+  `file_upload`, `gif_creator`, `shortcuts_list`, `shortcuts_execute`
 - persistent scripts: `userscripts_register`, `userscripts_unregister`,
   `userscripts_list`
 

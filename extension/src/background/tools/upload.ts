@@ -1,245 +1,39 @@
-// Upload tools — file_upload and upload_image
+// file_upload: set local files on a file input. The server resolved `paths` to
+// absolute regular files on this machine, so the browser reads them itself and
+// fires trusted input and change events.
 
-import type { ToolResult } from '@bro/shared'
-import { cdpSession } from '../cdp.js'
 import { sendToFrame } from '../frames.js'
 import { registerTool } from '../tool-registry.js'
-import { refNode, withRef } from './accessibility.js'
+import { argsObject, callRef, refNode, stringArg } from './accessibility.js'
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-// CDP response types
-interface CaptureScreenshotResult {
-  data: string // base64
+// Runs in the page, so it must be self-contained.
+function fileInputAcceptsMultiple(this: Element): boolean {
+  for (let node: Element | null = this; node; node = node.parentElement ?? (node.getRootNode() instanceof ShadowRoot ? (node.getRootNode() as ShadowRoot).host : null)) {
+    if (node.matches(':disabled') || node.hasAttribute('inert')) throw new Error('file_upload: the file input is disabled or inert')
+  }
+  if (this.tagName.toLowerCase() !== 'input' || (this as HTMLInputElement).type.toLowerCase() !== 'file')
+    throw new Error(`file_upload: the ref is a <${this.tagName.toLowerCase()}>, expected <input type="file">`)
+  return (this as HTMLInputElement).multiple
 }
 
-// ---------------------------------------------------------------------------
-// Input validation helpers
-// ---------------------------------------------------------------------------
+registerTool('file_upload', async (tabId, rawArgs) => {
+  const args = argsObject(rawArgs)
+  const refId = stringArg(args, 'refId')
+  // The server's file_upload boundary guarantees a non-empty array of canonical paths.
+  const paths = args['paths'] as string[]
 
-function getString(
-  args: Record<string, unknown>,
-  key: string,
-  required: true,
-): string
-function getString(
-  args: Record<string, unknown>,
-  key: string,
-  required?: false,
-): string | undefined
-function getString(
-  args: Record<string, unknown>,
-  key: string,
-  required?: boolean,
-): string | undefined {
-  if (args[key] === undefined) {
-    if (required) throw new Error(`"${key}" is required`)
-    return undefined
-  }
-  if (typeof args[key] !== 'string') {
-    throw new Error(`"${key}" must be a string`)
-  }
-  return args[key] as string
-}
-
-// ---------------------------------------------------------------------------
-// Page-side function: check that the ref is an enabled file input and, for an
-// inline upload, inject the decoded File. Runs in the page, so it must be
-// self-contained.
-// ---------------------------------------------------------------------------
-
-type FileInputResult =
-  | { success: true; multiple: boolean; message: string }
-  | { success: false; error: string }
-
-interface InlineFile {
-  fileName: string
-  mimeType: string
-  base64Data: string
-}
-
-function pageFileInput(this: Element, inline: InlineFile | null): FileInputResult {
-  const el = this
-  for (let node: Element | null = el; node; node = node.parentElement ?? (node.getRootNode() instanceof ShadowRoot ? (node.getRootNode() as ShadowRoot).host : null)) {
-    if (node.matches(':disabled') || node.hasAttribute('inert')) return { success: false, error: 'File input is disabled or inert' }
-  }
-
-  const tag = el.tagName.toLowerCase()
-  if (tag !== 'input') {
-    return {
-      success: false,
-      error: `file_upload: element is a <${tag}>, expected <input>`,
-    }
-  }
-
-  const inputEl = el as HTMLInputElement
-  if (inputEl.type.toLowerCase() !== 'file') {
-    return {
-      success: false,
-      error: `file_upload: element is an <input type="${inputEl.type}">, expected type="file"`,
-    }
-  }
-  if (!inline) return { success: true, multiple: inputEl.multiple, message: '' }
-  const { fileName, mimeType, base64Data } = inline
-
-  try {
-    // Decode base64 string to binary
-    const binaryStr = atob(base64Data)
-    const bytes = new Uint8Array(binaryStr.length)
-    for (let i = 0; i < binaryStr.length; i++) {
-      bytes[i] = binaryStr.charCodeAt(i)
-    }
-
-    // Create a File object from the binary data
-    const file = new File([bytes], fileName, { type: mimeType })
-
-    // Create a DataTransfer and add the file
-    const dataTransfer = new DataTransfer()
-    dataTransfer.items.add(file)
-
-    // Assign to the input's files property
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files')?.set
-    if (!setter) throw new Error('Native file input setter unavailable')
-    setter.call(inputEl, dataTransfer.files)
-
-    // Dispatch change and input events so frameworks pick up the change
-    inputEl.dispatchEvent(new Event('change', { bubbles: true, composed: true }))
-    inputEl.dispatchEvent(new Event('input', { bubbles: true, composed: true }))
-
-    return {
-      success: true,
-      multiple: inputEl.multiple,
-      message: `File "${fileName}" injected; observe the page's ingestion result.`,
-    }
-  } catch (err) {
-    return {
-      success: false,
-      error: `file_upload: failed to inject file — ${err instanceof Error ? err.message : String(err)}`,
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Shared helper: inject a file by refId into a file input
-// ---------------------------------------------------------------------------
-
-async function injectFile(
-  tabId: number,
-  refId: string,
-  fileName: string,
-  mimeType: string,
-  base64Data: string,
-): Promise<ToolResult> {
-  const result = await withRef(tabId, refId, pageFileInput, [
-    { fileName, mimeType, base64Data } satisfies InlineFile,
-  ])
-
-  if (!result.success) {
-    return {
-      content: [{ type: 'text', text: result.error }],
-      isError: true,
-    } as ToolResult & { isError: true }
-  }
-
-  return {
-    content: [{ type: 'text', text: result.message }],
-  }
-}
-
-// ---------------------------------------------------------------------------
-// file_upload tool
-// ---------------------------------------------------------------------------
-
-async function executeFileUpload(
-  tabId: number,
-  rawArgs: unknown,
-): Promise<ToolResult> {
-  const args =
-    typeof rawArgs === 'object' && rawArgs !== null
-      ? (rawArgs as Record<string, unknown>)
-      : {}
-
-  const refId = getString(args, 'refId', true)
-  const paths = args['paths']
-  if (paths === undefined) {
-    const fileName = getString(args, 'fileName', true)
-    const mimeType = getString(args, 'mimeType', true)
-    const data = getString(args, 'data', true)
-    return injectFile(tabId, refId, fileName, mimeType, data)
-  }
-  // The server resolved these to absolute regular files on this machine.
-  if (!Array.isArray(paths) || paths.length === 0 || !paths.every((p) => typeof p === 'string'))
-    throw new Error('"paths" must be a non-empty array of strings')
-
-  const checked = await withRef(tabId, refId, pageFileInput, [null])
-  if (!checked.success)
-    return { content: [{ type: 'text', text: checked.error }], isError: true } as ToolResult & { isError: true }
-  if (paths.length > 1 && !checked.multiple)
-    return {
-      content: [{ type: 'text', text: `file_upload: the input accepts one file, got ${paths.length}` }],
-      isError: true,
-    } as ToolResult & { isError: true }
-
-  // The browser reads the files itself and fires trusted input and change events.
-  const { frame, backendNodeId } = await refNode(tabId, refId)
-  await sendToFrame(tabId, frame, 'DOM.setFileInputFiles', { files: paths, backendNodeId })
+  // One resolution: check and set the same node, so a navigation in between
+  // fails on that node instead of reaching a node from a newer document.
+  const node = await refNode(tabId, refId)
+  const multiple = await callRef(tabId, refId, node, fileInputAcceptsMultiple)
+  if (paths.length > 1 && !multiple)
+    throw new Error(`file_upload: the input accepts one file, got ${paths.length}`)
+  await sendToFrame(tabId, node.frame, 'DOM.setFileInputFiles', {
+    files: paths,
+    backendNodeId: node.backendNodeId,
+  })
   const names = paths.map((path) => path.split(/[\\/]/).pop()).join(', ')
   return {
-    content: [{ type: 'text', text: `Set ${paths.length} file(s) (${names}); observe the page's ingestion result.` }],
+    content: [{ type: 'text', text: `Set ${paths.length} file(s): ${names}. Observe the page's ingestion result.` }],
   }
-}
-
-// ---------------------------------------------------------------------------
-// upload_image tool
-// ---------------------------------------------------------------------------
-
-async function executeUploadImage(
-  tabId: number,
-  rawArgs: unknown,
-): Promise<ToolResult> {
-  const args =
-    typeof rawArgs === 'object' && rawArgs !== null
-      ? (rawArgs as Record<string, unknown>)
-      : {}
-
-  const refId = getString(args, 'refId', true)
-  let screenshotData = getString(args, 'screenshotData')
-
-  // If no screenshot data provided, take a new screenshot
-  if (!screenshotData) {
-    await cdpSession.ensure(tabId)
-    const captured = await cdpSession.send<CaptureScreenshotResult>(
-      tabId,
-      'Page.captureScreenshot',
-      {
-        format: 'jpeg',
-        quality: 85,
-        captureBeyondViewport: false,
-      },
-    )
-    screenshotData = captured.data
-  }
-
-  // Determine mime type from data URI prefix or default to JPEG
-  const mimeType = screenshotData.startsWith('data:image/png')
-    ? 'image/png'
-    : 'image/jpeg'
-
-  // Strip data URI prefix if present (e.g., "data:image/png;base64,...")
-  const base64Data = screenshotData.includes(',')
-    ? screenshotData.split(',')[1] ?? screenshotData
-    : screenshotData
-
-  const fileName = mimeType === 'image/png' ? 'screenshot.png' : 'screenshot.jpg'
-
-  return injectFile(tabId, refId, fileName, mimeType, base64Data)
-}
-
-// ---------------------------------------------------------------------------
-// Registration
-// ---------------------------------------------------------------------------
-
-registerTool('file_upload', executeFileUpload)
-registerTool('upload_image', executeUploadImage)
+})

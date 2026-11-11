@@ -930,20 +930,6 @@ try {
     )
     await tool('file_upload', { tabId, refId: refFor(snapshot, 'button', 'Cross File'), paths: ['relative.txt'] }, /must be absolute/)
   })
-  await check('file upload still accepts inline data for files not on this machine', async () => {
-    snapshot = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
-    await tool('file_upload', {
-      tabId,
-      refId: refFor(snapshot, 'button', 'Cross File'),
-      fileName: 'ref.txt',
-      mimeType: 'text/plain',
-      data: Buffer.from('REF_UPLOAD_OK').toString('base64'),
-    })
-    assert.match(
-      text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 })),
-      /ref.txt:REF_UPLOAD_OK/,
-    )
-  })
   await check(
     'default flow observation and ref steps work without frame IDs; failures stop the flow',
     async () => {
