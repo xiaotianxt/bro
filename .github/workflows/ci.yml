@@ -33,6 +33,20 @@ jobs:
       - name: Test
         run: cargo test --locked --all-features
 
+  contracts:
+    name: Contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.1
+      - uses: actions/setup-go@v5.5.0
+        with:
+          go-version-file: go.mod
+      - name: Contracts against the Rust binary
+        run: make e2e
+
   platform-build:
     name: Platform build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}

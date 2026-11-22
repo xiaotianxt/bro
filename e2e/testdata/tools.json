@@ -1,0 +1,2385 @@
+{
+  "browser.act": {
+    "_meta": {
+      "bro/capability": "interaction",
+      "bro/default": true
+    },
+    "description": "Run 1–32 ordered steps on a target: navigate, evaluate, wait, observe, and click/fill/select/check/press/scroll/upload. Target elements by refId, or by role + name (e.g. {type:click, role:menuitem, name:\"Read and write\"}), which resolves when the step runs and survives re-renders. Each click/fill/select/check waits for the page to settle and reports what visibly changed (opened/closed dialogs and menus, alerts, new text, navigation, including a form post it started); a click that opens a menu or dialog lists refs for its controls, so act on them without observing. \"no visible change\" means it likely missed. So chain the next steps directly: no delays and no evaluate to read the page back. Use wait only for content that arrives later. All steps validate before any effect; the first failure stops the rest. Prefer these trusted actions over evaluate, whose synthetic events frameworks like React can ignore. Covered clicks fail and name the covering element; check sets a native radio/checkbox without a pointer click. scroll moves the ref's nearest scrollable container, else the page. Native dialogs are answered as they open and reported: alerts accepted, confirm/prompt cancelled unless a dialog step before the action says accept. upload gives absolute local paths to the control a user clicks to pick files (or its file input), so a page that takes one file per form post is one call of upload/fill/click steps per file.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "close": {
+          "default": false,
+          "description": "Close the target once this call succeeds, instead of a separate browser.close.",
+          "type": "boolean"
+        },
+        "steps": {
+          "items": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "navigate",
+                    "type": "string"
+                  },
+                  "url": {
+                    "format": "uri",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "description": "Awaited JavaScript expression; IIFE for statements.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "frameId": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "evaluate",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "code"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "description": "Accessible name: exact, else a unique substring. Ambiguous or missing fails.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "refId": {
+                    "description": "Ref from observe or a change report. Or give role + name instead.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "role": {
+                    "description": "Accessible role as observe prints it, e.g. button, menuitem, option, textbox. Main frame only.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "click",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "description": "Accessible name: exact, else a unique substring. Ambiguous or missing fails.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "refId": {
+                    "description": "Ref from observe or a change report. Or give role + name instead.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "role": {
+                    "description": "Accessible role as observe prints it, e.g. button, menuitem, option, textbox. Main frame only.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "fill",
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "description": "Accessible name: exact, else a unique substring. Ambiguous or missing fails.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "refId": {
+                    "description": "Ref from observe or a change report. Or give role + name instead.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "role": {
+                    "description": "Accessible role as observe prints it, e.g. button, menuitem, option, textbox. Main frame only.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "select",
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "checked": {
+                    "default": true,
+                    "description": "Native radio/checkbox; no pointer click, so overlays do not block it.",
+                    "type": "boolean"
+                  },
+                  "name": {
+                    "description": "Accessible name: exact, else a unique substring. Ambiguous or missing fails.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "refId": {
+                    "description": "Ref from observe or a change report. Or give role + name instead.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "role": {
+                    "description": "Accessible role as observe prints it, e.g. button, menuitem, option, textbox. Main frame only.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "check",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "key": {
+                    "description": "Key name such as Escape, Enter, Tab, ArrowDown, or a combo like Shift+Tab. Goes to the focused element; a refId or role + name is focused first.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "name": {
+                    "description": "Accessible name: exact, else a unique substring. Ambiguous or missing fails.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "refId": {
+                    "description": "Ref from observe or a change report. Or give role + name instead.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "role": {
+                    "description": "Accessible role as observe prints it, e.g. button, menuitem, option, textbox. Main frame only.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "press",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "key"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "amount": {
+                    "default": 400,
+                    "maximum": 10000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "direction": {
+                    "default": "down",
+                    "enum": [
+                      "up",
+                      "down",
+                      "left",
+                      "right"
+                    ],
+                    "type": "string"
+                  },
+                  "refId": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "scroll",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "refId"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "drop": {
+                    "default": false,
+                    "description": "Drag the files onto the target instead of clicking it, for drop-only zones.",
+                    "type": "boolean"
+                  },
+                  "name": {
+                    "description": "Accessible name: exact, else a unique substring. Ambiguous or missing fails.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "paths": {
+                    "description": "Absolute paths of local files; checked before any step runs.",
+                    "items": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "refId": {
+                    "description": "Ref from observe or a change report. Or give role + name instead.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "role": {
+                    "description": "Accessible role as observe prints it, e.g. button, menuitem, option, textbox. Main frame only.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "upload",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "paths"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "accept": {
+                    "description": "Answer native dialogs (alert/confirm/prompt) opened by the following steps of this call with OK (true) or Cancel (false). Without this step confirm and prompt are cancelled.",
+                    "type": "boolean"
+                  },
+                  "promptText": {
+                    "description": "Text entered into a prompt dialog that is accepted.",
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "dialog",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "accept"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "refId": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "state": {
+                    "enum": [
+                      "visible",
+                      "hidden",
+                      "enabled",
+                      "disabled"
+                    ],
+                    "type": "string"
+                  },
+                  "text": {
+                    "description": "Exactly one condition: text appears, textGone disappears, or refId reaches state.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "textGone": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "timeoutMs": {
+                    "default": 5000,
+                    "description": "Not met in time is reported; later steps still run.",
+                    "maximum": 15000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "type": {
+                    "const": "wait",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "compact": {
+                    "default": true,
+                    "type": "boolean"
+                  },
+                  "cursor": {
+                    "maximum": 1000000,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "depth": {
+                    "default": 20,
+                    "maximum": 100,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "filter": {
+                    "default": "all",
+                    "enum": [
+                      "all",
+                      "interactive"
+                    ],
+                    "type": "string"
+                  },
+                  "maxChars": {
+                    "default": 8000,
+                    "maximum": 20000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "mode": {
+                    "default": "a11y",
+                    "enum": [
+                      "text",
+                      "a11y"
+                    ],
+                    "type": "string"
+                  },
+                  "refId": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "observe",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "type": "array"
+        },
+        "targetId": {
+          "description": "From browser.open. Defaults to the target this session last opened or used.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "steps"
+      ],
+      "type": "object"
+    },
+    "name": "browser.act"
+  },
+  "browser.attach": {
+    "_meta": {
+      "bro/capability": "interaction",
+      "bro/default": true
+    },
+    "description": "Make a tab that is already open (the user's, or one a page opened) a target, by tabId from tabs_context, and return its targetId with the first observation, like browser.open. Then observe/act/click/fill/press work on it. bro never closes an attached tab: close:true or browser.close releases the target and leaves the tab open.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "observe": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "properties": {
+                "compact": {
+                  "default": true,
+                  "description": "Omit unnamed structural nodes.",
+                  "type": "boolean"
+                },
+                "cursor": {
+                  "description": "Continue truncated output.",
+                  "maximum": 1000000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "depth": {
+                  "default": 20,
+                  "maximum": 100,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "filter": {
+                  "default": "all",
+                  "enum": [
+                    "all",
+                    "interactive"
+                  ],
+                  "type": "string"
+                },
+                "maxChars": {
+                  "default": 8000,
+                  "description": "a11y caps at 12000; 3000 inside act.",
+                  "maximum": 20000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "mode": {
+                  "default": "a11y",
+                  "description": "text: plain main-frame text (default 12000 chars); refId/filter/depth/compact are a11y only.",
+                  "enum": [
+                    "text",
+                    "a11y"
+                  ],
+                  "type": "string"
+                },
+                "refId": {
+                  "description": "Scope to this ref's subtree.",
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            }
+          ],
+          "default": true
+        },
+        "tabId": {
+          "description": "Tab to attach, from tabs_context.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "tabId"
+      ],
+      "type": "object"
+    },
+    "name": "browser.attach"
+  },
+  "browser.batch.extract": {
+    "_meta": {
+      "bro/capability": "internal",
+      "bro/default": true
+    },
+    "description": "Read several URLs in parallel, each as browser.extract does (visible text, 8000 chars per page by default). Links and a11y fallback are opt-in. Defaults: concurrency 6.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "active": {
+          "default": false,
+          "type": "boolean"
+        },
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "cleanup": {
+          "default": true,
+          "type": "boolean"
+        },
+        "concurrency": {
+          "default": 6,
+          "maximum": 16,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "includeA11y": {
+          "default": false,
+          "description": "When true, read the accessibility tree as a fallback if browser-side DOM extraction is not ready.",
+          "type": "boolean"
+        },
+        "includeLinks": {
+          "default": false,
+          "description": "When true, include extracted links. Keep false unless URLs are part of the answer.",
+          "type": "boolean"
+        },
+        "inputs": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "description": "Optional caller-supplied result id. Defaults to input-\u003cn\u003e.",
+                "minLength": 1,
+                "type": "string"
+              },
+              "url": {
+                "format": "uri",
+                "type": "string"
+              }
+            },
+            "required": [
+              "url"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "maxChars": {
+          "default": 8000,
+          "maximum": 60000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "maxLinks": {
+          "default": 20,
+          "maximum": 200,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "minChars": {
+          "default": 120,
+          "description": "Minimum content size for ready quality; not a sleep duration.",
+          "maximum": 10000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "urls": {
+          "description": "URLs to extract using browser-side readiness.",
+          "items": {
+            "format": "uri",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "name": "browser.batch.extract"
+  },
+  "browser.batch.flow": {
+    "_meta": {
+      "bro/capability": "internal",
+      "bro/default": true
+    },
+    "description": "Open several URLs in owned background tabs, run the same steps on each, and close them. Prefer it to open/act when every page needs the same interaction.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "active": {
+          "default": false,
+          "type": "boolean"
+        },
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "cleanup": {
+          "default": true,
+          "type": "boolean"
+        },
+        "concurrency": {
+          "default": 6,
+          "maximum": 16,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "inputs": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "description": "Optional caller-supplied result id. Defaults to input-\u003cn\u003e.",
+                "minLength": 1,
+                "type": "string"
+              },
+              "url": {
+                "format": "uri",
+                "type": "string"
+              }
+            },
+            "required": [
+              "url"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "steps": {
+          "description": "Steps run on each new tab; refs are not available.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "description": "Awaited JavaScript expression for evaluate; IIFE for statements.",
+                "minLength": 1,
+                "type": "string"
+              },
+              "compact": {
+                "default": true,
+                "type": "boolean"
+              },
+              "css": {
+                "description": "CSS selector for click/fill/select.",
+                "minLength": 1,
+                "type": "string"
+              },
+              "depth": {
+                "default": 20,
+                "maximum": 100,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "filter": {
+                "default": "all",
+                "enum": [
+                  "all",
+                  "interactive"
+                ],
+                "type": "string"
+              },
+              "frameId": {
+                "description": "Frame for evaluate, CSS steps or read_text; omit for the main frame.",
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxChars": {
+                "default": 8000,
+                "maximum": 20000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "mode": {
+                "default": "a11y",
+                "enum": [
+                  "text",
+                  "a11y"
+                ],
+                "type": "string"
+              },
+              "ms": {
+                "maximum": 30000,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "description": "Required fields: navigate=url, evaluate=code, click=css, fill/select=css+value, wait=ms; read_text has none. Same names as browser.act.",
+                "enum": [
+                  "navigate",
+                  "evaluate",
+                  "click",
+                  "fill",
+                  "select",
+                  "wait",
+                  "read_text",
+                  "observe"
+                ],
+                "type": "string"
+              },
+              "url": {
+                "format": "uri",
+                "type": "string"
+              },
+              "value": {
+                "description": "Text for fill; option value (or unique label with refId) for select.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "timeoutMs": {
+          "default": 12000,
+          "description": "Per URL, including open and steps.",
+          "maximum": 60000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "urls": {
+          "items": {
+            "format": "uri",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "steps"
+      ],
+      "type": "object"
+    },
+    "name": "browser.batch.flow"
+  },
+  "browser.click": {
+    "_meta": {
+      "bro/capability": "interaction",
+      "bro/default": true
+    },
+    "description": "Click an element by refId (from observe or a change report) or role + name. Waits for the page to settle and reports what visibly changed; a menu or dialog it opens lists its controls' refs, so click those next without observing. \"no visible change\" means it likely missed. targetId defaults to the target this session last used.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "close": {
+          "default": false,
+          "description": "Close the target once this call succeeds, instead of a separate browser.close.",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "Accessible name: exact, else a unique substring. Ambiguous or missing fails.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "refId": {
+          "description": "Ref from observe or a change report. Or give role + name instead.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "role": {
+          "description": "Accessible role as observe prints it, e.g. button, menuitem, option, textbox. Main frame only.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "targetId": {
+          "description": "From browser.open. Defaults to the target this session last opened or used.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "browser.click"
+  },
+  "browser.close": {
+    "_meta": {
+      "bro/capability": "interaction",
+      "bro/default": true
+    },
+    "description": "Close an owned target's tab and release its server state; an attached target is released and its tab stays open. close:true on the target's last call does this without a separate turn. Does not close unrelated tabs. Failed cleanup remains available for an explicit retry.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "targetId": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "targetId"
+      ],
+      "type": "object"
+    },
+    "name": "browser.close"
+  },
+  "browser.console.capture": {
+    "_meta": {
+      "bro/capability": "console",
+      "bro/default": false
+    },
+    "description": "Open one URL, enable browser console instrumentation, evaluate one JavaScript expression that triggers logs, collect console messages, then clean up in one call. Use instead of carrying console-monitor state across model turns.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "active": {
+          "default": false,
+          "type": "boolean"
+        },
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "cleanup": {
+          "default": true,
+          "type": "boolean"
+        },
+        "code": {
+          "description": "JavaScript trigger evaluated after console monitoring starts. Returned Promises are awaited; a zero-argument function expression is invoked automatically.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "maxMessages": {
+          "default": 100,
+          "maximum": 500,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "timeoutMs": {
+          "default": 5000,
+          "description": "Maximum time to wait for the first console message.",
+          "maximum": 20000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "url": {
+          "description": "Page to open before console capture starts.",
+          "format": "uri",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "code"
+      ],
+      "type": "object"
+    },
+    "name": "browser.console.capture"
+  },
+  "browser.extract": {
+    "_meta": {
+      "bro/capability": "internal",
+      "bro/default": true
+    },
+    "description": "Read one URL: open it in a background tab, wait until its content settles, return its visible text as rendered (a table row stays on one line), and close the tab. Up to maxChars (20000). Use it instead of open + evaluate to read or search a page. Links and a11y fallback are opt-in.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "active": {
+          "default": false,
+          "type": "boolean"
+        },
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "cleanup": {
+          "default": true,
+          "type": "boolean"
+        },
+        "id": {
+          "description": "Optional caller-supplied result id. Defaults to url-1.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "includeA11y": {
+          "default": false,
+          "description": "When true, read the accessibility tree as a fallback if browser-side DOM extraction is not ready.",
+          "type": "boolean"
+        },
+        "includeLinks": {
+          "default": false,
+          "description": "When true, include extracted links. Keep false unless URLs are part of the answer.",
+          "type": "boolean"
+        },
+        "maxChars": {
+          "default": 20000,
+          "maximum": 60000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "maxLinks": {
+          "default": 20,
+          "maximum": 200,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "minChars": {
+          "default": 120,
+          "description": "Minimum content size for ready quality; not a sleep duration.",
+          "maximum": 10000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "url": {
+          "format": "uri",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "type": "object"
+    },
+    "name": "browser.extract"
+  },
+  "browser.fill": {
+    "_meta": {
+      "bro/capability": "interaction",
+      "bro/default": true
+    },
+    "description": "Set a text field, select, or date/time input by refId or role + name; date inputs take ISO values such as 2026-12-15. Reports what visibly changed. targetId defaults to the target this session last used.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "close": {
+          "default": false,
+          "description": "Close the target once this call succeeds, instead of a separate browser.close.",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "Accessible name: exact, else a unique substring. Ambiguous or missing fails.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "refId": {
+          "description": "Ref from observe or a change report. Or give role + name instead.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "role": {
+          "description": "Accessible role as observe prints it, e.g. button, menuitem, option, textbox. Main frame only.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "targetId": {
+          "description": "From browser.open. Defaults to the target this session last opened or used.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "value": {
+          "description": "Text, option value or label, or ISO date/time.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "type": "object"
+    },
+    "name": "browser.fill"
+  },
+  "browser.network.capture": {
+    "_meta": {
+      "bro/capability": "network",
+      "bro/default": false
+    },
+    "description": "Open one URL, enable browser network instrumentation, evaluate one JavaScript expression that triggers requests, collect matching request metadata and response bodies, then clean up in one call. Use instead of carrying network-monitor state across model turns.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "active": {
+          "default": false,
+          "type": "boolean"
+        },
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "cleanup": {
+          "default": true,
+          "type": "boolean"
+        },
+        "code": {
+          "description": "JavaScript trigger evaluated after monitoring starts. Returned Promises are awaited; a zero-argument function expression is invoked automatically. Examples: fetch('/api') or () =\u003e fetch('/api').",
+          "minLength": 1,
+          "type": "string"
+        },
+        "includeHeaders": {
+          "default": false,
+          "description": "Include request and response headers. Keep false unless headers are required.",
+          "type": "boolean"
+        },
+        "includePostData": {
+          "default": false,
+          "description": "Include request post bodies. Keep false unless request payloads are required.",
+          "type": "boolean"
+        },
+        "includeResponseBodies": {
+          "default": true,
+          "description": "Include bounded response bodies for finished matching requests.",
+          "type": "boolean"
+        },
+        "maxBodyChars": {
+          "default": 20000,
+          "description": "Total response-body character budget shared across matching requests.",
+          "maximum": 60000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "maxRequests": {
+          "default": 20,
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "timeoutMs": {
+          "default": 10000,
+          "description": "Maximum time to wait for a matching request to finish.",
+          "maximum": 20000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "url": {
+          "description": "Page to open before network capture starts.",
+          "format": "uri",
+          "type": "string"
+        },
+        "urlIncludes": {
+          "description": "Only return requests whose URL contains this substring.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "code"
+      ],
+      "type": "object"
+    },
+    "name": "browser.network.capture"
+  },
+  "browser.observe": {
+    "_meta": {
+      "bro/capability": "interaction",
+      "bro/default": true
+    },
+    "description": "Read a target. Read content with mode text; use a11y (default) only to find short refs (e.g. kqx12) to act on, across frames and Shadow DOM. Scope with refId; bound with filter/depth/maxChars; continue truncated output with cursor. Refs survive rereads, not navigation.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "close": {
+          "default": false,
+          "description": "Close the target once this call succeeds, instead of a separate browser.close.",
+          "type": "boolean"
+        },
+        "compact": {
+          "default": true,
+          "description": "Omit unnamed structural nodes.",
+          "type": "boolean"
+        },
+        "cursor": {
+          "description": "Continue truncated output.",
+          "maximum": 1000000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "depth": {
+          "default": 20,
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "filter": {
+          "default": "all",
+          "enum": [
+            "all",
+            "interactive"
+          ],
+          "type": "string"
+        },
+        "maxChars": {
+          "default": 8000,
+          "description": "a11y caps at 12000; 3000 inside act.",
+          "maximum": 20000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "mode": {
+          "default": "a11y",
+          "description": "text: plain main-frame text (default 12000 chars); refId/filter/depth/compact are a11y only.",
+          "enum": [
+            "text",
+            "a11y"
+          ],
+          "type": "string"
+        },
+        "refId": {
+          "description": "Scope to this ref's subtree.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "targetId": {
+          "description": "From browser.open. Defaults to the target this session last opened or used.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "browser.observe"
+  },
+  "browser.open": {
+    "_meta": {
+      "bro/capability": "interaction",
+      "bro/default": true
+    },
+    "description": "Open one URL in an owned background tab for interaction and return its targetId with the first observation (a11y refs by default; observe takes browser.observe's options, e.g. {mode:\"text\"}), so act next without observing. observe:false returns as soon as loading starts. Close it with close:true on its last observe/act/click/fill/press.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "active": {
+          "default": false,
+          "type": "boolean"
+        },
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "label": {
+          "description": "Tab-group label; Pi supplies it.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "observe": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "properties": {
+                "compact": {
+                  "default": true,
+                  "description": "Omit unnamed structural nodes.",
+                  "type": "boolean"
+                },
+                "cursor": {
+                  "description": "Continue truncated output.",
+                  "maximum": 1000000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "depth": {
+                  "default": 20,
+                  "maximum": 100,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "filter": {
+                  "default": "all",
+                  "enum": [
+                    "all",
+                    "interactive"
+                  ],
+                  "type": "string"
+                },
+                "maxChars": {
+                  "default": 8000,
+                  "description": "a11y caps at 12000; 3000 inside act.",
+                  "maximum": 20000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "mode": {
+                  "default": "a11y",
+                  "description": "text: plain main-frame text (default 12000 chars); refId/filter/depth/compact are a11y only.",
+                  "enum": [
+                    "text",
+                    "a11y"
+                  ],
+                  "type": "string"
+                },
+                "refId": {
+                  "description": "Scope to this ref's subtree.",
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            }
+          ],
+          "default": true
+        },
+        "ownerSessionId": {
+          "description": "Owner identity; Pi supplies it.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "url": {
+          "format": "uri",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "type": "object"
+    },
+    "name": "browser.open"
+  },
+  "browser.press": {
+    "_meta": {
+      "bro/capability": "interaction",
+      "bro/default": true
+    },
+    "description": "Press a key such as Escape (closes most menus, dialogs and pickers), Enter, Tab or ArrowDown. Goes to the focused element, or focuses refId / role + name first. Reports what visibly changed. targetId defaults to the target this session last used.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "close": {
+          "default": false,
+          "description": "Close the target once this call succeeds, instead of a separate browser.close.",
+          "type": "boolean"
+        },
+        "key": {
+          "description": "Key name such as Escape, Enter, Tab, ArrowDown, or a combo like Shift+Tab. Goes to the focused element; a refId or role + name is focused first.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "name": {
+          "description": "Accessible name: exact, else a unique substring. Ambiguous or missing fails.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "refId": {
+          "description": "Ref from observe or a change report. Or give role + name instead.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "role": {
+          "description": "Accessible role as observe prints it, e.g. button, menuitem, option, textbox. Main frame only.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "targetId": {
+          "description": "From browser.open. Defaults to the target this session last opened or used.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    },
+    "name": "browser.press"
+  },
+  "browsers_context": {
+    "_meta": {
+      "bro/capability": "tabs",
+      "bro/default": false
+    },
+    "description": "List connected browser instances and their browserIds.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "browsers_context"
+  },
+  "computer": {
+    "_meta": {
+      "bro/capability": "visual",
+      "bro/default": false
+    },
+    "description": "Interact with the browser by screenshot, click, type, scroll, drag, or key input. Input temporarily emulates page focus without activating the tab/window, then restores it. No automatic foreground fallback or input replay. Use tabs_activate only when real foreground interaction is necessary.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "screenshot",
+            "zoom",
+            "left_click",
+            "right_click",
+            "middle_click",
+            "double_click",
+            "triple_click",
+            "hover",
+            "scroll",
+            "left_click_drag",
+            "type",
+            "key"
+          ],
+          "type": "string"
+        },
+        "amount": {
+          "type": "number"
+        },
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "coordinate": {
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "direction": {
+          "enum": [
+            "up",
+            "down",
+            "left",
+            "right"
+          ],
+          "type": "string"
+        },
+        "quality": {
+          "default": 55,
+          "description": "JPEG quality for screenshot/zoom actions. Raise only when visual detail matters.",
+          "maximum": 95,
+          "minimum": 10,
+          "type": "integer"
+        },
+        "refId": {
+          "description": "Ref from read_page/find; targets click, hover and scroll actions instead of coordinate.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "region": {
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "type": "array"
+        },
+        "start_coordinate": {
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "tabId": {
+          "description": "Numeric tab ID to operate on.",
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "computer"
+  },
+  "debugger_diagnose": {
+    "_meta": {
+      "bro/capability": "extensions",
+      "bro/default": false
+    },
+    "description": "Diagnose CDP attach failures / CDP_FOREIGN_EXTENSION without CDP. Inspect best-effort frame origins and foreign extension IDs. Empty inventory does not rule out blockers or identify a culprit. Does not read page contents. Frame IDs here are webNavigation IDs, not CDP frame refs.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "tabId": {
+          "description": "Numeric tab ID whose frame tree should be listed.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "debugger_diagnose"
+  },
+  "extensions_pause": {
+    "_meta": {
+      "bro/capability": "extensions",
+      "bro/default": false
+    },
+    "description": "Explicitly pause one user-approved extension across the ENTIRE browser profile for 30–900 seconds. Requires confirmProfileWide=true. Never use automatically on attach errors. Returns ownership token for extensions_resume. Only one outstanding pause is allowed. No refresh or input replay. Automatic restoration can require user intervention; verify extensions_status afterward.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "confirmProfileWide": {
+          "const": true,
+          "type": "boolean"
+        },
+        "durationSeconds": {
+          "default": 300,
+          "maximum": 900,
+          "minimum": 30,
+          "type": "integer"
+        },
+        "extensionId": {
+          "pattern": "^[a-p]{32}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "extensionId",
+        "confirmProfileWide"
+      ],
+      "type": "object"
+    },
+    "name": "extensions_pause"
+  },
+  "extensions_resume": {
+    "_meta": {
+      "bro/capability": "extensions",
+      "bro/default": false
+    },
+    "description": "Restore the extension disabled by a specific pause using its resumeToken. Verify enabled state before clearing recovery record. If blocked, manually enable in chrome://extensions then call again. Does not enable unrelated extensions.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "resumeToken": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "resumeToken"
+      ],
+      "type": "object"
+    },
+    "name": "extensions_resume"
+  },
+  "extensions_status": {
+    "_meta": {
+      "bro/capability": "extensions",
+      "bro/default": false
+    },
+    "description": "Inspect installed extension IDs, enabled state and outstanding profile-wide pause/recovery without CDP. Use after CDP_FOREIGN_EXTENSION; installed does not mean responsible. If login needs a password manager, keep it enabled and complete login through the user or authorized native UI before retrying bro.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "extensions_status"
+  },
+  "file_upload": {
+    "_meta": {
+      "bro/capability": "upload",
+      "bro/default": false
+    },
+    "description": "Choose local files through the control a user clicks to pick them. Target it by refId (an upload button, drop zone, or file input) or by coordinate (CSS pixels, as computer uses) when it has no ref. bro activates it, catches the file chooser it opens (no OS dialog appears), and fills it with paths. Pass absolute paths; the browser reads the files itself.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "coordinate": {
+          "description": "Click point when the control has no refId; give refId or coordinate, not both.",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "drop": {
+          "description": "Drag the files onto the target instead of clicking it, for pages that take files only by drop or through showOpenFilePicker.",
+          "type": "boolean"
+        },
+        "paths": {
+          "description": "Absolute paths of the local files to choose.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "refId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "tabId": {
+          "description": "Numeric tab ID.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "paths"
+      ],
+      "type": "object"
+    },
+    "name": "file_upload"
+  },
+  "find": {
+    "_meta": {
+      "bro/capability": "accessibility",
+      "bro/default": false
+    },
+    "description": "Find elements by their visible label (accessible name) words, optionally with a role word such as link or button. Returns up to 20 refs, best match first.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "description": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "refId": {
+          "type": "string"
+        },
+        "tabId": {
+          "description": "Numeric tab ID to search.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "find"
+  },
+  "frames_list": {
+    "_meta": {
+      "bro/capability": "frames",
+      "bro/default": false
+    },
+    "description": "List the main frame and child frames for a tab, including stable frameIds for frame-aware flow eval, click, fill, select, and read_text steps.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "tabId": {
+          "description": "Numeric tab ID whose frame tree should be listed.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "frames_list"
+  },
+  "get_element_info": {
+    "_meta": {
+      "bro/capability": "accessibility",
+      "bro/default": false
+    },
+    "description": "Inspect runtime details for a page element by refId.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "refId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "tabId": {
+          "description": "Numeric tab ID.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "get_element_info"
+  },
+  "get_page_text": {
+    "_meta": {
+      "bro/capability": "internal",
+      "bro/default": false,
+      "bro/piVisibility": "internal"
+    },
+    "description": "Extract plain text content from the current page.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "maxChars": {
+          "default": 12000,
+          "description": "Maximum number of text characters to return.",
+          "maximum": 60000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "tabId": {
+          "description": "Numeric tab ID.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "get_page_text"
+  },
+  "javascript_tool": {
+    "_meta": {
+      "bro/capability": "advanced",
+      "bro/default": false
+    },
+    "description": "Execute JavaScript in the page context, optionally targeting a frameId from frames_list.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "awaitPromise": {
+          "default": false,
+          "description": "Await any returned Promise before serializing the result.",
+          "type": "boolean"
+        },
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "code": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "frameId": {
+          "description": "Optional child frameId from frames_list. Omit for the main frame.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "tabId": {
+          "description": "Numeric tab ID to run code in.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "javascript_tool"
+  },
+  "login_form_inspect": {
+    "_meta": {
+      "bro/capability": "login",
+      "bro/default": false
+    },
+    "description": "Inspect main-frame login inputs without CDP or reading field values. Returns fillable fields, hiddenFields, accountSwitchers (remembered-account select/\"other user\" controls with css/optionValue, never their text) and a hint when only a password is fillable, plus origin/documentId/formToken for onepassword_fill_login, valid for 120 seconds. Act on accountSwitchers and inspect again instead of debugging the DOM. Can work while a password-manager iframe blocks CDP; does not require pausing it. No iframe, Shadow DOM or passkey support. Pin browserId/tabId. Never treat controls as account-selection evidence.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "tabId": {
+          "description": "Explicit login tab ID.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "browserId",
+        "tabId"
+      ],
+      "type": "object"
+    },
+    "name": "login_form_inspect"
+  },
+  "navigate": {
+    "_meta": {
+      "bro/capability": "advanced",
+      "bro/default": false
+    },
+    "description": "Navigate a tab to a URL or through browser history.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "direction": {
+          "enum": [
+            "back",
+            "forward"
+          ],
+          "type": "string"
+        },
+        "tabId": {
+          "description": "Numeric tab ID to navigate.",
+          "type": "integer"
+        },
+        "url": {
+          "format": "uri",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "navigate"
+  },
+  "onepassword_fill_login": {
+    "_meta": {
+      "bro/capability": "login",
+      "bro/default": false
+    },
+    "description": "Read only the explicitly selected 1Password Login via local op CLI and privately fill selected empty main-frame input indices. Requires confirmFill for this login/origin. Credentials are not public tool arguments/results. Verify a saved website on the same site (see onepassword_find_logins) and fresh document/form token; refuse changed forms, nonempty fields, OTP/new-password targets. No submit, automatic refresh, extension pause or replay. The destination page can read/react to values; avoid subsequent value reads or secret-bearing capture. Use native UI for passkeys/MFA. If the result is uncertain, inspect navigation without replaying.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "account": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "confirmFill": {
+          "const": true,
+          "type": "boolean"
+        },
+        "documentId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "expectedOrigin": {
+          "description": "Canonical page origin from login_form_inspect.",
+          "type": "string"
+        },
+        "formToken": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "itemId": {
+          "pattern": "^[a-z0-9]{26}$",
+          "type": "string"
+        },
+        "passwordIndex": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tabId": {
+          "description": "Explicit login tab ID.",
+          "type": "integer"
+        },
+        "usernameIndex": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "vaultId": {
+          "pattern": "^[a-z0-9]{26}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "browserId",
+        "tabId",
+        "documentId",
+        "formToken",
+        "expectedOrigin",
+        "itemId",
+        "vaultId",
+        "confirmFill"
+      ],
+      "type": "object"
+    },
+    "name": "onepassword_fill_login"
+  },
+  "onepassword_find_logins": {
+    "_meta": {
+      "bro/capability": "login",
+      "bro/default": false
+    },
+    "description": "Search 1Password Login metadata locally through op CLI, matching like 1Password's default: same scheme/port on the same registrable domain (Public Suffix List), so a secure.example.com login is found from www.example.com. Requires user-authorized confirmMetadataSearch. Optional vault/account scope; unmatched metadata is not returned and no credential fields are read. Returns itemId/vaultId/title/username candidates with match exact-origin|same-site, exact first; pick by username when the user names an account. Zero candidates means nothing can be filled here: never work around it with raw op, title search or 1Password UI automation. Multiple candidates require explicit selection; no substring or cross-site SSO matching.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "account": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "confirmMetadataSearch": {
+          "const": true,
+          "type": "boolean"
+        },
+        "url": {
+          "description": "Page URL (HTTPS; HTTP only on literal loopback hosts). Matched by registrable domain; loopback/IP hosts only exactly.",
+          "format": "uri",
+          "type": "string"
+        },
+        "vault": {
+          "description": "Optional vault name/ID to narrow local metadata search.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "confirmMetadataSearch"
+      ],
+      "type": "object"
+    },
+    "name": "onepassword_find_logins"
+  },
+  "read_console_messages": {
+    "_meta": {
+      "bro/capability": "console",
+      "bro/default": false
+    },
+    "description": "Begin or read best-effort console monitoring for one tab. Prefer browser.console.capture when an action must trigger the message in a reliable one-call workflow.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "clear": {
+          "default": false,
+          "type": "boolean"
+        },
+        "tabId": {
+          "description": "Numeric tab ID.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "read_console_messages"
+  },
+  "read_network_requests": {
+    "_meta": {
+      "bro/capability": "network",
+      "bro/default": false,
+      "bro/piVisibility": "internal"
+    },
+    "description": "Begin or read best-effort network monitoring for one tab. Monitoring is extension-memory state and may not survive model turns; prefer browser.network.capture when an action must trigger the request. Use timeoutMs 0 only for deliberate multi-call debugging.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "clear": {
+          "default": false,
+          "type": "boolean"
+        },
+        "filter": {
+          "default": "all",
+          "enum": [
+            "all",
+            "failed"
+          ],
+          "type": "string"
+        },
+        "includeDetails": {
+          "default": false,
+          "description": "Include mimeType, protocol, remote address, cache/service-worker flags, and encoded data length.",
+          "type": "boolean"
+        },
+        "includeHeaders": {
+          "default": false,
+          "description": "Include request and response headers for each entry.",
+          "type": "boolean"
+        },
+        "includePostData": {
+          "default": false,
+          "description": "Include request post body for each entry.",
+          "type": "boolean"
+        },
+        "includeTiming": {
+          "default": false,
+          "description": "Include the CDP ResourceTiming object for each entry.",
+          "type": "boolean"
+        },
+        "tabId": {
+          "description": "Numeric tab ID.",
+          "type": "integer"
+        },
+        "timeoutMs": {
+          "default": 30000,
+          "description": "Idle lifetime for best-effort monitoring. Use 0 to request no timer, but prefer browser.network.capture across model turns.",
+          "maximum": 600000,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "read_network_requests"
+  },
+  "read_page": {
+    "_meta": {
+      "bro/capability": "accessibility",
+      "bro/default": false
+    },
+    "description": "Read a browser-native accessibility snapshot with inline frame trees and Shadow DOM labels. Refs are opaque, bound to tab/frame/document/node, and stable across read_page/find/a11y rereads until document change, node replacement, restart or bounded retention expiry. Reobserve after navigation or DOM replacement; never guess refs.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "compact": {
+          "default": true,
+          "type": "boolean"
+        },
+        "cursor": {
+          "description": "Continue a truncated read from its reported cursor.",
+          "maximum": 1000000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "depth": {
+          "default": 20,
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "filter": {
+          "default": "all",
+          "enum": [
+            "all",
+            "interactive"
+          ],
+          "type": "string"
+        },
+        "maxChars": {
+          "default": 8000,
+          "maximum": 60000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "refId": {
+          "description": "Optional latest ref to scope the AX subtree within its document. Omit to include all frames.",
+          "type": "string"
+        },
+        "tabId": {
+          "description": "Numeric tab ID to read.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "read_page"
+  },
+  "resize_window": {
+    "_meta": {
+      "bro/capability": "advanced",
+      "bro/default": false
+    },
+    "description": "Resize the browser window containing the tab.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "height": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "tabId": {
+          "description": "Numeric tab ID whose window should be resized.",
+          "type": "integer"
+        },
+        "width": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "resize_window"
+  },
+  "session_name": {
+    "_meta": {
+      "bro/capability": "internal",
+      "bro/default": false,
+      "bro/piVisibility": "internal"
+    },
+    "description": "Name a browser automation session and update its tab group title when present.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Human-readable browser automation session name.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "sessionId": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "session_name"
+  },
+  "tabs_activate": {
+    "_meta": {
+      "bro/capability": "tabs",
+      "bro/default": false
+    },
+    "description": "Explicitly activate a tab and focus its window. Changes user focus; reserve for tasks that genuinely need the foreground, not routine input or retries.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "tabId": {
+          "description": "Numeric tab ID.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "tabs_activate"
+  },
+  "tabs_close": {
+    "_meta": {
+      "bro/capability": "tabs",
+      "bro/default": false
+    },
+    "description": "Close a browser tab by its numeric tab ID.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "tabId": {
+          "description": "Numeric tab ID.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "tabs_close"
+  },
+  "tabs_context": {
+    "_meta": {
+      "bro/capability": "tabs",
+      "bro/default": false
+    },
+    "description": "Get the context of open browser tabs and tab groups.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "all": {
+          "type": "boolean"
+        },
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "tabId": {
+          "description": "Anchor tab ID.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "tabs_context"
+  },
+  "tabs_create": {
+    "_meta": {
+      "bro/capability": "tabs",
+      "bro/default": false
+    },
+    "description": "Create a new browser tab, optionally navigating to a URL.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "active": {
+          "default": false,
+          "type": "boolean"
+        },
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "url": {
+          "format": "uri",
+          "type": "string"
+        },
+        "windowId": {
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "tabs_create"
+  },
+  "tabs_finalize": {
+    "_meta": {
+      "bro/capability": "tabs",
+      "bro/default": false
+    },
+    "description": "Finalize a browser automation session, closing owned tabs unless they are explicitly kept.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "closeTabIds": {
+          "description": "Explicit tab IDs to close during finalization.",
+          "items": {
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "keep": {
+          "description": "Tabs to keep open after finalization.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "reason": {
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "deliverable",
+                  "handoff",
+                  "keep"
+                ],
+                "type": "string"
+              },
+              "tabId": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "tabId"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "tabs_finalize"
+  },
+  "userscripts_list": {
+    "_meta": {
+      "bro/capability": "userscripts",
+      "bro/default": false
+    },
+    "description": "List registered user scripts, optionally filtered by ID.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "ids": {
+          "description": "Script IDs to filter by. Omit to list all.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "name": "userscripts_list"
+  },
+  "userscripts_register": {
+    "_meta": {
+      "bro/capability": "userscripts",
+      "bro/default": false
+    },
+    "description": "Register one or more user scripts via chrome.userScripts. Scripts auto-inject on matching pages and persist across sessions.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "scripts": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "allFrames": {
+                "type": "boolean"
+              },
+              "description": {
+                "description": "Short human-readable explanation of what the script does.",
+                "type": "string"
+              },
+              "excludeMatches": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "js": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "file": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [],
+                  "type": "object"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              "matches": {
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              "runAt": {
+                "enum": [
+                  "document_start",
+                  "document_end",
+                  "document_idle"
+                ],
+                "type": "string"
+              },
+              "world": {
+                "enum": [
+                  "USER_SCRIPT",
+                  "MAIN"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "matches",
+              "js"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "name": "userscripts_register"
+  },
+  "userscripts_unregister": {
+    "_meta": {
+      "bro/capability": "userscripts",
+      "bro/default": false
+    },
+    "description": "Unregister user scripts by ID, or all scripts if no IDs are provided.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "ids": {
+          "description": "Script IDs to unregister. Omit to unregister all.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "name": "userscripts_unregister"
+  },
+  "wait_for_element": {
+    "_meta": {
+      "bro/capability": "accessibility",
+      "bro/default": false
+    },
+    "description": "Wait until an element appears by refId or description.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browserId": {
+          "description": "Target browser instanceId. Omit to use the default browser.",
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "refId": {
+          "type": "string"
+        },
+        "tabId": {
+          "description": "Numeric tab ID.",
+          "type": "integer"
+        },
+        "timeout": {
+          "default": 10000,
+          "maximum": 20000,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "wait_for_element"
+  }
+}

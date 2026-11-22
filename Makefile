@@ -1,4 +1,4 @@
-.PHONY: fmt clippy test extension pi-extension live-test live-refs check release release-build
+.PHONY: fmt clippy test extension pi-extension live-test live-refs e2e check release release-build
 
 # Override for an isolated validation build without changing a loaded extension.
 EXTENSION_OUT_DIR ?= dist
@@ -22,6 +22,14 @@ pi-extension:
 	pnpm --filter @xiaotianxt/pi-bro typecheck
 	pnpm --filter @xiaotianxt/pi-bro test
 
+# Black-box contracts (docs/go-migration.md) against the binary under test.
+BRO_BIN ?= $(CURDIR)/target/debug/bro
+e2e:
+	cargo build
+	test -z "$$(gofmt -l e2e)"
+	go vet ./...
+	BRO_BIN="$(BRO_BIN)" go test -count=1 ./e2e/...
+
 live-test:
 	cargo test --test live_extract -- --ignored --nocapture
 	cargo test --test live_network -- --ignored --nocapture
@@ -40,6 +48,7 @@ check:
 	cargo fmt --all -- --check
 	cargo clippy --all-targets -- -D warnings
 	cargo test
+	$(MAKE) e2e
 	pnpm --filter @bro/shared build
 	pnpm --filter @bro/extension typecheck
 	pnpm --filter @bro/extension test
