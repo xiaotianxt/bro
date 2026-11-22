@@ -11,7 +11,7 @@ import { resolve, join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
-const [extension, chrome, binary = 'target/bro'] = process.argv.slice(2)
+const [extension, chrome, binary = 'bin/bro'] = process.argv.slice(2)
 if (!extension || !chrome) throw new Error('Usage: live-extension-pause.mjs EXTENSION_DIR CHROME_BINARY [BRO_BINARY]')
 const dir = await mkdtemp(join(tmpdir(), 'bro-pause-test-'))
 const log = await open(join(dir, 'process.log'), 'w')

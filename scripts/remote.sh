@@ -16,7 +16,7 @@ repo="$(cd "$(dirname "$0")/.." && pwd)"
 [ $# -gt 0 ] || { sed -n '2,10p' "$0"; exit 2; }
 
 rsync -a --delete \
-  --exclude .git/ --exclude target/ --exclude node_modules/ --exclude dist/ \
+  --exclude .git/ --exclude bin/ --exclude node_modules/ --exclude dist/ \
   "$repo/" "$host:$dir/"
 
 # The remote login shell may not be POSIX; run the command under bash.

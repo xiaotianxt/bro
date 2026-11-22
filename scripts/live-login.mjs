@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Credential-transport regression: disposable browser/profile/provider only.
-// Build bro with: go build -tags credtest -o target/credential-test/bro ./cmd/bro
+// Build bro with: go build -tags credtest -o bin/credential-test/bro ./cmd/bro
 import assert from 'node:assert/strict'
 import { spawn, execFileSync } from 'node:child_process'
 import { once } from 'node:events'
@@ -12,7 +12,7 @@ import { randomUUID } from 'node:crypto'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
-const [extension, chrome, binary = 'target/credential-test/bro'] = process.argv.slice(2)
+const [extension, chrome, binary = 'bin/credential-test/bro'] = process.argv.slice(2)
 if (!extension || !chrome) throw new Error('Usage: live-login.mjs EXTENSION_DIR CHROME_BINARY [TEST_BRO_BINARY]')
 assert.match(execFileSync(resolve(binary), ['--version'], { encoding: 'utf8' }), /\+credential-test-provider/, 'Refuse a production binary: this test must never access real vaults')
 const dir = await mkdtemp(join(tmpdir(), 'bro-login-test-'))

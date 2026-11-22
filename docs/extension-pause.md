@@ -146,7 +146,7 @@ use the browser's extension manager directly.
 ```
 pnpm --filter @bro/extension exec vite build --outDir "$TMPDIR/bro-pause-build"
 make build
-node scripts/live-extension-pause.mjs "$TMPDIR/bro-pause-build" "$CHROME_BIN" target/bro
+node scripts/live-extension-pause.mjs "$TMPDIR/bro-pause-build" "$CHROME_BIN" bin/bro
 ```
 
 Fixtures do not establish that every 1Password version behaves identically;

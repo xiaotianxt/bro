@@ -11,4 +11,4 @@ make check
 ```
 
 Do not commit secrets, browser profile data, private URLs, generated extension
-`dist/`, build output under `target/`, or local settings files.
+`dist/`, build output under `bin/`, or local settings files.

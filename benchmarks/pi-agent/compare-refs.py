@@ -27,7 +27,7 @@ def execute(command, env=None, timeout=45):
 
 def product_hashes(extension):
     return {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in {
-        'broBinary': REPO/'target/bro', 'broWorker': extension/'service-worker.js',
+        'broBinary': REPO/'bin/bro', 'broWorker': extension/'service-worker.js',
         'broSkill': SKILLS['bro']/'SKILL.md', 'agentSkill': SKILLS['agent']/'SKILL.md',
     }.items()}
 

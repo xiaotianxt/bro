@@ -114,9 +114,9 @@ transport logging do not intentionally contain the credential fields.
 ## Verification and reproducible experiment
 
 ```
-go build -tags credtest -o target/credential-test/bro ./cmd/bro
+go build -tags credtest -o bin/credential-test/bro ./cmd/bro
 pnpm --filter @bro/extension exec vite build --outDir "$TMPDIR/bro-login-extension"
-node scripts/live-login.mjs "$TMPDIR/bro-login-extension" "$CHROME_BIN" target/credential-test/bro
+node scripts/live-login.mjs "$TMPDIR/bro-login-extension" "$CHROME_BIN" bin/credential-test/bro
 ```
 
 The test build (`credtest` build tag) is unmistakably labeled

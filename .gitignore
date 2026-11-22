@@ -1,4 +1,4 @@
-/target
+/bin
 node_modules/
 extension/dist/
 packages/shared/dist/

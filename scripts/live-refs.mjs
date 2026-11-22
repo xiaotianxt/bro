@@ -20,7 +20,7 @@ assert.equal(typeof WebSocket, 'function', 'This opt-in test requires Node.js 22
 const output = resolve(option('--output', resolve(tmpdir(), `bro-refs-${Date.now()}`)))
 const extension = option('--extension')
 const chromeBinary = option('--chrome', process.env.CHROME_BIN)
-const broBinary = option('--bro', resolve(repo, 'target/bro'))
+const broBinary = option('--bro', resolve(repo, 'bin/bro'))
 if (!extension || !chromeBinary)
   throw new Error(
     'Usage: live-refs.mjs --extension DIR --chrome CHROME_BINARY [--output DIR] [--serve]',

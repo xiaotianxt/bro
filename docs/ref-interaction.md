@@ -87,7 +87,7 @@ make check EXTENSION_OUT_DIR="$OUT/extension"
 node scripts/live-refs.mjs \
   --extension "$OUT/extension" \
   --chrome "$CHROME_BIN" \
-  --bro target/bro \
+  --bro bin/bro \
   --output "$OUT/live"
 ```
 
