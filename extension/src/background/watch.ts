@@ -1,15 +1,24 @@
-// One probe of a watch the Go server owns. The server decides when to probe
-// (its own clock, never a page timer, which Chrome throttles in background
-// tabs) and keeps the last value it saw, so a probe that finds its page state
+// The page side of a watch the Go server owns. The server keeps the last value
+// it saw and probes on its own clock as a heartbeat (never a page timer, which
+// Chrome throttles in background tabs), so a probe that finds its page state
 // gone (a navigation, a re-render, a service worker restart) only loses
 // transients, never a change that is still on the page.
 //
 // The page keeps a latch in the extension's isolated world: a MutationObserver
-// that re-evaluates the condition when the DOM changes and records each new
-// value, so a change that comes and goes between two probes is still seen.
-// MutationObserver callbacks are microtasks, not timers, so throttling does not
-// delay them. The latch lives in the extension world, which survives service
-// worker restarts and which page scripts cannot reach.
+// that re-evaluates the condition when the DOM changes and pushes each new
+// value to the service worker at once (chrome.runtime.sendMessage, which wakes
+// a sleeping worker), which forwards it to the server. MutationObserver
+// callbacks are microtasks, not timers, so throttling does not delay them, and
+// the mutations of one task cost one check. A value the worker could not
+// forward stays in the latch for the next probe. The latch lives in the
+// extension world, which survives service worker restarts and which page
+// scripts cannot reach.
+//
+// Pushing needs no debugger session: bro holds one only for the length of a
+// tool call, and one held for a whole watch would keep Chrome's debugging
+// banner up and break whenever DevTools opens. A navigation replaces the
+// document and its latch; the worker reinstalls the latch when the new
+// document is parsed, and a closed tab is pushed from chrome.tabs.onRemoved.
 //
 // A frozen or discarded tab is reported from Chrome's tab record before any
 // script is sent: a frozen page runs no script and would hold the probe.
@@ -20,6 +29,7 @@
 // the scripting frame by asking which frame heard an event fired over CDP.
 
 import type { ToolResult } from '@bro/shared'
+import { bridgeClient } from './bridge-client.js'
 import { getBrowserFrames, sendToFrame, type BrowserFrame } from './frames.js'
 import { stalledState } from './render-state.js'
 import { describeNode, refNode, resolveNamed, withRef } from './tools/accessibility.js'
@@ -73,6 +83,8 @@ export interface ProbeResult {
   resolveError?: string
   // The frame this probe resolved the target to, for the next probes.
   frame?: { frameId: string; scriptFrame: number }
+  // Condition checks the page ran since it last reported.
+  checks?: number
 }
 
 interface ProbeCommand {
@@ -83,9 +95,10 @@ interface ProbeCommand {
 }
 
 const pinEvent = (watchId: string) => `__bro_watch_pin_${watchId}`
+const PUSH = 'BRO_WATCH_PUSH'
 
 // Serialized into the page: everything below must stay self-contained.
-function latch(cmd: ProbeCommand, limits: { records: number; snippet: number; text: number; items: number; costFactor: number }) {
+function latch(cmd: ProbeCommand, limits: { records: number; snippet: number; text: number; items: number; costFactor: number }, push: string) {
   interface Latch {
     target: WatchTarget
     condition: WatchCondition
@@ -93,9 +106,15 @@ function latch(cmd: ProbeCommand, limits: { records: number; snippet: number; te
     observer: MutationObserver
     records: WatchValue[]
     dropped: number
+    checks: number
     lastKey?: string
     lastEval: number
     lastCost: number
+    // A check the cost bound postponed, and whether a push is queued.
+    deferred: ReturnType<typeof setTimeout> | undefined
+    pushing: boolean
+    // The target state the server last heard.
+    reportedLost: boolean
     cleanup: () => void
   }
   const scope = globalThis as typeof globalThis & { __broWatches?: Map<string, Latch> }
@@ -164,22 +183,64 @@ function latch(cmd: ProbeCommand, limits: { records: number; snippet: number; te
     const snippet = found ? hay.slice(Math.max(0, index - half), index + length + half) : undefined
     return { at, met: c.kind === 'textGone' ? !found : found, snippet }
   }
+  const lost = (w: Latch) => w.target.kind === 'node' && !w.el?.isConnected
+  // Takes what the server has not heard yet.
+  const report = (w: Latch) => {
+    const out = { url: location.href, records: w.records.splice(0), dropped: w.dropped, checks: w.checks, targetLost: lost(w) }
+    w.dropped = 0
+    w.checks = 0
+    w.reportedLost = out.targetLost
+    return out
+  }
+  // Sends the new values of this task in one message, after the task's other
+  // mutations; nothing is sent while the value and the target stay the same.
+  const schedulePush = (w: Latch) => {
+    if (w.pushing) return
+    w.pushing = true
+    queueMicrotask(() => {
+      w.pushing = false
+      if (!w.records.length && lost(w) === w.reportedLost) return
+      // The extension was reloaded or removed: this latch can never report.
+      if (!chrome.runtime?.id) {
+        w.cleanup()
+        watches.delete(cmd.watchId)
+        return
+      }
+      const heard = w.reportedLost
+      const out = report(w)
+      // Undelivered: the next push or probe reports it.
+      const keep = () => {
+        w.records.unshift(...out.records)
+        w.dropped += out.dropped
+        w.checks += out.checks
+        w.reportedLost = heard
+      }
+      chrome.runtime
+        .sendMessage({ type: push, watchId: cmd.watchId, result: { tab: 'live', ...out } })
+        .then((reply: { delivered?: boolean } | undefined) => {
+          if (!reply?.delivered) keep()
+        }, keep)
+    })
+  }
   // Evaluates and records a new value; the cost of the evaluation bounds how
   // often a mutation may trigger the next one.
   const check = (w: Latch) => {
     const began = performance.now()
     const value = evaluate(w)
+    w.checks++
     w.lastEval = performance.now()
     w.lastCost = w.lastEval - began
     const { at: _at, ...rest } = value
     const key = JSON.stringify(rest)
-    if (key === w.lastKey) return
-    w.lastKey = key
-    w.records.push(value)
-    if (w.records.length > limits.records) {
-      w.records.shift()
-      w.dropped++
+    if (key !== w.lastKey) {
+      w.lastKey = key
+      w.records.push(value)
+      if (w.records.length > limits.records) {
+        w.records.shift()
+        w.dropped++
+      }
     }
+    schedulePush(w)
   }
   let w = watches.get(cmd.watchId)
   const installed = !w
@@ -189,15 +250,29 @@ function latch(cmd: ProbeCommand, limits: { records: number; snippet: number; te
       condition: cmd.condition,
       records: [],
       dropped: 0,
+      checks: 0,
       lastEval: 0,
       lastCost: 0,
+      deferred: undefined,
+      pushing: false,
+      reportedLost: false,
       observer: new MutationObserver(() => {
         // innerText lays out, so a large page makes each check costly. Checks
         // run at most every costFactor times the last check's cost: a cheap
         // page sees every mutation batch, a costly one at most 1/costFactor of
-        // its main thread. The probe checks regardless, so a skipped mutation
-        // that persists is still seen; only a transient can be missed.
-        if (performance.now() - created.lastEval >= limits.costFactor * created.lastCost) check(created)
+        // its main thread. A postponed check runs when the bound allows, so a
+        // change that persists is still pushed; only a transient can be
+        // missed. Background tabs align that timer to about a second.
+        const wait = created.lastEval + limits.costFactor * created.lastCost - performance.now()
+        if (wait <= 0) {
+          if (created.deferred !== undefined) clearTimeout(created.deferred)
+          created.deferred = undefined
+          check(created)
+        } else
+          created.deferred ??= setTimeout(() => {
+            created.deferred = undefined
+            check(created)
+          }, wait)
       }),
       cleanup: () => {},
     }
@@ -219,6 +294,7 @@ function latch(cmd: ProbeCommand, limits: { records: number; snippet: number; te
     // propagate, but capture listeners on the document still run.
     document.addEventListener(`__bro_watch_pin_${cmd.watchId}`, onPin, true)
     created.cleanup = () => {
+      if (created.deferred !== undefined) clearTimeout(created.deferred)
       created.observer.disconnect()
       document.removeEventListener('input', onInput, true)
       document.removeEventListener('change', onInput, true)
@@ -228,23 +304,14 @@ function latch(cmd: ProbeCommand, limits: { records: number; snippet: number; te
     w = created
   }
   check(w)
-  const records = w.records.splice(0)
-  const dropped = w.dropped
-  w.dropped = 0
-  return {
-    installed,
-    url: location.href,
-    records,
-    dropped,
-    targetLost: w.target.kind === 'node' && !w.el?.isConnected,
-  }
+  return { installed, ...report(w) }
 }
 
 const LIMITS = { records: 50, snippet: 160, text: 4000, items: 200, costFactor: 4 }
 
 function inPage(tabId: number, frameId: number, cmd: ProbeCommand) {
   return chrome.scripting
-    .executeScript({ target: { tabId, frameIds: [frameId] }, world: 'ISOLATED', func: latch, args: [cmd, LIMITS] })
+    .executeScript({ target: { tabId, frameIds: [frameId] }, world: 'ISOLATED', func: latch, args: [cmd, LIMITS, PUSH] })
     .then(([frame]) => frame?.result as ReturnType<typeof latch> | undefined)
     .catch((error: unknown) => {
       if (frameId !== 0 && /No frame with id/i.test(String(error)))
@@ -347,13 +414,16 @@ export async function probe(tabId: number, cmd: ProbeCommand & { resolve?: boole
     if (frame) located = { frameId: frame.id, scriptFrame }
   }
   if (cmd.op === 'stop') {
+    active.delete(cmd.watchId)
     await inPage(tabId, scriptFrame ?? 0, cmd)
     return { tab: 'live' }
   }
   const frameId = scriptFrame!
+  active.set(cmd.watchId, { tabId, frameId, cmd: { watchId: cmd.watchId, op: 'probe', condition: cmd.condition, target: { ...target, scriptFrame: frameId } } })
   let page = await inPage(tabId, frameId, cmd)
   if (!page) throw new Error('watch probe returned no result from the page')
   const result: ProbeResult = { tab: 'live', url: page.url, installed: page.installed, records: page.records }
+  if (page.checks) result.checks = page.checks
   if (located) result.frame = located
   if (page.dropped) result.dropped = page.dropped
   if (page.targetLost && target.kind === 'node') {
@@ -367,6 +437,7 @@ export async function probe(tabId: number, cmd: ProbeCommand & { resolve?: boole
         if (!pinned) throw new Error('watch probe returned no result from the page')
         result.records!.push(...pinned.records)
         result.url = pinned.url
+        result.checks = (result.checks ?? 0) + pinned.checks
         page = pinned
       } catch (error) {
         result.resolveError = error instanceof Error ? error.message : String(error)
@@ -376,6 +447,53 @@ export async function probe(tabId: number, cmd: ProbeCommand & { resolve?: boole
   }
   return result
 }
+
+// The watches this worker has probed, to reinstall their latches after a
+// navigation. A worker restart forgets them; the next heartbeat probe
+// reinstalls the latch and the entry.
+const active = new Map<string, { tabId: number; frameId: number; cmd: ProbeCommand }>()
+
+function sendEvent(watchId: string, tabId: number, result: ProbeResult): boolean {
+  if (!bridgeClient.isConnected) return false
+  bridgeClient.send({ type: 'watch_event', watchId, tabId, result: result as unknown as Record<string, unknown> })
+  return true
+}
+
+chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
+  const m = message as { type?: unknown; watchId?: unknown; result?: unknown } | null
+  if (m?.type !== PUSH) return false
+  const tabId = sender.tab?.id
+  const watch = typeof m.watchId === 'string' ? active.get(m.watchId) : undefined
+  // Only the latch of a watch this worker knows, in its own tab and frame.
+  // An unknown watch (a worker restart) is left for the next probe.
+  const ok = sender.id === chrome.runtime.id && watch !== undefined && watch.tabId === tabId && watch.frameId === sender.frameId
+  sendResponse({ delivered: ok && sendEvent(watch.cmd.watchId, watch.tabId, m.result as ProbeResult) })
+  return false
+})
+
+// A new document has no latch. Reinstalling it reports the new page's value
+// and URL; the server reports the navigation and re-pins a node target.
+chrome.webNavigation.onDOMContentLoaded.addListener(({ tabId, frameId }) => {
+  for (const watch of active.values()) {
+    if (watch.tabId !== tabId || watch.frameId !== frameId) continue
+    void inPage(tabId, frameId, watch.cmd).then(
+      (page) => {
+        if (page) sendEvent(watch.cmd.watchId, tabId, { tab: 'live', ...page })
+      },
+      () => {
+        // The heartbeat probe reports what failed.
+      },
+    )
+  }
+})
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  for (const [id, watch] of active) {
+    if (watch.tabId !== tabId) continue
+    active.delete(id)
+    sendEvent(id, tabId, { tab: 'closed' })
+  }
+})
 
 registerTool('watch_probe', async (tabId, raw): Promise<ToolResult> => {
   const result = await probe(tabId, raw as ProbeCommand & { resolve?: boolean })

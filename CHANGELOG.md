@@ -13,11 +13,15 @@
   `bro watch '<start JSON>'` streams the same events as JSON lines and exits
   when the watch ends (0 when met), so an agent can run it in the background
   and be woken by each line.
-  The server's clock drives the checks, so throttled background-tab timers do
-  not delay them, and a latch in the page catches a change that comes and goes
-  between two checks. A watch never goes quiet: a frozen, unresponsive or
+  Changes are pushed, not polled: an observer in the page re-checks the
+  condition once per task of DOM mutations and sends each new value at once,
+  so a change, even one that shows for a single task, is reported within
+  moments, and a page that mutates without changing what is watched sends
+  nothing. Navigation reinstalls the observer and a closed tab is pushed too.
+  A heartbeat probe on the server's clock (`intervalMs`, default 5 s) covers
+  what a page cannot push. A watch never goes quiet: a frozen, unresponsive or
   disconnected tab is an event, and every read reports the tab's state and
-  when it was last checked. A watch ends when it is met, stopped, times out
+  when it was last probed. A watch ends when it is met, stopped, times out
   (default 30 min, at most 24 h), or its tab closes, is discarded, stays
   unresponsive for 60 s, or loses its browser for 30 s; the reason is the
   last event. Watches live in the server and end when it restarts.

@@ -32,6 +32,7 @@ export const BridgeMessageType = {
   TOOL_RESULT: 'tool_result',
   TOOL_ERROR: 'tool_error',
   PONG: 'pong',
+  WATCH_EVENT: 'watch_event',
   // Server → Extension
   CONNECTED: 'connected',
   TOOL_CALL: 'tool_call',
@@ -93,11 +94,21 @@ export type PongMessage = {
   type: 'pong'
 }
 
+// A watch's page pushed a change, or its tab closed, between two probes. The
+// result has the shape of a watch_probe result; the server owns the watch.
+export type WatchEventMessage = {
+  type: 'watch_event'
+  watchId: string
+  tabId: number
+  result: Record<string, unknown>
+}
+
 export type ExtensionToServerMessage =
   | ConnectMessage
   | ToolResultMessage
   | ToolErrorMessage
   | PongMessage
+  | WatchEventMessage
 
 // ---------------------------------------------------------------------------
 // Server → Extension messages

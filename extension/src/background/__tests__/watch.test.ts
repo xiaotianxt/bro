@@ -9,6 +9,11 @@ vi.mock('../frames.js', () => ({
     method === 'Page.createIsolatedWorld' ? { executionContextId: 3 } : {}),
 }))
 
+const sent = vi.hoisted(() => [] as unknown[])
+vi.mock('../bridge-client.js', () => ({
+  bridgeClient: { isConnected: true, send: (msg: unknown) => sent.push(msg) },
+}))
+
 vi.mock('../tools/accessibility.js', () => ({
   refNode: vi.fn(async () => ({ frame: { id: 'main' }, backendNodeId: 5 })),
   withRef: vi.fn(async () => undefined),
@@ -22,13 +27,19 @@ const page = (overrides: object = {}) => [
 
 beforeEach(() => {
   vi.resetModules()
+  sent.length = 0
   vi.stubGlobal('chrome', {
     tabs: { get: vi.fn(async () => ({ url: 'https://a.test' })), onRemoved: { addListener: vi.fn() } },
     scripting: { executeScript: vi.fn(async () => page()) },
     debugger: { onEvent: { addListener: vi.fn() }, onDetach: { addListener: vi.fn() } },
-    runtime: { lastError: undefined },
+    runtime: { id: 'bro', lastError: undefined, onMessage: { addListener: vi.fn() } },
+    webNavigation: { onDOMContentLoaded: { addListener: vi.fn() } },
   })
 })
+
+// The listener the module registered on a chrome event.
+const listener = <T extends (...args: never[]) => unknown>(event: { addListener: unknown }) =>
+  vi.mocked(event.addListener as (cb: T) => void).mock.calls[0]![0]
 
 const cmd = (target: object = { kind: 'page' }, resolve = false) => ({
   watchId: 'w1',
@@ -157,5 +168,75 @@ describe('watch probe', () => {
     expect(result.targetLost).toBe(false)
     for (const [injection] of script.mock.calls.filter(([i]) => !(i as { target: { allFrames?: boolean } }).target.allFrames))
       expect((injection as unknown as { target: unknown }).target).toEqual({ tabId: 1, frameIds: [7] })
+  })
+})
+
+describe('watch push', () => {
+  type OnMessage = (message: unknown, sender: chrome.runtime.MessageSender, reply: (r: unknown) => void) => boolean
+  const push = async (sender: Partial<chrome.runtime.MessageSender>, watchId = 'w1') => {
+    const reply = vi.fn()
+    listener<OnMessage>(chrome.runtime.onMessage)(
+      { type: 'BRO_WATCH_PUSH', watchId, result: { tab: 'live', url: 'https://a.test', records: [{ at: 3, met: true }] } },
+      { id: 'bro', ...sender } as chrome.runtime.MessageSender,
+      reply,
+    )
+    return reply.mock.calls[0]![0]
+  }
+
+  it("forwards a probed watch's push from its own tab and frame", async () => {
+    const { probe } = await import('../watch.js')
+    await probe(1, cmd())
+    expect(await push({ tab: { id: 1 } as chrome.tabs.Tab, frameId: 0 })).toEqual({ delivered: true })
+    expect(sent).toEqual([
+      { type: 'watch_event', watchId: 'w1', tabId: 1, result: { tab: 'live', url: 'https://a.test', records: [{ at: 3, met: true }] } },
+    ])
+  })
+
+  // The latch keeps what was not delivered for the next probe.
+  it.each([
+    ['another tab', { tab: { id: 2 } as chrome.tabs.Tab, frameId: 0 }, 'w1'],
+    ['another frame', { tab: { id: 1 } as chrome.tabs.Tab, frameId: 4 }, 'w1'],
+    ['an unknown watch', { tab: { id: 1 } as chrome.tabs.Tab, frameId: 0 }, 'w2'],
+    ['another extension', { id: 'other', tab: { id: 1 } as chrome.tabs.Tab, frameId: 0 }, 'w1'],
+  ])('refuses a push from %s', async (_, sender, watchId) => {
+    const { probe } = await import('../watch.js')
+    await probe(1, cmd())
+    expect(await push(sender, watchId)).toEqual({ delivered: false })
+    expect(sent).toEqual([])
+  })
+
+  it('forgets a stopped watch', async () => {
+    const { probe } = await import('../watch.js')
+    await probe(1, cmd())
+    await probe(1, { ...cmd(), op: 'stop' })
+    expect(await push({ tab: { id: 1 } as chrome.tabs.Tab, frameId: 0 })).toEqual({ delivered: false })
+  })
+
+  // A navigation replaced the document: the latch is reinstalled in the
+  // watched frame only, and the new page's value is sent at once.
+  it('reinstalls the latch when its frame loads a new document', async () => {
+    const { probe } = await import('../watch.js')
+    await probe(1, cmd({ kind: 'page', frameId: 'CHAT', scriptFrame: 7 }))
+    const script = vi.mocked(chrome.scripting.executeScript)
+    script.mockClear()
+    script.mockResolvedValue(page({ installed: true, url: 'https://chat.test/next', records: [{ at: 5, met: false }] }) as never)
+    const loaded = listener<(d: { tabId: number; frameId: number }) => void>(chrome.webNavigation.onDOMContentLoaded)
+    loaded({ tabId: 1, frameId: 0 })
+    loaded({ tabId: 2, frameId: 7 })
+    expect(script).not.toHaveBeenCalled()
+    loaded({ tabId: 1, frameId: 7 })
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    expect((script.mock.calls[0]![0] as unknown as { target: unknown }).target).toEqual({ tabId: 1, frameIds: [7] })
+    expect(sent[0]).toMatchObject({ type: 'watch_event', watchId: 'w1', tabId: 1, result: { tab: 'live', url: 'https://chat.test/next', installed: true } })
+  })
+
+  it('pushes a closed tab once', async () => {
+    const { probe } = await import('../watch.js')
+    await probe(1, cmd())
+    const removed = listener<(tabId: number) => void>(chrome.tabs.onRemoved)
+    removed(2)
+    removed(1)
+    removed(1)
+    expect(sent).toEqual([{ type: 'watch_event', watchId: 'w1', tabId: 1, result: { tab: 'closed' } }])
   })
 })

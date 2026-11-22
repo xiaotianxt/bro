@@ -473,7 +473,6 @@ func TestOpenReturnsAtDispatchAndFirstUseSettlesReadiness(t *testing.T) {
 	ext.Reply(probe, `{"tab":"live","url":"https://test.invalid/","records":[{"at":1,"met":false}]}`)
 	watch := p.Wait()
 	equalJSON(t, watch.Get("active"), `true`)
-	ext.Reply(ext.NextTool("watch_probe"), `{"tab":"live","url":"https://test.invalid/","records":[]}`)
 	stopped := c.Start("browser.watch", j(`{"watchId":%q,"stop":true}`, watch.Str("watchId")))
 	for {
 		call := ext.NextTool("watch_probe")

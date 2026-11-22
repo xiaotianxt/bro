@@ -112,7 +112,9 @@ type Facade struct {
 }
 
 func New(b *bridge.Bridge, log *slog.Logger) *Facade {
-	return &Facade{bridge: b, log: log, sessions: map[string]session{}, watches: watchRegistry{watches: map[string]*watch{}}}
+	f := &Facade{bridge: b, log: log, sessions: map[string]session{}, watches: watchRegistry{watches: map[string]*watch{}}}
+	b.OnWatchEvent(f.watchEvent)
+	return f
 }
 
 func newTargetID() string { return "flow-" + ids.Hex(6) }

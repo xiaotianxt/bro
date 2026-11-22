@@ -1324,8 +1324,8 @@
           "type": "string"
         },
         "intervalMs": {
-          "default": 1000,
-          "description": "How often bro checks the page; changes between checks are still caught on the page.",
+          "default": 5000,
+          "description": "How often bro probes the tab as a heartbeat, for states a page cannot report (frozen, discarded, unresponsive). Changes on the page are pushed as they happen, not found by this probe.",
           "maximum": 60000,
           "minimum": 250,
           "type": "integer"

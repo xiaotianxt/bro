@@ -16,18 +16,23 @@ import (
 )
 
 // A watch reports changes on a page until its condition is met, its time runs
-// out, or its tab or browser goes away. The server owns it: its clock decides
-// when to probe (page timers are throttled in background tabs) and it keeps
-// the last value seen, so a probe that finds the page's latch gone (a
-// navigation, a re-render, a service worker restart) can lose a transient but
-// never a change that is still on the page. The extension's probe is
-// stateless apart from that latch.
+// out, or its tab or browser goes away. The server owns it and keeps the last
+// value seen. Changes arrive two ways, both through that value, so each is
+// reported once:
+//
+//   - push: the page's latch re-checks the condition when the DOM changes and
+//     sends each new value at once; a closed tab is pushed too.
+//   - probe: a heartbeat on the server's clock (page timers are throttled in
+//     background tabs) reads the current value and the tab's state. It finds
+//     what no page can push (a frozen, discarded or unresponsive tab) and
+//     reinstalls a latch a service worker restart lost, so a lost push costs
+//     at most a transient, never a change that is still on the page.
 //
 // A watch never sits silent: every read reports the tab's state and when it
 // was last probed, and a frozen, unresponsive or disconnected tab is an event.
 
 const (
-	defaultWatchInterval = time.Second
+	defaultWatchInterval = 5 * time.Second
 	minWatchIntervalMs   = 250
 	maxWatchIntervalMs   = 60_000
 	defaultWatchDuration = 30 * time.Minute
@@ -182,6 +187,7 @@ type watchValue struct {
 
 type probeResult struct {
 	Tab        string                       `json:"tab"`
+	Checks     int64                        `json:"checks"`
 	URL        string                       `json:"url"`
 	Installed  bool                         `json:"installed"`
 	Records    []watchValue                 `json:"records"`
@@ -216,6 +222,9 @@ type watch struct {
 	id        string
 	targetID  string
 	tabID     int64
+	browserID string
+	// hidden is a wait step's watch: it takes pushes but is not listed or read.
+	hidden    bool
 	cond      watchCond
 	condition string
 	interval  time.Duration
@@ -224,22 +233,27 @@ type watch struct {
 	dispatch  dispatcher
 	cancel    context.CancelFunc
 	done      chan struct{}
+	// poke asks the run loop to probe now: a push found the node target gone,
+	// and re-resolving it takes a probe.
+	poke chan struct{}
 
-	mu        sync.Mutex
-	target    watchTarget
-	events    []WatchEvent
-	seq       int64
-	dropped   int64 // events evicted from the buffer
-	missed    int64 // page values the latch dropped
-	wake      chan struct{}
-	reason    string
-	endedAt   time.Time
-	tab       string
-	probedAt  time.Time
-	url       string
-	last      *watchValue
-	lost      bool
-	lostError string
+	mu       sync.Mutex
+	target   watchTarget
+	events   []WatchEvent
+	seq      int64
+	dropped  int64 // events evicted from the buffer
+	missed   int64 // page values the latch dropped
+	wake     chan struct{}
+	reason   string
+	endedAt  time.Time
+	tab      string
+	probedAt time.Time
+	// pageChecks counts the condition checks the page ran, its cost.
+	pageChecks int64
+	url        string
+	last       *watchValue
+	lost       bool
+	lostError  string
 	// resolveFailed is when re-resolving a lost node target last failed.
 	resolveFailed time.Time
 	// trouble is the failing probe state (unresponsive, disconnected, error)
@@ -326,6 +340,11 @@ func (w *watch) observe(v watchValue, url string) {
 		return
 	}
 	prev := w.last
+	// A probe's reply can arrive after a later push. An older value is
+	// superseded, except a met one: it happened, and ends the watch.
+	if prev != nil && v.At < prev.At && !(w.cond.until() && v.Met != nil && *v.Met) {
+		return
+	}
 	w.last = &v
 	switch {
 	case w.cond.until():
@@ -452,6 +471,29 @@ func (w *watch) probe(ctx context.Context) {
 		return
 	}
 	w.probedAt = now
+	w.apply(p, target, now)
+}
+
+// push applies a value the page sent between probes.
+func (w *watch) push(p probeResult) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.ended() {
+		return
+	}
+	w.apply(p, w.target, time.Now())
+	if w.lost {
+		select {
+		case w.poke <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// apply turns a probe or push result into state and events. target is the
+// target the result was evaluated for. Caller holds mu.
+func (w *watch) apply(p probeResult, target watchTarget, now time.Time) {
+	w.pageChecks += p.Checks
 	recovered := w.troubleShown
 	w.trouble, w.troubleError, w.troubleShown = "", "", false
 	switch p.Tab {
@@ -534,6 +576,7 @@ func (w *watch) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 		case <-time.After(wait):
+		case <-w.poke:
 		}
 		w.mu.Lock()
 		switch {
@@ -616,6 +659,9 @@ func (w *watch) snapshot(cursor int64, events []WatchEvent) map[string]any {
 	if w.missed > 0 {
 		value["missedChanges"] = w.missed
 	}
+	if w.pageChecks > 0 {
+		value["pageChecks"] = w.pageChecks
+	}
 	if w.ended() {
 		value["reason"] = w.reason
 	}
@@ -644,7 +690,7 @@ func (r *watchRegistry) get(id string) (*watch, error) {
 	defer r.mu.Unlock()
 	r.sweep()
 	w, ok := r.watches[id]
-	if !ok {
+	if !ok || w.hidden {
 		return nil, invalid("unknown watchId %s: bro restarted, or the watch ended more than %v ago", id, watchRetention)
 	}
 	return w, nil
@@ -875,7 +921,7 @@ func (f *Facade) startWatch(ctx context.Context, a watchArgs) (map[string]any, e
 	active := 0
 	for _, w := range f.watches.watches {
 		w.mu.Lock()
-		if !w.ended() {
+		if !w.ended() && !w.hidden {
 			active++
 		}
 		w.mu.Unlock()
@@ -887,7 +933,7 @@ func (f *Facade) startWatch(ctx context.Context, a watchArgs) (map[string]any, e
 	// The watch follows the browser across a service worker restart, which
 	// reconnects the same instance on a new connection; a watch only reads.
 	tabID, browserID := s.TabID, s.Browser.BrowserID
-	w := f.newWatch(s.ID, tabID, target, cond, interval, duration, func(ctx context.Context, args map[string]any) (bridge.Result, error) {
+	w := f.newWatch(s.ID, tabID, browserID, target, cond, interval, duration, func(ctx context.Context, args map[string]any) (bridge.Result, error) {
 		return f.bridge.Dispatch(ctx, "watch_probe", args, &tabID, browserID)
 	})
 	// The first probe runs in the call, so a target or pattern the page
@@ -914,10 +960,11 @@ func (f *Facade) startWatch(ctx context.Context, a watchArgs) (map[string]any, e
 	return w.read(ctx, 0, wait), nil
 }
 
-func (f *Facade) newWatch(targetID string, tabID int64, target watchTarget, cond watchCond, interval, duration time.Duration, d dispatcher) *watch {
+func (f *Facade) newWatch(targetID string, tabID int64, browserID string, target watchTarget, cond watchCond, interval, duration time.Duration, d dispatcher) *watch {
 	now := time.Now()
 	return &watch{
-		id: "w" + ids.Hex(4), targetID: targetID, tabID: tabID, cond: cond, target: target,
+		id: "w" + ids.Hex(4), targetID: targetID, tabID: tabID, browserID: browserID, cond: cond, target: target,
+		poke:      make(chan struct{}, 1),
 		condition: describeWatch(cond, target), interval: interval, started: now,
 		deadline: now.Add(duration), dispatch: d, done: make(chan struct{}),
 		wake: make(chan struct{}), tab: "live", cancel: func() {},
@@ -930,6 +977,9 @@ func (f *Facade) listWatches() map[string]any {
 	f.watches.sweep()
 	list := []map[string]any{}
 	for _, w := range f.watches.watches {
+		if w.hidden {
+			continue
+		}
 		w.mu.Lock()
 		entry := map[string]any{
 			"watchId": w.id, "targetId": w.targetID, "condition": w.condition,
@@ -952,10 +1002,17 @@ func (f *Facade) listWatches() map[string]any {
 func (f *Facade) waitText(ctx context.Context, s session, cond waitCondition, timeoutMs int64) (met bool, lastError string, err error) {
 	c := watchCond{kind: cond.kind, text: cond.text}
 	tabID := s.TabID
-	w := f.newWatch(s.ID, tabID, watchTarget{}, c, waitPoll, time.Duration(timeoutMs)*time.Millisecond, func(ctx context.Context, args map[string]any) (bridge.Result, error) {
+	w := f.newWatch(s.ID, tabID, s.Browser.BrowserID, watchTarget{}, c, waitPoll, time.Duration(timeoutMs)*time.Millisecond, func(ctx context.Context, args map[string]any) (bridge.Result, error) {
 		return f.dispatch(ctx, "watch_probe", args, tabID, s.Browser)
 	})
+	w.hidden = true
+	f.watches.mu.Lock()
+	f.watches.watches[w.id] = w
+	f.watches.mu.Unlock()
 	defer func() {
+		f.watches.mu.Lock()
+		delete(f.watches.watches, w.id)
+		f.watches.mu.Unlock()
 		w.mu.Lock()
 		closed := w.tab == "closed"
 		w.mu.Unlock()
@@ -964,7 +1021,13 @@ func (f *Facade) waitText(ctx context.Context, s session, cond waitCondition, ti
 		}
 	}()
 	for {
-		w.probe(ctx)
+		// A push may have ended the watch while this loop slept.
+		w.mu.Lock()
+		ended := w.ended()
+		w.mu.Unlock()
+		if !ended {
+			w.probe(ctx)
+		}
 		if ctx.Err() != nil {
 			return false, "", bridge.ErrCancelled
 		}
@@ -994,10 +1057,32 @@ func (f *Facade) waitText(ctx context.Context, s session, cond waitCondition, ti
 		if remaining <= 0 {
 			return false, lastError, nil
 		}
+		w.mu.Lock()
+		wake := w.wake
+		w.mu.Unlock()
 		select {
 		case <-ctx.Done():
 			return false, "", bridge.ErrCancelled
 		case <-time.After(min(waitPoll, remaining)):
+		case <-wake:
 		}
 	}
+}
+
+// watchEvent applies a change a watch's page pushed. The watch must belong to
+// the browser and tab that sent it; anything else is a stale or stray push
+// (a watch that ended, a browser that reconnected under another id).
+func (f *Facade) watchEvent(browserID string, tabID int64, watchID string, raw json.RawMessage) {
+	f.watches.mu.Lock()
+	w := f.watches.watches[watchID]
+	f.watches.mu.Unlock()
+	if w == nil || w.browserID != browserID || w.tabID != tabID {
+		return
+	}
+	var p probeResult
+	if err := json.Unmarshal(raw, &p); err != nil {
+		f.log.Warn("unreadable watch push", "watchId", watchID, "error", err)
+		return
+	}
+	w.push(p)
 }

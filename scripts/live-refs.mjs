@@ -152,7 +152,7 @@ const fixture = (req, res) => {
     <script>
     const shape=${JSON.stringify(shape)};
     const data=(ms)=>fetch('/watch-data?ms='+ms).then(r=>r.text());
-    const released=fetch('/watch-release?key='+${JSON.stringify(encodeURIComponent(key))}).then(()=>data(500));
+    const released=fetch('/watch-release?key='+${JSON.stringify(encodeURIComponent(key))}).then(()=>'Status Done');
     const state=()=>document.querySelector('.state');
     if(shape==='late')released.then(t=>{state().textContent=t});
     // The whole row is replaced: a pinned node is gone.
@@ -164,6 +164,11 @@ const fixture = (req, res) => {
     // to release on, and one flash before its latch is installed is missed.
     const flash=()=>{toast.textContent='Saved Done';const c=new MessageChannel();c.port1.onmessage=()=>{toast.textContent=''};c.port2.postMessage(0);data(300).then(flash)};
     if(shape==='transient')released.then(flash);
+    // Ten mutations a task, a task every 50 ms, and the page text never
+    // changes: a watch must check once a task and report nothing.
+    window.churnTasks=0;
+    const churn=()=>{churnTasks++;for(let i=0;i<10;i++){toast.classList.toggle('on');toast.textContent=i%2?'':'tick'}data(50).then(churn)};
+    if(shape==='churn')churn();
     </script>`)
     return
   }
@@ -1664,16 +1669,19 @@ try {
       await tool('browser.close', { targetId })
     }
   })
-  await check('WATCH: a watch reports late, re-rendered, navigated, background and transient changes, a closed tab, a timeout and a cross-site iframe chat, through the MCP read, the CLI stream and the wait step', async () => {
+  await check('WATCH: a watch pushes late, re-rendered, navigated, background and transient changes and a closed tab within a second, reports a timeout, stays quiet on a churning page, and follows a cross-site iframe chat, through the MCP read, the CLI stream and the wait step', async () => {
     // Every shape through every entry point. Each run opens its own
     // background tab; the wait step watches the page's text.
+    // budgetMs bounds the time from the change to its report: a second, plus
+    // what the page itself takes after the release (the next page's fetch,
+    // a background tab's throttled timer).
     const shapes = [
-      { name: 'late', want: 'met' },
-      { name: 'rerender', want: 'met', node: true },
-      { name: 'navigate', want: 'met', navigated: true },
-      { name: 'timer', want: 'met' },
-      { name: 'transient', want: 'met' },
-      { name: 'close', want: 'tabClosed' },
+      { name: 'late', want: 'met', budgetMs: 1000 },
+      { name: 'rerender', want: 'met', node: true, budgetMs: 1000 },
+      { name: 'navigate', want: 'met', navigated: true, budgetMs: 1000 + 800 },
+      { name: 'timer', want: 'met', budgetMs: 1000 + 2000 },
+      { name: 'transient', want: 'met', budgetMs: 1000 },
+      { name: 'close', want: 'tabClosed', budgetMs: 1000 },
       { name: 'timeout', want: 'timeout' },
     ]
     // onStart runs once the watch bro watch starts is listed. A watch is
@@ -1717,19 +1725,24 @@ try {
         const { targetId, tabId } = opened
         let closed = false
         // The watch has started: let the page change, or close its tab.
+        let releasedAt
         const afterStart = async () => {
+          releasedAt = performance.now()
           if (shape.name !== 'close') return releaseWatch(key)
           closed = true
           await tool('tabs_close', { tabId })
         }
         const started = performance.now()
         try {
-          const start = { targetId, text: 'Done', maxDurationMs: shape.name === 'timeout' ? 2500 : 15000 }
+          // A 60 s heartbeat never probes within the run: only a push can
+          // report the change within its budget.
+          const start = { targetId, text: 'Done', maxDurationMs: shape.name === 'timeout' ? 2500 : 15000, intervalMs: 60000 }
           if (shape.node && entry !== 'wait') {
             const tree = text(await tool('browser.observe', { targetId }))
             start.refId = refFor(tree, 'status', 'Job 1')
           }
           let reason
+          let reported
           let events = []
           if (entry === 'mcp') {
             let r = (await tool('browser.watch', start)).structuredContent
@@ -1741,8 +1754,10 @@ try {
               events.push(...r.events)
             }
             reason = r.reason
+            reported = performance.now()
           } else if (entry === 'cli') {
             const run = await cli(start, [], afterStart)
+            reported = performance.now()
             events = run.lines
             reason = run.lines.at(-1)?.reason
             const wantCode = shape.want === 'met' ? 0 : 1
@@ -1772,6 +1787,8 @@ try {
             throw new Error(`no navigated event: ${JSON.stringify(events)}`)
           if (events.at(-1) && entry !== 'wait' && events.at(-1).type !== 'end')
             throw new Error(`last event is not end: ${JSON.stringify(events)}`)
+          if (shape.budgetMs && entry !== 'wait' && reported - releasedAt > shape.budgetMs)
+            throw new Error(`reported ${Math.round(reported - releasedAt)} ms after the change, budget ${shape.budgetMs} ms: ${JSON.stringify(events)}`)
           timings[`${shape.name}/${entry}`] = Math.round(performance.now() - started)
         } catch (error) {
           failures.push(`${shape.name}/${entry}: ${error.message ?? error}`)
@@ -1779,6 +1796,36 @@ try {
           if (!closed) await closeTarget(opened).catch(() => {})
           else targets.delete(tabId)
         }
+      }
+    }
+    // A page that mutates all the time without changing what is watched:
+    // no event, and one check per task of mutations, not one per mutation.
+    {
+      const opened = await openTarget(`${rootUrl}/watch?shape=churn`, false)
+      const { targetId } = opened
+      try {
+        let r = (await tool('browser.watch', { targetId, change: true, intervalMs: 1000 })).structuredContent
+        const events = [...r.events]
+        const until = performance.now() + 3000
+        while (performance.now() < until) {
+          r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: Math.max(0, Math.round(until - performance.now())) })).structuredContent
+          events.push(...r.events)
+        }
+        // The heartbeat reports the page's checks; let one more arrive.
+        await new Promise((done) => setTimeout(done, 1100))
+        r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: 0 })).structuredContent
+        events.push(...r.events)
+        await tool('browser.watch', { watchId: r.watchId, stop: true })
+        const tasks = Number(text(await tool('browser.act', { targetId, steps: [{ type: 'evaluate', code: 'churnTasks' }] })).match(/evaluated: (\d+)/)?.[1])
+        assert.deepEqual(events.map((e) => e.type), ['initial'], JSON.stringify(events))
+        assert.ok(tasks >= 20, `the page churned only ${tasks} tasks`)
+        // Each heartbeat probe checks once too.
+        assert.ok(r.pageChecks > 0 && r.pageChecks <= tasks + 6, `${r.pageChecks} checks for ${tasks} tasks of 10 mutations`)
+        timings.churn = `${r.pageChecks} checks / ${tasks} tasks`
+      } catch (error) {
+        failures.push(`churn: ${error.message ?? error}`)
+      } finally {
+        await closeTarget(opened).catch(() => {})
       }
     }
     // A chat in a cross-site iframe: the watch runs inside that frame, by
@@ -1794,29 +1841,31 @@ try {
         const frame = await waitUntil(async () =>
           JSON.parse(text(await tool('frames_list', { tabId }))).find((f) => f.url.includes('/watch-chat-frame')), 'chat frame')
         if (entry === 'mcp frameId') {
-          let r = (await tool('browser.watch', { targetId, frameId: frame.frameId, css: 'li.msg', count: true })).structuredContent
+          let r = (await tool('browser.watch', { targetId, frameId: frame.frameId, css: 'li.msg', count: true, intervalMs: 60000 })).structuredContent
           assert.match(r.condition, /in frame /)
           assert.equal(r.events[0]?.type, 'initial', JSON.stringify(r))
           assert.equal(r.events[0].count, 1)
           reply(1)
+          const replied = performance.now()
           r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: 20000 })).structuredContent
           assert.deepEqual(r.events.map((e) => [e.type, e.count, e.added]), [['count', 2, ['Agent: first reply']]], JSON.stringify(r))
+          assert.ok(performance.now() - replied < 1000, `the reply in the frame was reported after ${Math.round(performance.now() - replied)} ms`)
           await tool('browser.watch', { watchId: r.watchId, stop: true })
-          r = (await tool('browser.watch', { targetId, frameId: frame.frameId, text: 'renewal done' })).structuredContent
+          r = (await tool('browser.watch', { targetId, frameId: frame.frameId, text: 'renewal done', intervalMs: 60000 })).structuredContent
           reply(2)
           while (r.active) r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: 20000 })).structuredContent
           assert.equal(r.reason, 'met', JSON.stringify(r))
         } else if (entry === 'mcp ref') {
           const tree = text(await tool('browser.observe', { targetId }))
           const list = refFor(tree, 'list', 'Messages')
-          let r = (await tool('browser.watch', { targetId, refId: list, text: 'renewal done' })).structuredContent
+          let r = (await tool('browser.watch', { targetId, refId: list, text: 'renewal done', intervalMs: 60000 })).structuredContent
           reply(1)
           reply(2)
           while (r.active) r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: 20000 })).structuredContent
           assert.equal(r.reason, 'met', JSON.stringify(r))
           assert.match(r.events.find((e) => e.type === 'met')?.value ?? '', /renewal Done/)
         } else {
-          let run = await cli({ targetId, frameId: frame.frameId, css: 'li.msg', count: true }, ['--once'], () => reply(1))
+          let run = await cli({ targetId, frameId: frame.frameId, css: 'li.msg', count: true, intervalMs: 60000 }, ['--once'], () => reply(1))
           assert.equal(run.code, 3, run.err)
           assert.deepEqual(run.lines.map((e) => e.type), ['initial', 'count'])
           const { watchId, seq } = run.lines.at(-1)

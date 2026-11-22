@@ -590,3 +590,189 @@ func TestWatchCLIOnceResumesFromItsCursor(t *testing.T) {
 		t.Fatalf("--cursor without --id exited %d", code)
 	}
 }
+
+// pushStep is one watch_event the fake extension sends. tabID and watchID
+// override the watch's own, for a push the server must ignore.
+type pushStep struct {
+	result  map[string]any
+	tabID   int64
+	watchID string
+}
+
+// A pushed change arrives between heartbeats: every shape runs with a 60 s
+// heartbeat whose probes never see the change, so only the push can end it
+// within the second the test allows.
+var pushShapes = []struct {
+	name   string
+	start  string
+	steps  []probeStep
+	pushes []pushStep
+	events []string
+	reason string
+	// The met event's value, when the shape is met.
+	met string
+	// The wait step's outcome on the page-text form; "" skips it.
+	wait string
+}{
+	{
+		name:   "change pushed between heartbeats",
+		start:  `"text":"Done"`,
+		steps:  []probeStep{{reply: live("https://a.test", rec(false, ""))}},
+		pushes: []pushStep{{result: live("https://a.test", rec(true, "Status Done"))}},
+		events: []string{"met", "end"}, reason: "met", met: "Status Done", wait: "met",
+	},
+	{
+		// The worker reinstalls the latch in the new document and sends its
+		// first value, with the new URL.
+		name:  "navigation pushed by the reinstalled latch",
+		start: `"text":"Done"`,
+		steps: []probeStep{{reply: live("https://a.test/form", rec(false, ""))}},
+		pushes: []pushStep{
+			{result: map[string]any{"tab": "live", "url": "https://a.test/result", "installed": true, "records": []any{rec(false, "")}}},
+			{result: live("https://a.test/result", rec(true, "Done"))},
+		},
+		events: []string{"navigated", "met", "end"}, reason: "met", met: "Done", wait: "met",
+	},
+	{
+		name:   "tab close pushed",
+		start:  `"text":"Done"`,
+		steps:  []probeStep{{reply: live("https://a.test", rec(false, ""))}},
+		pushes: []pushStep{{result: map[string]any{"tab": "closed"}}},
+		events: []string{"end"}, reason: "tabClosed", wait: "failed",
+	},
+	{
+		// The page can say its node is gone but not find the new one: the
+		// push makes the server probe at once, and that probe re-pins.
+		name:  "node replaced, pushed as lost, re-pinned by the next probe",
+		start: `"refId":"r7","text":"Done"`,
+		steps: []probeStep{
+			{reply: map[string]any{"tab": "live", "url": "https://a.test", "records": []any{rec(false, "")}, "resolved": map[string]any{"role": "status", "name": "Job 1"}}},
+			{reply: map[string]any{"tab": "live", "url": "https://a.test", "records": []any{rec(true, "Job 1 Done")}, "resolved": map[string]any{"role": "status", "name": "Job 1"}}},
+		},
+		pushes: []pushStep{{result: map[string]any{"tab": "live", "url": "https://a.test", "records": []any{}, "targetLost": true}}},
+		events: []string{"target:lost", "target:found", "met", "end"}, reason: "met", met: "Job 1 Done",
+	},
+	{
+		name:  "pushes from another tab or for another watch are ignored",
+		start: `"text":"Done"`,
+		steps: []probeStep{{reply: live("https://a.test", rec(false, ""))}},
+		pushes: []pushStep{
+			{result: live("https://a.test", rec(true, "other tab Done")), tabID: 7},
+			{result: live("https://a.test", rec(true, "other watch Done")), watchID: "w00000000"},
+			{result: live("https://a.test", rec(true, "Status Done"))},
+		},
+		events: []string{"met", "end"}, reason: "met", met: "Status Done", wait: "met",
+	},
+}
+
+// pushAll sends a shape's pushes once the watch has probed, and returns when
+// the last one was sent.
+func pushAll(t *testing.T, ext *Ext, p *prober, pushes []pushStep) time.Time {
+	t.Helper()
+	var watchID string
+	deadline := time.Now().Add(5 * time.Second)
+	for watchID == "" {
+		if args := p.probeArgs(); len(args) > 0 {
+			watchID, _ = args[0]["watchId"].(string)
+		} else if time.Now().After(deadline) {
+			t.Fatalf("the watch never probed: %v", p.probeArgs())
+		} else {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	for _, push := range pushes {
+		id, tab := watchID, int64(42)
+		if push.watchID != "" {
+			id = push.watchID
+		}
+		if push.tabID != 0 {
+			tab = push.tabID
+		}
+		if err := ext.send(map[string]any{"type": "watch_event", "watchId": id, "tabId": tab, "result": push.result}); err != nil {
+			t.Fatalf("push: %v", err)
+		}
+	}
+	return time.Now()
+}
+
+func TestWatchPushContract(t *testing.T) {
+	const within = time.Second
+	for _, shape := range pushShapes {
+		check := func(t *testing.T, events []map[string]any, reason any, pushed time.Time) {
+			t.Helper()
+			if took := time.Since(pushed); took > within {
+				t.Fatalf("the pushed change took %v, want under %v", took, within)
+			}
+			checkEvents(t, events, shape.events)
+			equalJSON(t, reason, fmt.Sprintf("%q", shape.reason))
+			if shape.met == "" {
+				return
+			}
+			for _, e := range events {
+				if e["type"] == "met" && e["value"] != shape.met {
+					t.Fatalf("met value %q, want %q", e["value"], shape.met)
+				}
+			}
+		}
+		t.Run(shape.name+"/mcp read", func(t *testing.T) {
+			t.Parallel()
+			s := startServer(t)
+			ext := s.connectExt(t, "a")
+			c := s.client(t)
+			target := openBlank(t, c, ext)
+			p := probeWith(t, ext, shape.steps)
+			start := c.Call("browser.watch", j(`{"targetId":%q,"intervalMs":60000,%s}`, target, shape.start))
+			if start.IsError {
+				t.Fatalf("start failed: %s", start.Text)
+			}
+			pushed := pushAll(t, ext, p, shape.pushes)
+			events := eventsOf(start.Structured)
+			result := start
+			for result.Get("active") == true {
+				result = c.Call("browser.watch", j(`{"watchId":%q,"cursor":%v,"waitMs":10000}`, start.Str("watchId"), result.Get("cursor")))
+				events = append(events, eventsOf(result.Structured)...)
+			}
+			check(t, events, result.Get("reason"), pushed)
+		})
+		t.Run(shape.name+"/cli stream", func(t *testing.T) {
+			t.Parallel()
+			s := startServer(t)
+			ext := s.connectExt(t, "a")
+			c := s.client(t)
+			target := openBlank(t, c, ext)
+			p := probeWith(t, ext, shape.steps)
+			done := make(chan []map[string]any)
+			go func() {
+				lines, _ := s.runWatchCLI(t, fmt.Sprintf(`{"targetId":%q,"intervalMs":60000,%s}`, target, shape.start))
+				done <- lines
+			}()
+			pushed := pushAll(t, ext, p, shape.pushes)
+			lines := <-done
+			check(t, lines, lines[len(lines)-1]["reason"], pushed)
+		})
+		if shape.wait == "" {
+			continue
+		}
+		t.Run(shape.name+"/wait step", func(t *testing.T) {
+			t.Parallel()
+			s := startServer(t)
+			ext := s.connectExt(t, "a")
+			c := s.client(t)
+			target := openBlank(t, c, ext)
+			p := probeWith(t, ext, shape.steps)
+			call := c.Start("browser.act", j(`{"targetId":%q,"steps":[{"type":"wait","text":"Done","timeoutMs":10000}]}`, target))
+			pushed := pushAll(t, ext, p, shape.pushes)
+			r := call.Wait()
+			if took := time.Since(pushed); took > within {
+				t.Fatalf("the pushed change took %v, want under %v", took, within)
+			}
+			switch shape.wait {
+			case "met":
+				equalJSON(t, r.Get("results", 0, "met"), `true`)
+			case "failed":
+				equalJSON(t, r.Get("status"), `"failed"`)
+				contains(t, r.Text, "closed")
+			}
+		})
+	}
+}
