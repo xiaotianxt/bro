@@ -84,6 +84,8 @@ const stopped = new Promise((resolve) => {
       resolve()
     })
 })
+// /h-data answers held until their page's /h-go, by page key.
+const heldResults = new Map()
 const fixture = (req, res) => {
   const url = new URL(req.url, rootUrl ?? 'http://127.0.0.1')
   const run = url.searchParams.get('run') ?? ''
@@ -206,18 +208,29 @@ const fixture = (req, res) => {
     return
   }
   if (url.pathname === '/h-delayed') {
-    // Content that arrives 1.5 s after a click. The delay is server-side,
-    // because background tabs align page timers to about 1 s.
+    // Content that arrives 1.5 s after a click, on a request that was already
+    // out before it: an act step does not wait for that, so a wait step must.
+    // The delay is server-side, because background tabs align page timers to
+    // about 1 s.
     send(`<!doctype html><title>H delayed</title><div role="alert" aria-label="Promo">Promo <button id="dismiss">Dismiss</button></div>
     <button id="go">Load results</button><p id="status"></p><button id="submit" disabled>Submit</button><div id="out"></div>
     <script>
+    const key=Math.random().toString(36).slice(2);
+    const results=fetch('/h-data?key='+key).then(r=>r.text());
     dismiss.onclick=()=>document.querySelector('[role=alert]').remove();
-    go.onclick=async()=>{status.textContent='Loading results';out.textContent=await (await fetch('/h-data')).text();status.textContent='';submit.disabled=false};
+    go.onclick=async()=>{status.textContent='Loading results';fetch('/h-go?key='+key);out.textContent=await results;status.textContent='';submit.disabled=false};
     </script>`)
     return
   }
   if (url.pathname === '/h-data') {
-    setTimeout(() => res.end('RESULTS_READY with enough words to read'), 1500).unref()
+    heldResults.set(url.searchParams.get('key'), res)
+    return
+  }
+  if (url.pathname === '/h-go') {
+    const held = heldResults.get(url.searchParams.get('key'))
+    heldResults.delete(url.searchParams.get('key'))
+    setTimeout(() => held?.end('RESULTS_READY with enough words to read'), 1500).unref()
+    res.end('ok')
     return
   }
   if (url.pathname === '/h-slow') {
@@ -389,6 +402,48 @@ const fixture = (req, res) => {
     document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelector('#perm-panel').innerHTML=''});
     document.querySelector('#generate').onclick=()=>fetch('/blank').then(()=>{document.querySelector('#status').innerHTML=state.access==='Read and write'?'<p>TOKEN_CREATED '+document.querySelector('#name').value+' '+state.exp+'</p>':'<p role="alert">Contents needs read and write access</p>'});
     </script>`)
+    return
+  }
+  if (url.pathname === '/req-form') {
+    // One page per cell of check R. Every trigger (click, Enter, select) runs
+    // the page's shape. Request URLs are unique: Chrome's cache lock
+    // serializes identical URLs.
+    const shape = url.searchParams.get('shape')
+    send(`<!doctype html><title>Request form</title>
+    <button id="run">Run</button>
+    <label>Query <input id="query"></label>
+    <label>Mode <select id="mode"><option value="idle">Idle</option><option value="go">Go</option></select></label>
+    <div id="status"></div>
+    <script>
+    const shape=${JSON.stringify(shape)};let n=0;
+    const req=(q)=>'/req?'+q+'&k='+Math.random().toString(36).slice(2)+(n++);
+    const done=()=>{document.querySelector('#status').innerHTML='<p role="alert">DONE '+shape+'</p>'};
+    // A request already in flight before the action is not the action's.
+    if(shape==='inflight')fetch(req('hang=1'));
+    const run=()=>{
+      if(shape==='fast')fetch(req('ms=30')).then(r=>r.text()).then(done);
+      if(shape==='slow')fetch(req('ms=1500')).then(r=>r.text()).then(done);
+      if(shape==='chained')fetch(req('ms=700')).then(r=>r.text()).then(()=>fetch(req('ms=700'))).then(r=>r.text()).then(done);
+      if(shape==='unread')fetch(req('ms=600')).then(done);
+      if(shape==='failed')fetch(req('fail=1&ms=900')).catch(done);
+      if(shape==='hang')fetch(req('hang=1'));
+      if(shape==='beacon'){navigator.sendBeacon(req('beacon=1'),'x');done()}
+      if(shape==='inflight')done();
+    };
+    document.querySelector('#run').onclick=run;
+    document.querySelector('#query').onkeydown=e=>{if(e.key==='Enter')run()};
+    document.querySelector('#mode').onchange=run;
+    </script>`)
+    return
+  }
+  if (url.pathname === '/req') {
+    // hang never answers within a cell; fail drops the connection after ms.
+    if (url.searchParams.has('hang')) {
+      setTimeout(() => res.end('late'), 20_000).unref()
+      return
+    }
+    const ms = Number(url.searchParams.get('ms') ?? 0)
+    setTimeout(() => (url.searchParams.has('fail') ? res.destroy() : res.end('ok')), ms).unref()
     return
   }
   if (url.pathname === '/scroll-page') {
@@ -1470,6 +1525,59 @@ try {
       await tool('browser.close', { targetId: opened.targetId })
     }
   })
+  await check('R: a change report waits for the requests its action started, and only those', async () => {
+    // Every shape × entry point, in background tabs. A shape states what the
+    // report must say: the page's answer, or that a request is still out.
+    const shapes = [
+      // Every answered shape has an upper bound: waiting past the answer to
+      // the cap is a miss too.
+      { name: 'fast', want: /alert DONE fast/, maxMs: 1500 },
+      // Longer than the quiet period: the report must wait for the answer.
+      { name: 'slow', want: /alert DONE slow/, maxMs: 2800 },
+      { name: 'chained', want: /alert DONE chained/, maxMs: 2800 },
+      { name: 'failed', want: /alert DONE failed/, maxMs: 2800 },
+      // A body the page never reads still answers the request.
+      { name: 'unread', want: /alert DONE unread/, maxMs: 2000 },
+      // Never answers: the report ends at its cap and names the request.
+      { name: 'hang', want: /waiting on GET \S+\/req\?hang=1/, minMs: 2800 },
+      // A beacon and a request from before the action are not waited for.
+      { name: 'beacon', want: /alert DONE beacon/, maxMs: 1500 },
+      { name: 'inflight', want: /alert DONE inflight/, maxMs: 1500 },
+    ]
+    const entries = [
+      { name: 'click by name', steps: () => [{ type: 'click', role: 'button', name: 'Run' }] },
+      { name: 'click by ref', steps: (ref) => [{ type: 'click', refId: ref }] },
+      { name: 'press Enter', steps: () => [{ type: 'fill', role: 'textbox', name: 'Query', value: 'q' }, { type: 'press', key: 'Enter' }] },
+      { name: 'select', steps: () => [{ type: 'select', role: 'combobox', name: 'Mode', value: 'go' }] },
+    ]
+    const failures = []
+    const cells = shapes.flatMap((shape) => entries.map((entry) => ({ shape, entry })))
+    const runCell = async ({ shape, entry }, index) => {
+      const where = `${shape.name} via ${entry.name}`
+      const opened = (await tool('browser.open', { url: `${rootUrl}/req-form?shape=${shape.name}&c=${index}`, observe: false })).structuredContent
+      try {
+        let ref
+        if (entry.name === 'click by ref') {
+          const page = text(await tool('browser.observe', { targetId: opened.targetId, filter: 'interactive' }))
+          ref = page.match(/\[(\w+)\] button "Run"/)?.[1]
+          assert.ok(ref, `${where}: no ref for Run in ${page.slice(0, 400)}`)
+        }
+        const result = text(await tool('browser.act', { targetId: opened.targetId, steps: entry.steps(ref) }))
+        const line = result.split('\n').at(-1)
+        assert.match(line, shape.want, `${where}: ${line}`)
+        const settled = Number(line.match(/(\d+)ms\)$/)?.[1])
+        if (shape.minMs) assert.ok(settled >= shape.minMs, `${where} settled at ${settled}ms: ${line}`)
+        if (shape.maxMs) assert.ok(settled < shape.maxMs, `${where} settled at ${settled}ms: ${line}`)
+      } catch (error) {
+        failures.push(`${where}: ${error.message.split('\n')[0]}`)
+      } finally {
+        await tool('browser.close', { targetId: opened.targetId })
+      }
+    }
+    // Four cells at a time, as an agent's parallel calls would.
+    for (let i = 0; i < cells.length; i += 4) await Promise.all(cells.slice(i, i + 4).map((cell, j) => runCell(cell, i + j)))
+    assert.deepEqual(failures, [])
+  })
   await check('T: role/name targets and change reports chain a form without waits', async () => {
     const opened = (await tool('browser.open', { url: `${rootUrl}/token-form` })).structuredContent
     const targetId = opened.targetId
@@ -1495,7 +1603,7 @@ try {
       assert.match(lines[4], /→ alert Contents needs read and write access/)
       assert.match(lines[6], /text "Access: Read and write"/)
       assert.match(lines[7], /text "TOKEN_CREATED rss-dispatch 90 days"/)
-      assert.ok(elapsed < 8000, `${elapsed}ms`)
+      assert.ok(elapsed < 8000, `${elapsed}ms\n${result}`)
       // One date input is one fillable node; its month/day/year parts and a
       // button's echoed label are not separate lines.
       const page = text(await tool('browser.observe', { maxChars: 12000 }))

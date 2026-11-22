@@ -686,6 +686,9 @@ function setValue(this: Element, value: string, checkable = false): void {
       throw new Error('Control did not retain the requested state; observe the page')
     return
   }
+  // A filled control keeps focus, as after typing, so a following key press
+  // (Enter to submit a search box) goes to it.
+  ;(this as HTMLElement).focus({ preventScroll: true })
   let property = 'value'
   let desired: string | boolean = value
   let prototype: object

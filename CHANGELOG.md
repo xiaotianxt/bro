@@ -35,6 +35,14 @@
 - The `wait` step's text conditions run on the same check: a text that shows
   for less than a poll is no longer missed, and a frozen tab ends the wait at
   once with the reason instead of after its timeout.
+- An act step's change report waits for the fetch and XHR requests the step
+  started, then for the page to settle, up to the 3 s cap. Before, a button
+  whose request took longer than 400 ms, such as a form that validates on the
+  server, was reported as "no visible change" while its answer was still on
+  the way. Beacons, WebSockets and requests already in flight are not waited
+  for. A request still out at the cap is named (`waiting on GET …`).
+- A filled control keeps focus, so `fill` then `press Enter` submits a search
+  box. Before, the key went to the page body.
 - Reads wait for content a page says is still loading. An indeterminate
   `progressbar` or `aria-busy` region in view (an app shell's spinner) keeps
   extract, batch extract, and a target's first observe or act waiting, up to

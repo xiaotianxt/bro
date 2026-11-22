@@ -2,12 +2,15 @@
 // does not sleep a fixed delay and read the page back to find out.
 //
 // The watch settles when the DOM has been quiet for QUIET_MS after the action
-// returned, or CAP_MS after it.
-// A change that starts after a quiet gap longer than QUIET_MS (a slow fetch
-// rendering later) is missed; callers use a condition wait for those.
+// returned and after the last fetch/XHR the action started has answered, or
+// CAP_MS after the action. A request is the action's when Chrome reports it
+// after the watch began; a beacon, a WebSocket or a request already in flight
+// is not waited for. A change that starts after a quiet gap with no request
+// out (a page timer) is still missed; callers use a condition wait for those.
 // The extension polls the page's mutation clock: bro tabs are usually in the
 // background, where Chrome throttles page timers to about one per second.
 
+import { cdpSession } from './cdp.js'
 import { takeDialogs } from './dialogs.js'
 
 export const QUIET_MS = 400
@@ -23,6 +26,8 @@ export interface ChangeReport {
   alerts?: string[]
   // Native dialogs the action opened, with how bro answered them.
   dialogs?: string[]
+  // Requests the action started that had not answered at the cap.
+  waitingOn?: string[]
   added?: string[]
   // Filled in by the act tool from the AX tree: refs inside opened layers.
   controls?: string[]
@@ -194,6 +199,44 @@ function collectWatch(quietMs: number): ChangeReport | null {
   return report
 }
 
+const WAITED_TYPES = new Set(['Fetch', 'XHR'])
+const MAX_WAITING_LISTED = 3
+
+interface RequestWillBeSent {
+  requestId: string
+  type?: string
+  request: { method: string; url: string }
+}
+
+// The fetch/XHR requests Chrome reports from now on, until stop(). Network is
+// left enabled: network capture may share it, and it ends with the session.
+async function trackRequests(tabId: number) {
+  const pending = new Map<string, string>()
+  let lastAnswered = -Infinity
+  const answered = ({ requestId }: { requestId: string }) => {
+    if (pending.delete(requestId)) lastAnswered = Date.now()
+  }
+  const stops = [
+    cdpSession.onEvent(tabId, 'Network.requestWillBeSent', (params) => {
+      const p = params as RequestWillBeSent
+      if (p.type !== undefined && WAITED_TYPES.has(p.type)) pending.set(p.requestId, `${p.request.method} ${p.request.url}`)
+    }),
+    // A response counts as the answer: a page that never reads a body (a
+    // fire-and-forget fetch) gets no loadingFinished until the body is read,
+    // and a streamed body may never finish.
+    cdpSession.onEvent(tabId, 'Network.responseReceived', (params) => answered(params as { requestId: string })),
+    cdpSession.onEvent(tabId, 'Network.loadingFinished', (params) => answered(params as { requestId: string })),
+    cdpSession.onEvent(tabId, 'Network.loadingFailed', (params) => answered(params as { requestId: string })),
+  ]
+  await cdpSession.send(tabId, 'Network.enable', {})
+  return {
+    pending: () => pending.size,
+    sinceAnswered: () => Date.now() - lastAnswered,
+    waitingOn: () => [...pending.values()].slice(0, MAX_WAITING_LISTED).map((r) => (r.length > 160 ? r.slice(0, 160) + '…' : r)),
+    stop: () => stops.forEach((stop) => stop()),
+  }
+}
+
 export async function watchChanges<T>(
   tabId: number,
   action: () => Promise<T>,
@@ -205,7 +248,20 @@ export async function watchChanges<T>(
     world: 'ISOLATED',
     func: startWatch,
   })
-  const result = await action()
+  const requests = await trackRequests(tabId)
+  try {
+    return await settle(tabId, started, await action(), requests)
+  } finally {
+    requests.stop()
+  }
+}
+
+async function settle<T>(
+  tabId: number,
+  started: number,
+  result: T,
+  requests: Awaited<ReturnType<typeof trackRequests>>,
+): Promise<{ result: T; changes: ChangeReport }> {
   const inPage = <A extends unknown[], R>(func: (...args: A) => R, args: A) =>
     chrome.scripting
       .executeScript({ target: { tabId, frameIds: [0] }, world: 'ISOLATED', func, args })
@@ -220,12 +276,21 @@ export async function watchChanges<T>(
       const ages = await inPage(watchAges, [])
       if (!ages) break
       acted ??= ages.total
-      const quiet = Math.min(ages.quiet, ages.total - acted)
-      if ((quiet >= QUIET_MS && !ages.navigating) || ages.total - acted >= CAP_MS) break
+      // An answer renders in a task after it arrives: quiet restarts there.
+      const quiet = Math.min(ages.quiet, ages.total - acted, requests.sinceAnswered())
+      const idle = quiet >= QUIET_MS && !ages.navigating && requests.pending() === 0
+      if (idle || ages.total - acted >= CAP_MS) break
       await new Promise((resolve) => setTimeout(resolve, Math.min(50, Math.max(10, QUIET_MS - quiet))))
     }
     const changes = await inPage(collectWatch, [QUIET_MS])
-    if (changes) return { result, changes: withDialogs(tabId, changes) }
+    if (changes) {
+      const waitingOn = requests.waitingOn()
+      if (waitingOn.length) {
+        changes.waitingOn = waitingOn
+        changes.quiet = false
+      }
+      return { result, changes: withDialogs(tabId, changes) }
+    }
   } catch (error) {
     // A cross-document navigation destroys the watch's world mid-collection.
     if (!/Frame with ID 0 was removed|document.*(unloaded|changed)|No frame with id/i.test(String(error)))

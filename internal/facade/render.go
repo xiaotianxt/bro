@@ -140,6 +140,11 @@ func changesLine(kind string, changes any) string {
 	if more, ok := report["moreControls"].(string); ok {
 		parts = append(parts, more)
 	}
+	// Requests the action started that had not answered when the report
+	// ended: the page's answer may still come.
+	if waiting := list("waitingOn"); len(waiting) > 0 {
+		parts = append(parts, "waiting on "+strings.Join(waiting, ", "))
+	}
 	settled := ""
 	if v, ok := report["settledMs"]; ok {
 		settled = plain(v)
