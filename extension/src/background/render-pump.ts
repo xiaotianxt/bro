@@ -2,12 +2,15 @@
 // requestAnimationFrame and IntersectionObserver never run there and lazy
 // feeds (YouTube's home grid) stay skeletons. A screenshot forces one frame
 // without activating the tab or changing focus. bro pumps frames for the
-// background tabs it created, at a rate that serves lazy loading, not animation.
+// tabs it created while render-state.ts says they are hidden, which includes
+// an active tab in an occluded window, at a rate that serves lazy loading, not
+// animation.
 //
 // The tab set lives in session storage so a restarted service worker resumes
 // pumping tabs that are still open.
 
 import { cdpSession } from './cdp.js'
+import { renderState } from './render-state.js'
 
 const PUMP_MS = 250
 const STORAGE_KEY = 'render_pump_tabs'
@@ -73,9 +76,14 @@ async function pump(tabId: number): Promise<void> {
     // Closed between ticks; onRemoved drops it.
     return
   }
-  // A shown tab renders by itself; debugger access starts at a web document.
-  if (tab.active || !/^https?:/.test(tab.url ?? '')) return
+  // Debugger access starts at a web document.
+  if (!/^https?:/.test(tab.url ?? '')) return
   try {
+    // Only a hidden live tab needs a forced frame: a painting tab renders by
+    // itself, and a frozen or discarded one draws nothing for a capture.
+    // Active is not painting: an active tab in an occluded window is hidden.
+    // Caller-bound, as the capture below and for the same reason.
+    if ((await renderState(tabId, 'caller')) !== 'hidden') return
     // No clip: a clipped capture resizes the viewport while it runs, which
     // races hit tests of concurrent clicks.
     // The reply waits for the renderer to draw a frame, which a busy renderer

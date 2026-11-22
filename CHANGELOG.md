@@ -22,6 +22,31 @@
   navigations aborted each other (`net::ERR_ABORTED`). bro now skips that
   step in a frozen tab, where no script can add a frame, and attaches over CDP,
   which works there.
+- Clicks into a cross-site iframe no longer report success when nothing was
+  clicked. Chrome routes input into such a frame by what it last composited,
+  and a tab that was not painting (a background or attached tab, or the
+  selected tab of an occluded window or a dark display) had no frame of the
+  current page yet, so the press landed on the parent's `<iframe>` instead.
+  Input now waits for one composited frame in a tab that is not painting, and
+  a ref click fails when its press does not reach the target's document.
+- Whether a tab paints is decided in one place, from its document's real
+  visibility rather than from being the selected tab. The render pump now
+  keeps an occluded window's selected tab rendering. Input into a frozen or
+  discarded tab, and an evaluate that times out in one, says so and how to
+  wake it, instead of blaming the expression.
+- An act step's change report waits for quiet after the step returns. Time
+  the step spent preparing counted as quiet, so a slow click settled at once
+  and missed the update its fetch made a moment later.
+- A password manager's frame no longer locks bro out of a tab. While another
+  extension's frame is in the page, Chrome rejects every debugger call from
+  bro, detach included, yet keeps the session open. bro took that rejected
+  detach as done, so every later attach failed with "Another debugger is
+  already attached". It now removes the frame and detaches again. A ref
+  action whose cleanup finds the session closed no longer fails: the closed
+  session freed what the cleanup would have released. Input removes such
+  frames first. Attach sees only frames that have loaded, so a menu drawn at
+  load or on the last focus could still be loading and commit mid-input,
+  closing the session.
 
 ## 2.0.0
 

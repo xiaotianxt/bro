@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const cdp = vi.hoisted(() => ({ send: vi.fn(), resetInputFocus: vi.fn(), onDetach: vi.fn() }))
+const cdp = vi.hoisted(() => ({ send: vi.fn(), resetInputFocus: vi.fn(), onDetach: vi.fn(), removeForeignFramesBeforeInput: vi.fn() }))
 vi.mock('../cdp.js', () => ({ cdpSession: cdp }))
+const render = vi.hoisted(() => ({ state: vi.fn() }))
+vi.mock('../render-state.js', async (actual) => ({
+  ...(await actual<typeof import('../render-state.js')>()),
+  renderState: render.state,
+}))
 import { withInput } from '../input.js'
 
 function gate() {
@@ -13,9 +18,22 @@ function gate() {
 beforeEach(() => {
   cdp.send.mockReset().mockResolvedValue({})
   cdp.resetInputFocus.mockReset().mockResolvedValue(undefined)
+  cdp.removeForeignFramesBeforeInput.mockReset().mockResolvedValue(undefined)
+  render.state.mockReset().mockResolvedValue('painting')
 })
 
 describe('scoped input focus', () => {
+  // Regression (live, password manager): a menu drawn at load was still
+  // loading when the first click attached; it committed mid-click and closed
+  // the session.
+  it('removes foreign frames before anything is sent for the input', async () => {
+    const order: string[] = []
+    cdp.removeForeignFramesBeforeInput.mockImplementation(async () => void order.push('remove'))
+    cdp.send.mockImplementation(async (_tab: number, method: string) => void order.push(method))
+    await withInput(9, async () => void order.push('action'))
+    expect(order).toEqual(['remove', 'Emulation.setFocusEmulationEnabled', 'action'])
+  })
+
   it('does not let overlapping actions clear each other’s emulation', async () => {
     const entered = gate(), finish = gate()
     const first = withInput(1, async () => { entered.open(); await finish.promise })
@@ -54,7 +72,7 @@ describe('scoped input focus', () => {
     const action = vi.fn()
     const queued = withInput(6, action)
     const queuedResult = expect(queued).rejects.toThrow('Queued input cancelled')
-    cdp.onDetach.mock.calls[0]![0](6)
+    for (const [detached] of cdp.onDetach.mock.calls) detached(6)
     finish.open()
     await Promise.all([firstResult, queuedResult])
     expect(action).not.toHaveBeenCalled()
@@ -66,5 +84,28 @@ describe('scoped input focus', () => {
     const action = vi.fn()
     await expect(withInput(5, action)).rejects.toThrow('unsupported')
     expect(action).not.toHaveBeenCalled()
+  })
+})
+
+describe('input by render state', () => {
+  it('refuses a frozen or discarded tab before emulating or dispatching', async () => {
+    for (const state of ['frozen', 'discarded'] as const) {
+      render.state.mockResolvedValueOnce(state)
+      const action = vi.fn()
+      await expect(withInput(7, action)).rejects.toThrow(`tab 7 is ${state}`)
+      expect(action).not.toHaveBeenCalled()
+    }
+    expect(cdp.send).not.toHaveBeenCalled()
+  })
+
+  it('composites a frame before hit-tested input only in a tab that was not painting', async () => {
+    const captures = () => cdp.send.mock.calls.filter(([, method]) => method === 'Page.captureScreenshot')
+    await withInput(8, (input) => input.composited())
+    expect(captures()).toHaveLength(0)
+    render.state.mockResolvedValueOnce('hidden')
+    await withInput(8, (input) => input.composited())
+    expect(captures()).toHaveLength(1)
+    // A busy renderer delays the frame; that is not a dead session to detach.
+    expect(captures()[0]![3]).toBe('caller')
   })
 })

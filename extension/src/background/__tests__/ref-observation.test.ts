@@ -125,7 +125,7 @@ describe('observation identity at the browser boundary', () => {
   it('names the covering element and its overlay as fresh refs instead of clicking', async () => {
     mocks.frames.mockResolvedValue([main])
     const input = await import('../input.js')
-    vi.mocked(input.withInput).mockImplementation(async (_tab, run) => run())
+    vi.mocked(input.withInput).mockImplementation(async (_tab, run) => run({ composited: async () => {} }))
     const original = mocks.send.getMockImplementation()!
     const { readAXPage, refTool } = await import('../tools/accessibility.js')
     const [ref] = refs(text(await readAXPage(42, {})))

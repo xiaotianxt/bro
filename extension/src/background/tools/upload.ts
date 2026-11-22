@@ -8,7 +8,7 @@
 // browser reads them itself and fires trusted events.
 import { cdpSession } from '../cdp.js'
 import { withFileChooser } from '../dialogs.js'
-import { withInput } from '../input.js'
+import { withInput, type Input } from '../input.js'
 import { registerTool } from '../tool-registry.js'
 import { sendToFrame } from '../frames.js'
 import { argsObject, prepareRefInput, refNode, withRef } from './accessibility.js'
@@ -45,9 +45,12 @@ registerTool('file_upload', async (tabId, rawArgs) => {
   const target = ref ?? `(${at![0]}, ${at![1]})`
   const names = paths.map((path) => path.split(/[\\/]/).pop()).join(', ')
   // A real pointer, not element.click(): upload libraries ignore untrusted clicks.
-  const point = async (): Promise<[number, number]> => {
-    if (ref === undefined) return at!
-    const prepared = await prepareRefInput(tabId, ref)
+  const point = async (input: Input): Promise<[number, number]> => {
+    if (ref === undefined) {
+      await input.composited()
+      return at!
+    }
+    const prepared = await prepareRefInput(tabId, ref, input)
     return [prepared.x, prepared.y]
   }
 
@@ -63,8 +66,8 @@ registerTool('file_upload', async (tabId, rawArgs) => {
   }
 
   if (drop) {
-    await withInput(tabId, async () => {
-      const [x, y] = await point()
+    await withInput(tabId, async (input) => {
+      const [x, y] = await point(input)
       const data = { items: [], files: paths, dragOperationsMask: 1 }
       for (const type of ['dragEnter', 'dragOver', 'drop'])
         await cdpSession.send(tabId, 'Input.dispatchDragEvent', { type, x, y, data })
@@ -74,7 +77,7 @@ registerTool('file_upload', async (tabId, rawArgs) => {
 
   const chooser = await withFileChooser(
     tabId,
-    () => withInput(tabId, async () => leftClick(tabId, await point())),
+    () => withInput(tabId, async (input) => leftClick(tabId, await point(input))),
     CHOOSER_TIMEOUT_MS,
   )
   if (!chooser)

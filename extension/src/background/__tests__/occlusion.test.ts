@@ -2,10 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Runs the real serialized page functions against a minimal fake DOM, so the
 // hit-acceptance rules are tested as shipped, not as mocked results.
-const mocks = vi.hoisted(() => ({ frames: vi.fn(), send: vi.fn(), input: vi.fn() }))
+const mocks = vi.hoisted(() => ({ frames: vi.fn(), send: vi.fn(), input: vi.fn(), SessionClosed: class extends Error {} }))
 vi.mock('../frames.js', () => ({ getBrowserFrames: mocks.frames, sendToFrame: mocks.send }))
-vi.mock('../cdp.js', () => ({ cdpSession: { send: mocks.input } }))
-vi.mock('../input.js', () => ({ withInput: async (_tab: number, run: () => unknown) => run() }))
+vi.mock('../cdp.js', () => ({ cdpSession: { send: mocks.input }, CdpSessionClosed: mocks.SessionClosed }))
+const order = vi.hoisted(() => [] as string[])
+vi.mock('../input.js', () => ({
+  withInput: async (_tab: number, run: (input: unknown) => unknown) =>
+    run({ composited: async () => void order.push('composited') }),
+}))
 const main = { id: 'main', loaderId: 'doc', url: 'https://example.test' }
 
 class FakeShadowRoot {
@@ -48,7 +52,23 @@ interface FakeDocument {
   body: FakeElement
   hits: Array<FakeElement | null>
   elementFromPoint: () => FakeElement | null
+  defaultView: FakeWindow
 }
+// Where the browser routes a dispatched press: the target's document, or
+// (before a cross-site frame is hit-testable) the parent document instead.
+class FakeWindow {
+  readonly listeners = new Map<string, Set<(event: { isTrusted: boolean }) => void>>()
+  addEventListener(type: string, listener: (event: { isTrusted: boolean }) => void): void {
+    this.listeners.set(type, (this.listeners.get(type) ?? new Set()).add(listener))
+  }
+  removeEventListener(type: string, listener: (event: { isTrusted: boolean }) => void): void {
+    this.listeners.get(type)?.delete(listener)
+  }
+  dispatch(type: string): void {
+    for (const listener of this.listeners.get(type) ?? []) listener({ isTrusted: true })
+  }
+}
+let pressReachesTarget = true
 
 let doc: FakeDocument
 let target: FakeElement
@@ -60,6 +80,7 @@ function page() {
   const body = new FakeElement('body', doc)
   body.parentElement = html
   Object.assign(doc, {
+    defaultView: new FakeWindow(),
     documentElement: html,
     body,
     // Each hit test consumes the next scripted hit; the last one repeats.
@@ -86,7 +107,14 @@ beforeEach(() => {
     queueMicrotask(() => callback(0))
     return 1
   })
-  mocks.input.mockReset().mockResolvedValue({})
+  pressReachesTarget = true
+  order.length = 0
+  mocks.input.mockReset().mockImplementation(async (_tab, method, params) => {
+    if (method === 'Input.dispatchMouseEvent') order.push(params.type)
+    if (method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed' && pressReachesTarget)
+      for (const type of ['pointerdown', 'mousedown']) doc.defaultView.dispatch(type)
+    return {}
+  })
   mocks.frames.mockReset().mockResolvedValue([main])
   mocks.send.mockReset().mockImplementation(async (_tab, _frame, method, params) => {
     if (method === 'Accessibility.getFullAXTree')
@@ -122,10 +150,25 @@ async function click() {
     (error: Error) => error.message,
   )
   const clicks = mocks.input.mock.calls.filter(([, method]) => method === 'Input.dispatchMouseEvent')
-  return { ref, outcome, clicked: clicks.length > 0 }
+  return { ref, outcome, clicked: clicks.length > 0, mouse: clicks.map(([, , params]) => params.type as string) }
 }
 
 describe('ref click hit testing', () => {
+  // Regression (live, password manager): the overlay frame a click's focus
+  // draws closes the session at whatever command runs next, often the release.
+  it('counts a release on a session Chrome closed as done, since the closure freed the object', async () => {
+    page()
+    doc.hits = [target]
+    const send = mocks.send.getMockImplementation()!
+    mocks.send.mockImplementation(async (tab, frame, method, params) => {
+      if (method === 'Runtime.releaseObject') throw new mocks.SessionClosed('Chrome closed the debugger session')
+      return send(tab, frame, method, params)
+    })
+    const { ref, outcome, mouse } = await click()
+    expect(outcome).toBe(`Clicked ${ref}.`)
+    expect(mouse).toEqual(['mouseMoved', 'mousePressed', 'mouseReleased'])
+  })
+
   it('accepts a hit on a descendant, a slotted child, a label or a composed ancestor', async () => {
     for (const arrange of [
       () => {
@@ -202,6 +245,27 @@ describe('ref click hit testing', () => {
     const { ref, outcome, clicked } = await click()
     expect(outcome).toMatch(new RegExp(`^Target ${ref} is covered by [a-z]{3}\\d+ <input>`))
     expect(clicked).toBe(false)
+  })
+})
+
+describe('ref click delivery', () => {
+  it('waits for a composited frame of the prepared layout before any mouse event', async () => {
+    page()
+    doc.hits = [target]
+    const { ref, outcome } = await click()
+    expect(outcome).toBe(`Clicked ${ref}.`)
+    expect(order).toEqual(['composited', 'mouseMoved', 'mousePressed', 'mouseReleased'])
+  })
+
+  it('fails a click whose press the browser delivered outside the target document', async () => {
+    page()
+    doc.hits = [target]
+    pressReachesTarget = false
+    const { ref, outcome, mouse } = await click()
+    expect(outcome).toMatch(new RegExp(`^Click on ${ref} did not reach its document`))
+    // The press went somewhere; its release follows so no button stays down.
+    expect(mouse).toEqual(['mouseMoved', 'mousePressed', 'mouseReleased'])
+    expect(doc.defaultView.listeners.get('pointerdown')?.size).toBe(0)
   })
 })
 

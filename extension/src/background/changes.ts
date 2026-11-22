@@ -1,7 +1,8 @@
 // Reports what an action visibly changed in the main frame, so the caller
 // does not sleep a fixed delay and read the page back to find out.
 //
-// The watch settles when the DOM has been quiet for QUIET_MS, or at CAP_MS.
+// The watch settles when the DOM has been quiet for QUIET_MS after the action
+// returned, or CAP_MS after it.
 // A change that starts after a quiet gap longer than QUIET_MS (a slow fetch
 // rendering later) is missed; callers use a condition wait for those.
 // The extension polls the page's mutation clock: bro tabs are usually in the
@@ -210,10 +211,18 @@ export async function watchChanges<T>(
       .executeScript({ target: { tabId, frameIds: [0] }, world: 'ISOLATED', func, args })
       .then(([frame]) => frame?.result as Awaited<R> | undefined)
   try {
+    // Page time at which the action returned. Quiet and the cap count from
+    // there: time the action spent before its effect (preparing a point, a
+    // hidden tab waiting for a composited frame) is not the page settling, and
+    // counting it settled the report before a click's fetch could answer.
+    let acted: number | undefined
     for (;;) {
       const ages = await inPage(watchAges, [])
-      if (!ages || (ages.quiet >= QUIET_MS && !ages.navigating) || ages.total >= CAP_MS) break
-      await new Promise((resolve) => setTimeout(resolve, Math.min(50, Math.max(10, QUIET_MS - ages.quiet))))
+      if (!ages) break
+      acted ??= ages.total
+      const quiet = Math.min(ages.quiet, ages.total - acted)
+      if ((quiet >= QUIET_MS && !ages.navigating) || ages.total - acted >= CAP_MS) break
+      await new Promise((resolve) => setTimeout(resolve, Math.min(50, Math.max(10, QUIET_MS - quiet))))
     }
     const changes = await inPage(collectWatch, [QUIET_MS])
     if (changes) return { result, changes: withDialogs(tabId, changes) }

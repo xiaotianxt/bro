@@ -37,6 +37,17 @@ function removeFrames(perFrame: number[]) {
 }
 
 describe('CDP attachment lifecycle', () => {
+  it('removes foreign frames before input even in a tab that never showed one', async () => {
+    const { cdpSession } = await import('../cdp.js')
+    removeFrames([1])
+    await cdpSession.removeForeignFramesBeforeInput(8)
+    expect(chrome.scripting.executeScript).toHaveBeenCalledWith(expect.objectContaining({ target: { tabId: 8, allFrames: true } }))
+    // Seen once, the tab's frames are removed before every attach as well.
+    removeFrames([0])
+    await cdpSession.ensure(8)
+    expect(chrome.scripting.executeScript).toHaveBeenCalledTimes(1)
+  })
+
   it('removes a foreign extension iframe and attaches without reload or pause', async () => {
     const { cdpSession } = await import('../cdp.js')
     rejectAttach(1)
@@ -166,5 +177,42 @@ describe('CDP attachment lifecycle', () => {
     expect(chrome.debugger.sendCommand).toHaveBeenCalledTimes(1)
     await cdpSession.ensure(2)
     expect(chrome.debugger.attach).toHaveBeenCalledTimes(2)
+  })
+  // Regression (live, password manager): while another extension's frame is
+  // in the page Chrome rejects every debugger call from bro, detach included,
+  // and keeps the session. Treating that detach as done made every later
+  // attach fail with "Another debugger is already attached".
+  it('removes a foreign frame that blocks detach, so the next attach finds the tab free', async () => {
+    const { cdpSession } = await import('../cdp.js')
+    let chromeAttached = false
+    let foreignFrame = false
+    const settle = (message: string | undefined, done: () => void) => {
+      if (message) Object.assign(chrome.runtime, { lastError: { message } })
+      done()
+      Object.assign(chrome.runtime, { lastError: undefined })
+    }
+    vi.mocked(chrome.debugger.attach).mockImplementation((_target, _version, done) => {
+      if (foreignFrame) return settle(foreignRejection, done!)
+      if (chromeAttached) return settle('Another debugger is already attached to the tab with id: 3.', done!)
+      chromeAttached = true
+      settle(undefined, done!)
+    })
+    vi.mocked(chrome.debugger.detach).mockImplementation((_target, done) => {
+      if (foreignFrame) return settle(foreignRejection, done!)
+      chromeAttached = false
+      settle(undefined, done!)
+    })
+    Object.assign(chrome, { scripting: { executeScript: vi.fn(async () => {
+      const removed = foreignFrame ? 1 : 0
+      foreignFrame = false
+      return [{ result: removed }]
+    }) } })
+    await cdpSession.ensure(3)
+    foreignFrame = true
+    vi.mocked(chrome.debugger.sendCommand).mockRejectedValueOnce(new Error(foreignRejection))
+    await expect(cdpSession.send(3, 'Runtime.releaseObject')).rejects.toThrow('Chrome closed the debugger session')
+    await cdpSession.send(3, 'Runtime.evaluate')
+    expect(chrome.debugger.attach).toHaveBeenCalledTimes(2)
+    expect(chrome.debugger.sendCommand).toHaveBeenLastCalledWith({ tabId: 3 }, 'Runtime.evaluate', {})
   })
 })

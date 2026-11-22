@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+// Rendering state is render-state.ts's contract, tested there.
+vi.mock('../render-state.js', () => ({ renderState: vi.fn(async () => 'hidden') }))
+
 beforeEach(() => {
   vi.resetModules()
   vi.useFakeTimers()
@@ -25,6 +28,23 @@ afterEach(() => {
 })
 
 describe('render pump', () => {
+  // Regression: an active tab in an occluded window was skipped as if shown,
+  // so it drew no frame and input into its cross-site frames missed.
+  it('pumps by render state: an active hidden tab, never a painting one', async () => {
+    const { renderState } = await import('../render-state.js')
+    const { keepRendering } = await import('../render-pump.js')
+    vi.mocked(chrome.tabs.get).mockResolvedValue({ active: true, url: 'https://example.test' } as never)
+    const captures = () =>
+      vi.mocked(chrome.debugger.sendCommand).mock.calls.filter(([, method]) => method === 'Page.captureScreenshot')
+    keepRendering(4)
+    await vi.advanceTimersByTimeAsync(300)
+    expect(captures()).toHaveLength(1)
+    vi.mocked(renderState).mockResolvedValue('painting')
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(captures()).toHaveLength(1)
+    vi.mocked(renderState).mockResolvedValue('hidden')
+  })
+
   // Regression: a capture queued behind a multi-second AX tree read timed out,
   // and the session timeout detached the tab under the observe.
   it('keeps the tab attached while a capture waits on a busy renderer', async () => {

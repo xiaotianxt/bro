@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+// Rendering state is render-state.ts's contract, tested there.
+vi.mock('../render-state.js', () => ({ renderState: vi.fn(async () => 'painting') }))
+
 type SentCommand = { method: string; params: Record<string, unknown> }
 
 let commands: SentCommand[]
@@ -17,6 +20,8 @@ function installChromeMock(): void {
 
   vi.stubGlobal('chrome', {
     runtime: { id: 'bro-extension', lastError: undefined },
+    // No other extension's frame in these pages.
+    scripting: { executeScript: vi.fn(async () => [{ result: 0 }]) },
     debugger: {
       attach: vi.fn((_target, _version, callback) => callback()),
       detach,

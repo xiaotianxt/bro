@@ -2,7 +2,7 @@
 
 import type { ToolResult } from '@bro/shared'
 import { cdpSession } from '../cdp.js'
-import { withInput } from '../input.js'
+import { withInput, type Input } from '../input.js'
 import { registerTool } from '../tool-registry.js'
 import { prepareRefInput } from './accessibility.js'
 
@@ -721,7 +721,7 @@ async function executeComputer(tabId: number, rawArgs: unknown): Promise<ToolRes
   if (args.action === 'screenshot' || args.action === 'zoom') {
     return dispatchComputer(tabId, args)
   }
-  return withInput(tabId, () => dispatchComputer(tabId, args))
+  return withInput(tabId, (input) => dispatchComputer(tabId, args, input))
 }
 
 // Actions whose target point a refId can give instead of a coordinate.
@@ -735,14 +735,16 @@ const POINTER_ACTIONS: ReadonlySet<ComputerAction> = new Set([
   'scroll',
 ])
 
-async function dispatchComputer(tabId: number, args: ComputerArgs): Promise<ToolResult> {
+async function dispatchComputer(tabId: number, args: ComputerArgs, input?: Input): Promise<ToolResult> {
   await cdpSession.ensure(tabId)
   // A ref resolves to the same scrolled-into-view, hit-tested point that
   // click_element uses, so callers need not map screenshot pixels.
   let coordinate = args.coordinate
-  if (coordinate === undefined && args.refId !== undefined && POINTER_ACTIONS.has(args.action)) {
-    const point = await prepareRefInput(tabId, args.refId)
-    coordinate = [point.x, point.y]
+  if (input && (POINTER_ACTIONS.has(args.action) || args.action === 'left_click_drag')) {
+    if (coordinate === undefined && args.refId !== undefined) {
+      const point = await prepareRefInput(tabId, args.refId, input)
+      coordinate = [point.x, point.y]
+    } else await input.composited()
   }
   switch (args.action) {
     case 'screenshot':

@@ -175,22 +175,22 @@ export class CDPSession {
     // Child-session IDs become unusable as soon as detachment starts, not when
     // its callback happens to arrive. The next ensure waits for this operation.
     this.markDetached(tabId, reason)
-    await new Promise<void>((resolve, reject) => {
-      chrome.debugger.detach({ tabId }, () => {
-        const err = chrome.runtime.lastError
-        if (err) {
-          const msg = err.message ?? ''
-          if (msg.includes('not attached') || msg.includes('Not attached') || isForeignExtensionRejection(msg)) {
-            // Already detached — that's fine. A foreign extension frame ends
-            // the session the same way, reporting its access error instead.
-            resolve()
-          } else {
-            reject(new Error(`CDP detach failed for tab ${tabId}: ${msg}`))
-          }
-        } else {
-          resolve()
-        }
-      })
+    let failure = await this.detachDebugger(tabId)
+    // While another extension's frame is in the page, Chrome rejects every
+    // debugger call from bro, detach included, yet keeps the session. Left
+    // so, the next attach finds it taken; remove the frames and detach again.
+    if (failure !== undefined && isForeignExtensionRejection(failure)) {
+      this.foreignFrameTabs.add(tabId)
+      if ((await removeForeignExtensionFrames(tabId)) > 0) failure = await this.detachDebugger(tabId)
+    }
+    if (failure !== undefined && !/not attached/i.test(failure))
+      throw new Error(`CDP detach failed for tab ${tabId}: ${failure}`)
+  }
+
+  /** Detaches once; returns the browser's rejection message, if any. */
+  private detachDebugger(tabId: number): Promise<string | undefined> {
+    return new Promise((resolve) => {
+      chrome.debugger.detach({ tabId }, () => resolve(chrome.runtime.lastError?.message))
     })
   }
 
@@ -218,6 +218,17 @@ export class CDPSession {
     if (sessionId === undefined) return this.send<T>(tabId, method, params)
     await this.ensure(tabId)
     return this.sendAttached<T>(tabId, method, params, sessionId)
+  }
+
+  /**
+   * Removes other extensions' frames before input. Such a frame closes the
+   * session when it commits, at whatever command runs then, and attach sees
+   * only committed frames: a password manager's menu drawn at load or on the
+   * last focus is often still loading when an input begins, and would end the
+   * session mid-input. Its element is in the DOM already, so it goes here.
+   */
+  async removeForeignFramesBeforeInput(tabId: number): Promise<void> {
+    if ((await removeForeignExtensionFrames(tabId)) > 0) this.foreignFrameTabs.add(tabId)
   }
 
   /** Clear temporary input emulation without reattaching a closed/detached tab. */
@@ -282,8 +293,15 @@ export class CDPSession {
             if (foreign || /Debugger is not attached|Detached while handling command/.test(message)) {
               // Invalidate frame sessions and monitors together for root and
               // child commands. Never replay input across a new attachment.
-              if (foreign) this.foreignFrameTabs.add(tabId)
-              this.markDetached(tabId, `CDP command "${method}" found the session closed: ${message}`)
+              const reason = `CDP command "${method}" found the session closed: ${message}`
+              if (foreign) {
+                // Chrome may reject the command yet keep the session; only a
+                // real detach keeps the next attach from finding it taken.
+                this.foreignFrameTabs.add(tabId)
+                this.forceDetach(tabId, reason)
+              } else {
+                this.markDetached(tabId, reason)
+              }
               reject(new CdpSessionClosed(`CDP command "${method}" failed for tab ${tabId}: ${message.replace(/\.$/, '')}. Chrome closed the debugger session during this command: DevTools opened, or another extension such as a password manager created its own frame in the page. The next call reattaches and removes such frames; input may have been partly applied, so observe the page before retrying.`))
               return
             }

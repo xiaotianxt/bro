@@ -5,6 +5,7 @@ import { CDP_COMMAND_TIMEOUT_MS, CdpCommandTimeout, cdpSession } from '../cdp.js
 import { armDialogs } from '../dialogs.js'
 import { getBrowserFrames, sendToFrame } from '../frames.js'
 import { isRendering } from '../render-pump.js'
+import { stalledState, unresponsive } from '../render-state.js'
 import { registerTool } from '../tool-registry.js'
 import { readAXPage, findAX, refTool, waitAX, actElement } from './accessibility.js'
 
@@ -190,8 +191,10 @@ async function evaluateInPage(
   const send = <T>(method: string, params: object): Promise<T> => (frame === undefined
     ? cdpSession.send<T>(tabId, method, params)
     : sendToFrame<T>(tabId, frame, method, params)
-  ).catch((error: unknown) => {
+  ).catch(async (error: unknown) => {
     if (!(error instanceof CdpCommandTimeout)) throw error
+    const stalled = await stalledState(tabId)
+    if (stalled) throw new Error(unresponsive(tabId, stalled))
     throw new Error(
       `evaluate got no result within ${CDP_COMMAND_TIMEOUT_MS}ms: the expression awaited too long or the page's main thread was busy. Instead of a timer, use a wait step for the text or ref state you expect, then evaluate a shorter expression.`,
     )

@@ -9,9 +9,9 @@ import {
   type RefTarget,
   type SnapshotOptions,
 } from '../accessibility.js'
-import { cdpSession } from '../cdp.js'
+import { CdpSessionClosed, cdpSession } from '../cdp.js'
 import { getBrowserFrames, sendToFrame, type BrowserFrame } from '../frames.js'
-import { withInput } from '../input.js'
+import { withInput, type Input } from '../input.js'
 import { scrollAndObserve, scrollerFor } from '../scroll.js'
 import { watchChanges } from '../changes.js'
 import { dispatchTool } from '../tool-registry.js'
@@ -82,18 +82,26 @@ async function withNodeObject<T>(
   try {
     return await use(objectId)
   } finally {
-    await sendToFrame(tabId, frame, 'Runtime.releaseObject', { objectId }).catch(
-      (error: unknown) => {
-        // A successful action may navigate and destroy its own isolated world.
-        if (
-          !/Cannot find context|Cannot find object|Invalid remote object|Session.*not found/.test(
-            String(error),
-          )
-        )
-          throw error
-      },
-    )
+    await releaseRemote(tabId, frame, objectId)
   }
+}
+
+function releaseRemote(tabId: number, frame: BrowserFrame, objectId: string): Promise<void> {
+  return sendToFrame(tabId, frame, 'Runtime.releaseObject', { objectId }).then(
+    () => {},
+    (error: unknown) => {
+      // A closed session freed its objects with it (a password manager's new
+      // frame closes it at any command), and a successful action may navigate
+      // and destroy its own isolated world.
+      if (error instanceof CdpSessionClosed) return
+      if (
+        !/Cannot find context|Cannot find object|Invalid remote object|Session.*not found/.test(
+          String(error),
+        )
+      )
+        throw error
+    },
+  )
 }
 
 function callNode<T>(
@@ -542,7 +550,7 @@ async function parentPoint(this: Element, point: Point): Promise<Point> {
   return { x, y }
 }
 
-export async function prepareRefInput(tabId: number, ref: string): Promise<Point> {
+export async function prepareRefInput(tabId: number, ref: string, input: Input): Promise<Point> {
   snapshots.resolve(tabId, ref)
   const localPoint = await withRef(tabId, ref, preparePoint)
   let point = localPoint
@@ -564,6 +572,9 @@ export async function prepareRefInput(tabId: number, ref: string): Promise<Point
     point = await callNode(tabId, parent, owner.backendNodeId, parentPoint, [point])
     frame = parent
   }
+  // The browser routes the input by the composited layout, so the scrolling
+  // above must have been drawn before dispatch.
+  await input.composited()
   // Ancestor scrolling/rendering must not turn a ref into a coordinate fallback
   // on a replacement node. Recheck the original node at the prepared local point.
   await withRef(tabId, ref, preparePoint, [localPoint])
@@ -572,17 +583,64 @@ export async function prepareRefInput(tabId: number, ref: string): Promise<Point
 
 async function clickRef(tabId: number, ref: string): Promise<ToolResult> {
   snapshots.resolve(tabId, ref)
-  return withInput(tabId, () => dispatchRefClick(tabId, ref))
+  return withInput(tabId, (input) => dispatchRefClick(tabId, ref, input))
 }
 
-async function dispatchRefClick(tabId: number, ref: string): Promise<ToolResult> {
-  const point = await prepareRefInput(tabId, ref)
-  for (const event of [
-    { type: 'mouseMoved', buttons: 0 },
-    { type: 'mousePressed', buttons: 1, button: 'left', clickCount: 1 },
-    { type: 'mouseReleased', buttons: 0, button: 'left', clickCount: 1 },
-  ])
-    await cdpSession.send(tabId, 'Input.dispatchMouseEvent', { ...event, ...point })
+// Serialized page code, run in bro's isolated world: notes whether a trusted
+// press reaches the target's document. The browser, not the page, decides
+// which frame gets input (see Input.composited); a press it hands to the
+// parent never reaches the target, and the click must not report success.
+function watchPress(this: Element): { received: boolean; stop: () => void } {
+  const win = this.ownerDocument.defaultView!
+  const types = ['pointerdown', 'mousedown']
+  const state = { received: false, stop: () => {} }
+  const seen = (event: Event): void => {
+    if (event.isTrusted) state.received = true
+  }
+  for (const type of types) win.addEventListener(type, seen, true)
+  state.stop = () => {
+    for (const type of types) win.removeEventListener(type, seen, true)
+  }
+  return state
+}
+
+async function dispatchRefClick(tabId: number, ref: string, input: Input): Promise<ToolResult> {
+  const point = await prepareRefInput(tabId, ref, input)
+  const { frame, backendNodeId } = await refNode(tabId, ref)
+  const mouse = (event: object) =>
+    cdpSession.send(tabId, 'Input.dispatchMouseEvent', { ...event, ...point })
+  const received = await withNodeObject(tabId, frame, backendNodeId, async (objectId) => {
+    const watch = await sendToFrame<RemoteResult<unknown>>(tabId, frame, 'Runtime.callFunctionOn', {
+      objectId,
+      functionDeclaration: `function() { return (${watchPress.toString()}).apply(this); }`,
+      returnByValue: false,
+    })
+    unwrap(watch)
+    const watchId = watch.result.objectId!
+    try {
+      await mouse({ type: 'mouseMoved', buttons: 0 })
+      try {
+        await mouse({ type: 'mousePressed', buttons: 1, button: 'left', clickCount: 1 })
+        return unwrap(
+          await sendToFrame<RemoteResult<boolean>>(tabId, frame, 'Runtime.callFunctionOn', {
+            objectId: watchId,
+            functionDeclaration: 'function() { this.stop(); return this.received; }',
+            returnByValue: true,
+          }),
+        )
+      } finally {
+        // Whatever received the press gets its release, so no button stays down.
+        await mouse({ type: 'mouseReleased', buttons: 0, button: 'left', clickCount: 1 })
+      }
+    } finally {
+      await releaseRemote(tabId, frame, watchId)
+    }
+  })
+  if (!received)
+    throw new Error(
+      `Click on ${ref} did not reach its document: the browser delivered the press outside the ref's frame ` +
+        '(a cross-site frame the tab had not drawn yet). The control was not clicked; click it again.',
+    )
   return textResult(`Clicked ${ref}.`)
 }
 
@@ -756,8 +814,8 @@ export async function refTool(name: string, tabId: number, raw: unknown): Promis
       throw new Error('Unknown scroll direction')
     const amount = integerArg(args, 'amount', 400, 1, 10000)
     const target = snapshots.resolve(tabId, ref)
-    return withInput(tabId, async () => {
-      await prepareRefInput(tabId, ref)
+    return withInput(tabId, async (input) => {
+      await prepareRefInput(tabId, ref, input)
       const frame = (await getBrowserFrames(tabId)).find((f) => f.id === target.frameId)
       if (!frame || frame.loaderId !== target.loaderId)
         throw new Error(`Stale ref ${ref}: its frame navigated or disappeared. Read a fresh snapshot.`)

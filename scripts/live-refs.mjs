@@ -1041,6 +1041,126 @@ try {
       assert.match(next, /textbox "Cross Name" value="Flow"/)
     },
   )
+  // Input lands, or is reported failed, whatever the tab's render state. The
+  // browser routes input into a cross-site frame by hit-test data that follows
+  // composited frames; a tab that is not painting (an active tab in an occluded
+  // window, a background or unowned tab, a document with no frame drawn yet)
+  // has none until one is drawn, and a silent miss lands in the parent instead.
+  // Each cell starts from a fresh document. --repeats N reruns every cell.
+  await check('P: input lands in every render state: same-document and cross-site clicks, coordinate clicks, fills', async () => {
+    const devtools = (await readFile(resolve(profile, 'DevToolsActivePort'), 'utf8')).trim().split('\n')
+    const browserCdp = async (method, params = {}) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${devtools[0]}${devtools[1]}`)
+      await once(ws, 'open')
+      try {
+        ws.send(JSON.stringify({ id: 1, method, params }))
+        const [event] = await once(ws, 'message')
+        const reply = JSON.parse(event.data)
+        if (reply.error) throw new Error(`${method}: ${reply.error.message}`)
+        return reply.result
+      } finally {
+        ws.close()
+      }
+    }
+    const js = async (id, code, frameId) => text(await tool('javascript_tool', { tabId: id, code, ...(frameId && { frameId }) }))
+    const fresh = async (id, url) => {
+      await tool('navigate', { tabId: id, url })
+      await waitUntil(
+        async () => (await js(id, 'document.readyState === "complete" && document.querySelectorAll("iframe").length === 3')).includes('true'),
+        'matrix fixture',
+      )
+    }
+    // An unowned tab, as a user opened it: bro attaches on the first act.
+    const unowned = async (url, background) => {
+      await browserCdp('Target.createTarget', { url, background })
+      const listed = await waitUntil(async () => {
+        const tabs = text(await tool('tabs_context', { tabId, all: true }))
+        return tabs.includes(url) && tabs
+      }, 'unowned tab')
+      const id = Number(listed.split('\n').find((line) => line.includes(url) && /\[\d+\]/.test(line)).match(/\[(\d+)\]/)[1])
+      return { tabId: id, close: async () => { targets.delete(id); await tool('tabs_close', { tabId: id }) } }
+    }
+    let serial = 0
+    const states = {
+      'active, visible': async (url) => {
+        const opened = await openTarget(url, true)
+        return { tabId: opened.tabId, close: () => closeTarget(opened) }
+      },
+      // Closing the selected tab activates this one. It is hidden when its
+      // window is occluded (a display that is off, or windows on top).
+      'active, occluded window': async (url) => {
+        const opened = await openTarget(url, false)
+        await closeTarget(await openTarget(rootUrl + '/blank', true))
+        return { tabId: opened.tabId, close: () => closeTarget(opened) }
+      },
+      background: async (url) => {
+        const opened = await openTarget(url, false)
+        return { tabId: opened.tabId, close: () => closeTarget(opened) }
+      },
+      // Loaded in the background as a user left it; bro attaches on the first act.
+      unowned: async (url) => unowned(url, true),
+      // Never shown and never pumped, and navigated right before the act: no
+      // frame of this document is drawn.
+      'unowned, just navigated': async (url) => unowned(url, true),
+    }
+    const crossFrame = async (id) =>
+      JSON.parse(text(await tool('frames_list', { tabId: id }))).find((frame) => frame.url.includes('kind=Cross')).frameId
+    const entries = {
+      'same-document click': {
+        act: async (id, snap) => act(id, [{ type: 'click', refId: refFor(snap, 'button', 'Root Commit') }]),
+        landed: async (id) => /ROOT_OK:true/.test(await js(id, 'document.querySelector("#root-result").textContent')),
+      },
+      'cross-site click': {
+        act: async (id, snap) => act(id, [{ type: 'click', refId: refFor(snap, 'button', 'Cross Commit') }]),
+        landed: async (id) => /Cross_OK:/.test(await js(id, 'document.querySelector("#result").textContent', await crossFrame(id))),
+      },
+      'cross-site coordinate click': {
+        act: async (id) => {
+          const inner = 'document.querySelector("#host").shadowRoot.querySelector("#inner").shadowRoot.querySelector("button")'
+          const local = JSON.parse(JSON.parse(await js(id, `JSON.stringify((r => ({ x: r.left + r.width / 2, y: r.top + r.height / 2 }))(${inner}.getBoundingClientRect()))`, await crossFrame(id))))
+          const frame = JSON.parse(JSON.parse(await js(id, 'JSON.stringify((f => { const r = f.getBoundingClientRect(), s = getComputedStyle(f); return { x: r.left + f.clientLeft + parseFloat(s.paddingLeft), y: r.top + f.clientTop + parseFloat(s.paddingTop) } })(document.querySelectorAll("iframe")[1]))')))
+          return tool('computer', { tabId: id, action: 'left_click', coordinate: [Math.round(frame.x + local.x), Math.round(frame.y + local.y)] })
+        },
+        landed: async (id) => /Cross_OK:/.test(await js(id, 'document.querySelector("#result").textContent', await crossFrame(id))),
+      },
+      'cross-site fill': {
+        act: async (id, snap) => act(id, [{ type: 'fill', refId: refFor(snap, 'textbox', 'Cross Name'), value: 'Matrix' }]),
+        landed: async (id) => (await js(id, 'document.querySelector("#host").shadowRoot.querySelector("#inner").shadowRoot.querySelector("#name").value', await crossFrame(id))) === '"Matrix"',
+      },
+    }
+    const repeats = Number(option('--repeats', '1'))
+    const misses = []
+    const visibility = {}
+    for (let round = 0; round < repeats; round++)
+      for (const [state, make] of Object.entries(states))
+        for (const [entry, { act: run, landed }] of Object.entries(entries)) {
+          const url = `${rootUrl}/?matrix=${serial++}`
+          const tab = await make(url)
+          try {
+            if (state === 'unowned')
+              await waitUntil(async () => (await js(tab.tabId, 'document.readyState === "complete" && document.querySelectorAll("iframe").length === 3')).includes('true'), 'unowned fixture')
+            else await fresh(tab.tabId, url)
+            const shown = JSON.parse(await js(tab.tabId, 'document.visibilityState'))
+            ;(visibility[state] ??= new Set()).add(shown)
+            const snap = text(await tool('read_page', { tabId: tab.tabId, filter: 'all', maxChars: 24000 }))
+            const outcome = await run(tab.tabId, snap).then(
+              (result) => (result.isError ? `reported failure: ${text(result).slice(0, 200)}` : undefined),
+              (error) => `reported failure: ${String(error).slice(0, 200)}`,
+            )
+            if (outcome) misses.push(`${state} (${shown}) / ${entry}: ${outcome}`)
+            else if (!(await landed(tab.tabId))) misses.push(`${state} (${shown}) / ${entry}: reported success, but the input did not land`)
+          } finally {
+            await tab.close()
+          }
+        }
+    // A background or unowned tab is hidden on any display; the occluded
+    // state depends on the window, so it is recorded, not required.
+    const uncovered = Object.entries({ 'active, visible': 'visible', background: 'hidden', unowned: 'hidden', 'unowned, just navigated': 'hidden' })
+      .filter(([state, shown]) => [...visibility[state]].join() !== shown)
+      .map(([state, shown]) => `${state} was ${[...visibility[state]].join('/')}, not ${shown}`)
+    assert.deepEqual([...misses, ...uncovered], [], `${misses.length} of ${repeats * 20} cells missed:\n${[...misses, ...uncovered].join('\n')}`)
+    return { visibility: Object.fromEntries(Object.entries(visibility).map(([k, v]) => [k, [...v]])) }
+  })
   await check(
     'find, info, wait and scroll use the same refs and report actual scroll boundaries',
     async () => {
