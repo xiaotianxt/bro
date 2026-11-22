@@ -42,6 +42,7 @@ const (
 	Fill
 	Press
 	Close
+	Watch
 )
 
 var routes = map[string]Route{
@@ -62,6 +63,7 @@ var routes = map[string]Route{
 	"browser.fill":            Fill,
 	"browser.press":           Press,
 	"browser.close":           Close,
+	"browser.watch":           Watch,
 	"file_upload":             FileUpload,
 	// Tab tools: tabId travels in the envelope.
 	"computer": ForwardTab, "navigate": ForwardTab, "resize_window": ForwardTab,

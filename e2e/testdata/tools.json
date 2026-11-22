@@ -1288,6 +1288,120 @@
     },
     "name": "browser.press"
   },
+  "browser.watch": {
+    "_meta": {
+      "bro/capability": "interaction",
+      "bro/default": true
+    },
+    "description": "Watch a target's page for a change without polling by hand. Start (target + one condition) returns a watchId; read with watchId and cursor long-polls for events since the cursor; stop with stop:true; list:true lists watches. Text conditions (text/textGone/pattern/state) end the watch when met; change and count stream every change. The watch survives re-renders and navigation, ends on its maxDurationMs, a closed or discarded tab, or a lost browser, and every read reports the tab's state (live, frozen, unresponsive, disconnected). For a background task, run `bro watch '\u003cstart JSON\u003e'` instead: it prints one JSON line per event and exits when the watch ends.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "change": {
+          "const": true,
+          "description": "Condition: report every change of the target's text or form value (or the page's text).",
+          "type": "boolean"
+        },
+        "count": {
+          "const": true,
+          "description": "Condition with css: report every change in the number of matches, with the text of added items.",
+          "type": "boolean"
+        },
+        "css": {
+          "description": "Start target: elements matching this selector, re-queried on every check. The stable choice for a node that re-renders.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "cursor": {
+          "default": 0,
+          "description": "Read events after this seq; pass the previous read's cursor.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "intervalMs": {
+          "default": 1000,
+          "description": "How often bro checks the page; changes between checks are still caught on the page.",
+          "maximum": 60000,
+          "minimum": 250,
+          "type": "integer"
+        },
+        "list": {
+          "const": true,
+          "description": "List active and recently ended watches.",
+          "type": "boolean"
+        },
+        "maxDurationMs": {
+          "default": 1800000,
+          "maximum": 86400000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "pattern": {
+          "description": "Condition: a JavaScript regular expression (case-insensitive) matches the text; the event carries the match.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "refId": {
+          "description": "Start target: this ref's element; after a re-render, the element with the same role and name.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "role": {
+          "description": "Start target with name: the element with this role and accessible name.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "state": {
+          "description": "Condition on a target: an element matching it is visible / none is (hidden, including removed) / one is enabled / one is disabled.",
+          "enum": [
+            "visible",
+            "hidden",
+            "enabled",
+            "disabled"
+          ],
+          "type": "string"
+        },
+        "stop": {
+          "const": true,
+          "description": "With watchId: end the watch.",
+          "type": "boolean"
+        },
+        "targetId": {
+          "description": "Start: from browser.open or browser.attach. Defaults to the target this session last opened or used.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "text": {
+          "description": "Condition: the text appears (case- and whitespace-insensitive). Omit a target for the page's main text.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "textGone": {
+          "description": "Condition: the text is gone.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "waitMs": {
+          "description": "Long-poll: wait up to this long for an event. Read defaults to 20000; start to 0.",
+          "maximum": 50000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "watchId": {
+          "description": "Read or stop this watch.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "browser.watch"
+  },
   "browsers_context": {
     "_meta": {
       "bro/capability": "tabs",

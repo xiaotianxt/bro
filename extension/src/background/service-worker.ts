@@ -19,6 +19,7 @@ import './tools/upload.js'
 import './tools/misc.js'
 import './tools/userscripts.js'
 import './tools/extensions.js'
+import './watch.js'
 import { authorizeLoginFill, revokeLoginForms } from './tools/login.js'
 
 chrome.tabs.onRemoved.addListener((tabId) => revokeLoginForms([tabId]))

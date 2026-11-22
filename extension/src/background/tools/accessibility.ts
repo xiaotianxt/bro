@@ -817,7 +817,7 @@ const normalize = (value: unknown) => String(value ?? '').trim().replace(/\s+/g,
 // and names come from the same AX tree observe prints. An exact accessible
 // name wins; otherwise a unique substring match. Ambiguity fails instead of
 // guessing, and so does a near-miss role: the error names the roles found.
-async function resolveNamed(tabId: number, role: string, name: string): Promise<string> {
+export async function resolveNamed(tabId: number, role: string, name: string): Promise<string> {
   const { main, nodes } = await mainTree(tabId)
   const wanted = normalize(name)
   const visibleMatches = async (withRole: (role: string) => boolean): Promise<AXNode[]> => {
@@ -857,6 +857,19 @@ async function resolveNamed(tabId: number, role: string, name: string): Promise<
   const ref = snapshots.handle(tabId, target)
   snapshots.publish(tabId, new Map([[ref, target]]))
   return ref
+}
+
+/** The accessible role and name of a ref's node, as observe prints them. */
+export async function describeNode(tabId: number, ref: string): Promise<{ role: string; name: string }> {
+  const { frame, backendNodeId } = await refNode(tabId, ref)
+  await sendToFrame(tabId, frame, 'Accessibility.enable', {})
+  const { nodes } = await sendToFrame<{ nodes: AXNode[] }>(tabId, frame, 'Accessibility.getPartialAXTree', {
+    backendNodeId,
+    fetchRelatives: false,
+  })
+  const node = nodes.find((n) => n.backendDOMNodeId === backendNodeId) ?? nodes[0]
+  if (!node) throw new Error(`Stale ref ${ref}: no accessibility node. Read a fresh snapshot.`)
+  return { role: String(node.role?.value ?? ''), name: String(node.name?.value ?? '') }
 }
 
 const LAYER_ROLES = new Set(['dialog', 'alertdialog', 'menu', 'listbox'])

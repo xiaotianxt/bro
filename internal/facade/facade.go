@@ -108,10 +108,11 @@ type Facade struct {
 	log      *slog.Logger
 	mu       sync.Mutex
 	sessions map[string]session
+	watches  watchRegistry
 }
 
 func New(b *bridge.Bridge, log *slog.Logger) *Facade {
-	return &Facade{bridge: b, log: log, sessions: map[string]session{}}
+	return &Facade{bridge: b, log: log, sessions: map[string]session{}, watches: watchRegistry{watches: map[string]*watch{}}}
 }
 
 func newTargetID() string { return "flow-" + ids.Hex(6) }

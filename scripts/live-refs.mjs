@@ -131,6 +131,37 @@ const fixture = (req, res) => {
     <footer>Footer</footer><output id="late">pending</output>`)
     return
   }
+  if (url.pathname === '/watch') {
+    // Watch shapes. Delays are server-side unless the shape is about page
+    // timers, which Chrome throttles in background tabs.
+    const shape = url.searchParams.get('shape') ?? ''
+    send(`<!doctype html><title>Watch</title><main><h1>Jobs</h1>
+    <ul id="jobs"><li class="job"><span role="status" aria-label="Job 1" class="state">Running</span></li></ul>
+    <p id="toast"></p></main>
+    <script>
+    const shape=${JSON.stringify(shape)};
+    const data=(ms)=>fetch('/watch-data?ms='+ms).then(r=>r.text());
+    const state=()=>document.querySelector('.state');
+    if(shape==='late')data(2000).then(t=>{state().textContent=t});
+    // The whole row is replaced: a pinned node is gone.
+    if(shape==='rerender')data(1500).then(t=>{jobs.innerHTML='<li class="job"><span role="status" aria-label="Job 1" class="state">'+t+'</span></li>'});
+    if(shape==='navigate')data(800).then(()=>{location.href='/watch-next'});
+    if(shape==='timer')setTimeout(()=>{state().textContent='Status Done'},2500);
+    // Shown for one task only: no poll can see it; the page's latch can.
+    if(shape==='transient')data(1500).then(()=>{toast.textContent='Saved Done';const c=new MessageChannel();c.port1.onmessage=()=>{toast.textContent=''};c.port2.postMessage(0)});
+    </script>`)
+    return
+  }
+  if (url.pathname === '/watch-next') {
+    send(`<!doctype html><title>Watch next</title><main><p class="state">Loading</p></main>
+    <script>fetch('/watch-data?ms=800').then(r=>r.text()).then(t=>{document.querySelector('.state').textContent=t})</script>`)
+    return
+  }
+  if (url.pathname === '/watch-data') {
+    const ms = Math.min(5000, Number(url.searchParams.get('ms')) || 0)
+    setTimeout(() => res.end('Status Done'), ms).unref()
+    return
+  }
   if (url.pathname === '/h-delayed') {
     // Content that arrives 1.5 s after a click. The delay is server-side,
     // because background tabs align page timers to about 1 s.
@@ -1594,6 +1625,110 @@ try {
     } finally {
       await tool('browser.close', { targetId })
     }
+  })
+  await check('WATCH: a watch reports late, re-rendered, navigated, background and transient changes, a closed tab and a timeout, through the MCP read, the CLI stream and the wait step', async () => {
+    // Every shape through every entry point. Each run opens its own
+    // background tab; the wait step watches the page's text.
+    const shapes = [
+      { name: 'late', want: 'met' },
+      { name: 'rerender', want: 'met', node: true },
+      { name: 'navigate', want: 'met', navigated: true },
+      { name: 'timer', want: 'met' },
+      { name: 'transient', want: 'met' },
+      { name: 'close', want: 'tabClosed' },
+      { name: 'timeout', want: 'timeout' },
+    ]
+    const cli = (start) =>
+      new Promise((resolveRun, reject) => {
+        const child = spawn(broBinary, ['watch', JSON.stringify(start), '--port', String(port)], {
+          env: { ...process.env, HOME: brokerHome },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        })
+        let out = ''
+        let err = ''
+        child.stdout.on('data', (d) => (out += d))
+        child.stderr.on('data', (d) => (err += d))
+        const timer = setTimeout(() => child.kill('SIGKILL'), 20000)
+        child.once('error', reject)
+        child.once('exit', (code) => {
+          clearTimeout(timer)
+          try {
+            const lines = out.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
+            resolveRun({ code, lines, err })
+          } catch (error) {
+            reject(new Error(`bro watch printed non-JSON (${error}): ${out} ${err}`))
+          }
+        })
+      })
+    const failures = []
+    const timings = {}
+    for (const shape of shapes) {
+      for (const entry of ['mcp', 'cli', 'wait']) {
+        const opened = await openTarget(`${rootUrl}/watch?shape=${shape.name}`, false)
+        const { targetId, tabId } = opened
+        let closed = false
+        const closeSoon = () =>
+          shape.name === 'close' &&
+          new Promise((r) => setTimeout(r, 1200)).then(async () => {
+            closed = true
+            await tool('tabs_close', { tabId })
+          })
+        const started = performance.now()
+        try {
+          const start = { targetId, text: 'Done', maxDurationMs: shape.name === 'timeout' ? 2500 : 15000 }
+          if (shape.node && entry !== 'wait') {
+            const tree = text(await tool('browser.observe', { targetId }))
+            start.refId = refFor(tree, 'status', 'Job 1')
+          }
+          let reason
+          let events = []
+          if (entry === 'mcp') {
+            let r = (await tool('browser.watch', start)).structuredContent
+            const id = r.watchId
+            events.push(...r.events)
+            const closing = closeSoon()
+            while (r.active) {
+              r = (await tool('browser.watch', { watchId: id, cursor: r.cursor, waitMs: 20000 })).structuredContent
+              events.push(...r.events)
+            }
+            await closing
+            reason = r.reason
+          } else if (entry === 'cli') {
+            const closing = closeSoon()
+            const run = await cli(start)
+            await closing
+            events = run.lines
+            reason = run.lines.at(-1)?.reason
+            const wantCode = shape.want === 'met' ? 0 : 1
+            if (run.code !== wantCode) throw new Error(`exit ${run.code}, want ${wantCode}: ${run.err}`)
+          } else {
+            const closing = closeSoon()
+            // A wait whose tab closes fails the act, naming the closed tab.
+            const r = await tool('browser.act', { targetId, steps: [{ type: 'wait', text: 'Done', timeoutMs: shape.name === 'timeout' ? 2500 : 12000 }] },
+              shape.name === 'close' && /failed at step 1 \(wait\): tab \d+ closed/)
+            await closing
+            reason = r.isError ? 'tabClosed' : r.structuredContent.results[0].met ? 'met' : 'timeout'
+          }
+          if (reason !== shape.want) throw new Error(`ended ${reason}, want ${shape.want}: ${JSON.stringify(events)}`)
+          if (shape.want === 'met' && entry !== 'wait') {
+            const met = events.find((e) => e.type === 'met')
+            if (!/done/i.test(met?.value ?? '')) throw new Error(`met event lacks the text: ${JSON.stringify(events)}`)
+          }
+          if (shape.navigated && entry !== 'wait' && !events.some((e) => e.type === 'navigated'))
+            throw new Error(`no navigated event: ${JSON.stringify(events)}`)
+          if (events.at(-1) && entry !== 'wait' && events.at(-1).type !== 'end')
+            throw new Error(`last event is not end: ${JSON.stringify(events)}`)
+          timings[`${shape.name}/${entry}`] = Math.round(performance.now() - started)
+        } catch (error) {
+          failures.push(`${shape.name}/${entry}: ${error.message ?? error}`)
+        } finally {
+          if (!closed) await closeTarget(opened).catch(() => {})
+          else targets.delete(tabId)
+        }
+      }
+    }
+    assert.deepEqual(failures, [])
+    return timings
   })
   await check('G: observe rereads once when the document changes mid-read', async () => {
     const opened = (await tool('browser.open', { url: `${rootUrl}/g-churn`, observe: false })).structuredContent

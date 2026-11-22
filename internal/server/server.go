@@ -263,6 +263,20 @@ func (s *session) call(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Call
 			args["targetId"] = last
 		}
 	}
+	if route == catalog.Watch {
+		// Only a start names a target; read, stop and list name a watch.
+		_, read := args["watchId"]
+		_, list := args["list"]
+		_, has := args["targetId"]
+		if !read && !list && !has {
+			s.mu.Lock()
+			last := s.last
+			s.mu.Unlock()
+			if last != "" {
+				args["targetId"] = last
+			}
+		}
+	}
 	f := s.facade
 	switch route {
 	case catalog.BrowsersContext:
@@ -299,6 +313,8 @@ func (s *session) call(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Call
 		return s.targeted(rendered(facade.RenderAct)(f.Step(ctx, "press", args))), nil
 	case catalog.Close:
 		return facadeResult(f.Close(ctx, args)), nil
+	case catalog.Watch:
+		return facadeResult(f.Watch(ctx, args)), nil
 	case catalog.FileUpload:
 		if err := resolveUploadPaths(args); err != nil {
 			return toolError(err.Error()), nil

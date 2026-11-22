@@ -247,13 +247,6 @@ func truncateRunes(text string, n int) string {
 	return string(r[:n])
 }
 
-// textPresentScript compares rendered main-frame text case- and
-// whitespace-insensitively: CSS text-transform changes innerText but not the
-// accessible name a model copies from an observation.
-func textPresentScript(text string) string {
-	return "(() => { const n = (s) => s.replace(/\\s+/g, ' ').trim().toLowerCase(); return n(document.body?.innerText ?? '').includes(n(" + jsonText(text) + ")); })()"
-}
-
 func clickScript(css string) string {
 	return `(() => {
 const selector = ` + jsonText(css) + `;

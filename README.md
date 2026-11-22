@@ -260,6 +260,15 @@ bro call browsers_context
   effects, stop on runtime failure, and report one line per step
 - `browser.close`: close the owned target; `close: true` on a target's last
   observe/act/click/fill/press does it in the same call
+- `browser.watch`: watch a target for a change (text appears or is gone, a
+  pattern matches, an element's state, any change, a match count) without
+  polling by hand; read events with a cursor and a long-poll `waitMs`. For a
+  background agent task, run the CLI instead; it prints one JSON line per
+  event and exits when the watch ends (0 when met):
+
+  ```bash
+  bro watch '{"targetId":"flow-1a2b3c","css":".job-status","text":"Done"}'
+  ```
 
 See the [facade guide](docs/browser-facade.md) and [interaction
 internals](docs/interaction-internals.md). A dispatched action is not proof of

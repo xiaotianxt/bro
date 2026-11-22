@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- `browser.watch` watches a page for a change and reports it without the agent
+  polling: text appears or is gone, a pattern matches, an element becomes
+  visible, hidden, enabled or disabled, or (streaming) any change of a target's
+  text or value and any change in a selector's match count, with the added
+  items' text. A start returns a `watchId`; a read returns the events after a
+  cursor and long-polls up to 50 s. Targets are the page's text, a CSS
+  selector, a ref or role + name; a re-rendered node is found again by its
+  role and name, and the watch carries on across navigations.
+  `bro watch '<start JSON>'` streams the same events as JSON lines and exits
+  when the watch ends (0 when met), so an agent can run it in the background
+  and be woken by each line.
+  The server's clock drives the checks, so throttled background-tab timers do
+  not delay them, and a latch in the page catches a change that comes and goes
+  between two checks. A watch never goes quiet: a frozen, unresponsive or
+  disconnected tab is an event, and every read reports the tab's state and
+  when it was last checked. A watch ends when it is met, stopped, times out
+  (default 30 min, at most 24 h), or its tab closes, is discarded, stays
+  unresponsive for 60 s, or loses its browser for 30 s; the reason is the
+  last event. Watches live in the server and end when it restarts.
+- The `wait` step's text conditions run on the same check: a text that shows
+  for less than a poll is no longer missed, and a frozen tab ends the wait at
+  once with the reason instead of after its timeout.
 - Reads wait for content a page says is still loading. An indeterminate
   `progressbar` or `aria-busy` region in view (an app shell's spinner) keeps
   extract, batch extract, and a target's first observe or act waiting, up to
