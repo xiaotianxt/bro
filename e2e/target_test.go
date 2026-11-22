@@ -322,19 +322,22 @@ func TestActWaitPollsItsConditionAndATimeoutContinues(t *testing.T) {
 	c := s.client(t)
 	target := openBlank(t, c, ext)
 
-	// Met on the second poll: returns then, not at the timeout.
+	// Met on the second poll: returns then, not at the timeout. Text waits
+	// run on the watch probe over the page's text.
 	started := time.Now()
 	p := c.Start("browser.act", j(`{"targetId":%q,"steps":[{"type":"wait","text":"Results  READY"}]}`, target))
-	first := ext.NextTool("javascript_tool")
-	code, _ := first.Args["code"].(string)
-	contains(t, code, "innerText")
-	contains(t, code, `"Results  READY"`)
-	ext.Reply(first, "false")
-	second := ext.NextTool("javascript_tool")
+	first := ext.NextTool("watch_probe")
+	equalJSON(t, first.Args["target"], `{"kind":"page"}`)
+	equalJSON(t, first.Args["condition"], `{"kind":"text","text":"Results  READY"}`)
+	ext.Reply(first, `{"tab":"live","url":"about:blank","records":[{"at":1,"met":false}]}`)
+	second := ext.NextTool("watch_probe")
 	if time.Since(started) < 250*time.Millisecond {
 		t.Fatalf("polled again after %v", time.Since(started))
 	}
-	ext.Reply(second, "true")
+	ext.Reply(second, `{"tab":"live","url":"about:blank","records":[{"at":2,"met":true,"snippet":"Results ready"}]}`)
+	stop := ext.NextTool("watch_probe")
+	equalJSON(t, stop.Args["op"], `"stop"`)
+	ext.Reply(stop, `{"tab":"live"}`)
 	r := p.Wait()
 	if time.Since(started) > time.Second {
 		t.Fatalf("met wait returned after %v", time.Since(started))
@@ -359,8 +362,12 @@ func TestActWaitPollsItsConditionAndATimeoutContinues(t *testing.T) {
 			ext.Reply(call, readablePage)
 			break
 		}
-		if call.Tool != "javascript_tool" {
+		if call.Tool != "watch_probe" {
 			t.Fatalf("unexpected %s", call.Tool)
+		}
+		if call.Args["op"] == "stop" {
+			ext.Reply(call, `{"tab":"live"}`)
+			continue
 		}
 		ext.ReplyError(call, "Cannot find context")
 	}
@@ -456,6 +463,25 @@ func TestOpenReturnsAtDispatchAndFirstUseSettlesReadiness(t *testing.T) {
 		t.Fatalf("readiness wait ran %v; the cap is 4 s", waited)
 	}
 	equalJSON(t, p.Wait().Get("status"), `"ok"`)
+
+	// A watch is a first use too: its first probe must not land on the
+	// about:blank a just-opened tab still shows.
+	fresh := open()
+	p = c.Start("browser.watch", j(`{"targetId":%q,"text":"Done"}`, fresh.Str("targetId")))
+	ext.ReplyResult(ext.NextTool("extract_page"), snapshot("Short."))
+	probe := ext.NextTool("watch_probe")
+	ext.Reply(probe, `{"tab":"live","url":"https://test.invalid/","records":[{"at":1,"met":false}]}`)
+	watch := p.Wait()
+	equalJSON(t, watch.Get("active"), `true`)
+	stopped := c.Start("browser.watch", j(`{"watchId":%q,"stop":true}`, watch.Str("watchId")))
+	for {
+		call := ext.NextTool("watch_probe")
+		ext.Reply(call, `{"tab":"live","url":"https://test.invalid/","records":[]}`)
+		if call.Args["op"] == "stop" {
+			break
+		}
+	}
+	equalJSON(t, stopped.Wait().Get("reason"), `"stopped"`)
 }
 
 func TestCancellationStopsTheNextEffect(t *testing.T) {

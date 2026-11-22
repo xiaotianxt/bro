@@ -63,6 +63,15 @@ let token = ''
 const log = await open(resolve(output, 'processes.log'), 'a')
 const processes = []
 let rootUrl, crossUrl, socket, client, resetFixture, heldScript, heldFrame
+// Watch fixtures change only once the test releases their key, after it has
+// seen the watch start; a change before the start would race the watch.
+// A key holds the pending /watch-release response or, once released, true.
+const watchGates = new Map()
+const releaseWatch = (key) => {
+  const held = watchGates.get(key)
+  if (held && held !== true) held.end('released')
+  watchGates.set(key, true)
+}
 const correctionCheck = 'navigation correction: internal sources and same-document readiness'
 const checks = []
 const cancellation = new AbortController()
@@ -129,6 +138,71 @@ const fixture = (req, res) => {
     <main><h1>Catalog</h1><ul>${Array.from({ length: 300 }, (_, i) => `<li><a href="#i${i}">Item ${i} with a descriptive product title</a></li>`).join('')}</ul></main>
     <section aria-label="Reviews"><h2>Reviews</h2><p>REVIEW_OK</p></section>
     <footer>Footer</footer><output id="late">pending</output>`)
+    return
+  }
+  if (url.pathname === '/watch') {
+    // Watch shapes. Each changes after the test releases its key. Delays are
+    // server-side unless the shape is about page timers, which Chrome
+    // throttles in background tabs.
+    const shape = url.searchParams.get('shape') ?? ''
+    const key = url.searchParams.get('key') ?? ''
+    send(`<!doctype html><title>Watch</title><main><h1>Jobs</h1>
+    <ul id="jobs"><li class="job"><span role="status" aria-label="Job 1" class="state">Running</span></li></ul>
+    <p id="toast"></p></main>
+    <script>
+    const shape=${JSON.stringify(shape)};
+    const data=(ms)=>fetch('/watch-data?ms='+ms).then(r=>r.text());
+    const released=fetch('/watch-release?key='+${JSON.stringify(encodeURIComponent(key))}).then(()=>'Status Done');
+    const state=()=>document.querySelector('.state');
+    if(shape==='late')released.then(t=>{state().textContent=t});
+    // The whole row is replaced: a pinned node is gone.
+    if(shape==='rerender')released.then(t=>{jobs.innerHTML='<li class="job"><span role="status" aria-label="Job 1" class="state">'+t+'</span></li>'});
+    if(shape==='navigate')released.then(()=>{location.href='/watch-next'});
+    if(shape==='timer')released.then(()=>setTimeout(()=>{state().textContent='Status Done'},1000));
+    // Shown for one task only, so no poll can see it; the page's latch can.
+    // It repeats until the tab closes: the wait step gives no start signal
+    // to release on, and one flash before its latch is installed is missed.
+    const flash=()=>{toast.textContent='Saved Done';const c=new MessageChannel();c.port1.onmessage=()=>{toast.textContent=''};c.port2.postMessage(0);data(300).then(flash)};
+    if(shape==='transient')released.then(flash);
+    // Ten mutations a task, a task every 50 ms, and the page text never
+    // changes: a watch must check once a task and report nothing.
+    window.churnTasks=0;
+    const churn=()=>{churnTasks++;for(let i=0;i<10;i++){toast.classList.toggle('on');toast.textContent=i%2?'':'tick'}data(50).then(churn)};
+    if(shape==='churn')churn();
+    </script>`)
+    return
+  }
+  if (url.pathname === '/watch-chat') {
+    // A support chat in a cross-site iframe, as on carrier support pages.
+    send(`<!doctype html><title>Watch chat</title><main><h1>Account</h1>
+    <iframe title="Support chat" src="${crossUrl}/watch-chat-frame?key=${encodeURIComponent(url.searchParams.get('key') ?? '')}" style="width:400px;height:300px"></iframe></main>`)
+    return
+  }
+  if (url.pathname === '/watch-chat-frame') {
+    // Each reply arrives when the test releases KEY/1, then KEY/2.
+    const key = encodeURIComponent(url.searchParams.get('key') ?? '')
+    send(`<!doctype html><title>Chat</title><ul id="msgs" aria-label="Messages"><li class="msg">Agent: Hi, how can I help?</li></ul>
+    <script>
+    const say=(t)=>{const li=document.createElement('li');li.className='msg';li.textContent=t;msgs.append(li)};
+    const reply=(n)=>fetch('/watch-release?key=${key}%2F'+n);
+    reply(1).then(()=>say('Agent: first reply')).then(()=>reply(2)).then(()=>say('Agent: renewal Done'));
+    </script>`)
+    return
+  }
+  if (url.pathname === '/watch-release') {
+    const key = url.searchParams.get('key') ?? ''
+    if (watchGates.get(key) === true) res.end('released')
+    else watchGates.set(key, res)
+    return
+  }
+  if (url.pathname === '/watch-next') {
+    send(`<!doctype html><title>Watch next</title><main><p class="state">Loading</p></main>
+    <script>fetch('/watch-data?ms=800').then(r=>r.text()).then(t=>{document.querySelector('.state').textContent=t})</script>`)
+    return
+  }
+  if (url.pathname === '/watch-data') {
+    const ms = Math.min(5000, Number(url.searchParams.get('ms')) || 0)
+    setTimeout(() => res.end('Status Done'), ms).unref()
     return
   }
   if (url.pathname === '/h-delayed') {
@@ -1714,6 +1788,223 @@ try {
     } finally {
       await tool('browser.close', { targetId })
     }
+  })
+  await check('WATCH: a watch pushes late, re-rendered, navigated, background and transient changes and a closed tab within a second, reports a timeout, stays quiet on a churning page, and follows a cross-site iframe chat, through the MCP read, the CLI stream and the wait step', async () => {
+    // Every shape through every entry point. Each run opens its own
+    // background tab; the wait step watches the page's text.
+    // budgetMs bounds the time from the change to its report: a second, plus
+    // what the page itself takes after the release (the next page's fetch,
+    // a background tab's throttled timer).
+    const shapes = [
+      { name: 'late', want: 'met', budgetMs: 1000 },
+      { name: 'rerender', want: 'met', node: true, budgetMs: 1000 },
+      { name: 'navigate', want: 'met', navigated: true, budgetMs: 1000 + 800 },
+      { name: 'timer', want: 'met', budgetMs: 1000 + 2000 },
+      { name: 'transient', want: 'met', budgetMs: 1000 },
+      { name: 'close', want: 'tabClosed', budgetMs: 1000 },
+      { name: 'timeout', want: 'timeout' },
+    ]
+    // onStart runs once the watch bro watch starts is listed. A watch is
+    // listed only after its first probe, so the page latch is in place; a
+    // text watch prints no line until it changes, so its output can't tell.
+    const cli = (start, flags = [], onStart) =>
+      new Promise((resolveRun, reject) => {
+        const args = start ? ['watch', JSON.stringify(start), ...flags] : ['watch', ...flags]
+        const child = spawn(broBinary, [...args, '--port', String(port)], {
+          env: { ...process.env, HOME: brokerHome },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        })
+        let out = ''
+        let err = ''
+        const listed = onStart && waitUntil(async () =>
+          (await tool('browser.watch', { list: true })).structuredContent.watches
+            .find((w) => w.targetId === start.targetId && w.active), 'listed watch').then(onStart)
+        // Rethrown when the run exits; caught here so it is not unhandled first.
+        listed?.catch(() => {})
+        child.stdout.on('data', (d) => (out += d))
+        child.stderr.on('data', (d) => (err += d))
+        const timer = setTimeout(() => child.kill('SIGKILL'), 20000)
+        child.once('error', reject)
+        child.once('exit', async (code) => {
+          clearTimeout(timer)
+          try {
+            await listed
+            const lines = out.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
+            resolveRun({ code, lines, err })
+          } catch (error) {
+            reject(new Error(`bro watch printed non-JSON (${error}): ${out} ${err}`))
+          }
+        })
+      })
+    const failures = []
+    const timings = {}
+    for (const shape of shapes) {
+      for (const entry of ['mcp', 'cli', 'wait']) {
+        const key = `${shape.name}/${entry}/${Math.random().toString(36).slice(2)}`
+        const opened = await openTarget(`${rootUrl}/watch?shape=${shape.name}&key=${encodeURIComponent(key)}`, false)
+        const { targetId, tabId } = opened
+        let closed = false
+        // The watch has started: let the page change, or close its tab.
+        let releasedAt
+        const afterStart = async () => {
+          releasedAt = performance.now()
+          if (shape.name !== 'close') return releaseWatch(key)
+          closed = true
+          await tool('tabs_close', { tabId })
+        }
+        const started = performance.now()
+        try {
+          // A 60 s heartbeat never probes within the run: only a push can
+          // report the change within its budget.
+          const start = { targetId, text: 'Done', maxDurationMs: shape.name === 'timeout' ? 2500 : 15000, intervalMs: 60000 }
+          if (shape.node && entry !== 'wait') {
+            const tree = text(await tool('browser.observe', { targetId }))
+            start.refId = refFor(tree, 'status', 'Job 1')
+          }
+          let reason
+          let reported
+          let events = []
+          if (entry === 'mcp') {
+            let r = (await tool('browser.watch', start)).structuredContent
+            const id = r.watchId
+            events.push(...r.events)
+            await afterStart()
+            while (r.active) {
+              r = (await tool('browser.watch', { watchId: id, cursor: r.cursor, waitMs: 20000 })).structuredContent
+              events.push(...r.events)
+            }
+            reason = r.reason
+            reported = performance.now()
+          } else if (entry === 'cli') {
+            const run = await cli(start, [], afterStart)
+            reported = performance.now()
+            events = run.lines
+            reason = run.lines.at(-1)?.reason
+            const wantCode = shape.want === 'met' ? 0 : 1
+            if (run.code !== wantCode) throw new Error(`exit ${run.code}, want ${wantCode}: ${run.err}`)
+          } else {
+            // The wait step gives no signal when it has started, so the page
+            // is released at once (its changes tolerate an early release) and
+            // the tab closes after a pause.
+            releaseWatch(key)
+            const closing = shape.name === 'close' &&
+              new Promise((r) => setTimeout(r, 1200)).then(async () => {
+                closed = true
+                await tool('tabs_close', { tabId })
+              })
+            // A wait whose tab closes fails the act, naming the closed tab.
+            const r = await tool('browser.act', { targetId, steps: [{ type: 'wait', text: 'Done', timeoutMs: shape.name === 'timeout' ? 2500 : 12000 }] },
+              shape.name === 'close' && /failed at step 1 \(wait\): tab \d+ closed/)
+            await closing
+            reason = r.isError ? 'tabClosed' : r.structuredContent.results[0].met ? 'met' : 'timeout'
+          }
+          if (reason !== shape.want) throw new Error(`ended ${reason}, want ${shape.want}: ${JSON.stringify(events)}`)
+          if (shape.want === 'met' && entry !== 'wait') {
+            const met = events.find((e) => e.type === 'met')
+            if (!/done/i.test(met?.value ?? '')) throw new Error(`met event lacks the text: ${JSON.stringify(events)}`)
+          }
+          if (shape.navigated && entry !== 'wait' && !events.some((e) => e.type === 'navigated'))
+            throw new Error(`no navigated event: ${JSON.stringify(events)}`)
+          if (events.at(-1) && entry !== 'wait' && events.at(-1).type !== 'end')
+            throw new Error(`last event is not end: ${JSON.stringify(events)}`)
+          if (shape.budgetMs && entry !== 'wait' && reported - releasedAt > shape.budgetMs)
+            throw new Error(`reported ${Math.round(reported - releasedAt)} ms after the change, budget ${shape.budgetMs} ms: ${JSON.stringify(events)}`)
+          timings[`${shape.name}/${entry}`] = Math.round(performance.now() - started)
+        } catch (error) {
+          failures.push(`${shape.name}/${entry}: ${error.message ?? error}`)
+        } finally {
+          if (!closed) await closeTarget(opened).catch(() => {})
+          else targets.delete(tabId)
+        }
+      }
+    }
+    // A page that mutates all the time without changing what is watched:
+    // no event, and one check per task of mutations, not one per mutation.
+    {
+      const opened = await openTarget(`${rootUrl}/watch?shape=churn`, false)
+      const { targetId } = opened
+      try {
+        let r = (await tool('browser.watch', { targetId, change: true, intervalMs: 1000 })).structuredContent
+        const events = [...r.events]
+        const until = performance.now() + 3000
+        while (performance.now() < until) {
+          r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: Math.max(0, Math.round(until - performance.now())) })).structuredContent
+          events.push(...r.events)
+        }
+        // The heartbeat reports the page's checks; let one more arrive.
+        await new Promise((done) => setTimeout(done, 1100))
+        r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: 0 })).structuredContent
+        events.push(...r.events)
+        await tool('browser.watch', { watchId: r.watchId, stop: true })
+        const tasks = Number(text(await tool('browser.act', { targetId, steps: [{ type: 'evaluate', code: 'churnTasks' }] })).match(/evaluated: (\d+)/)?.[1])
+        assert.deepEqual(events.map((e) => e.type), ['initial'], JSON.stringify(events))
+        assert.ok(tasks >= 20, `the page churned only ${tasks} tasks`)
+        // Each heartbeat probe checks once too.
+        assert.ok(r.pageChecks > 0 && r.pageChecks <= tasks + 6, `${r.pageChecks} checks for ${tasks} tasks of 10 mutations`)
+        timings.churn = `${r.pageChecks} checks / ${tasks} tasks`
+      } catch (error) {
+        failures.push(`churn: ${error.message ?? error}`)
+      } finally {
+        await closeTarget(opened).catch(() => {})
+      }
+    }
+    // A chat in a cross-site iframe: the watch runs inside that frame, by
+    // frameId (count, then text) and by a ref the frame owns. The CLI loop is
+    // --once, resumed with --cursor, as a harness that wakes on exit runs it.
+    for (const entry of ['mcp frameId', 'mcp ref', 'cli once']) {
+      const key = `chat/${entry}/${Math.random().toString(36).slice(2)}`
+      const reply = (n) => releaseWatch(`${key}/${n}`)
+      const opened = await openTarget(`${rootUrl}/watch-chat?key=${encodeURIComponent(key)}`, false)
+      const { targetId, tabId } = opened
+      const started = performance.now()
+      try {
+        const frame = await waitUntil(async () =>
+          JSON.parse(text(await tool('frames_list', { tabId }))).find((f) => f.url.includes('/watch-chat-frame')), 'chat frame')
+        if (entry === 'mcp frameId') {
+          let r = (await tool('browser.watch', { targetId, frameId: frame.frameId, css: 'li.msg', count: true, intervalMs: 60000 })).structuredContent
+          assert.match(r.condition, /in frame /)
+          assert.equal(r.events[0]?.type, 'initial', JSON.stringify(r))
+          assert.equal(r.events[0].count, 1)
+          reply(1)
+          const replied = performance.now()
+          r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: 20000 })).structuredContent
+          assert.deepEqual(r.events.map((e) => [e.type, e.count, e.added]), [['count', 2, ['Agent: first reply']]], JSON.stringify(r))
+          assert.ok(performance.now() - replied < 1000, `the reply in the frame was reported after ${Math.round(performance.now() - replied)} ms`)
+          await tool('browser.watch', { watchId: r.watchId, stop: true })
+          r = (await tool('browser.watch', { targetId, frameId: frame.frameId, text: 'renewal done', intervalMs: 60000 })).structuredContent
+          reply(2)
+          while (r.active) r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: 20000 })).structuredContent
+          assert.equal(r.reason, 'met', JSON.stringify(r))
+        } else if (entry === 'mcp ref') {
+          const tree = text(await tool('browser.observe', { targetId }))
+          const list = refFor(tree, 'list', 'Messages')
+          let r = (await tool('browser.watch', { targetId, refId: list, text: 'renewal done', intervalMs: 60000 })).structuredContent
+          reply(1)
+          reply(2)
+          while (r.active) r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: 20000 })).structuredContent
+          assert.equal(r.reason, 'met', JSON.stringify(r))
+          assert.match(r.events.find((e) => e.type === 'met')?.value ?? '', /renewal Done/)
+        } else {
+          let run = await cli({ targetId, frameId: frame.frameId, css: 'li.msg', count: true, intervalMs: 60000 }, ['--once'], () => reply(1))
+          assert.equal(run.code, 3, run.err)
+          assert.deepEqual(run.lines.map((e) => e.type), ['initial', 'count'])
+          const { watchId, seq } = run.lines.at(-1)
+          // The renewal arrives while no CLI runs; the resumed run still gets it.
+          reply(2)
+          run = await cli(null, ['--id', watchId, '--cursor', String(seq), '--once'])
+          assert.equal(run.code, 3, run.err)
+          assert.deepEqual(run.lines.map((e) => [e.seq, e.added]), [[seq + 1, ['Agent: renewal Done']]])
+          await tool('browser.watch', { watchId, stop: true })
+        }
+        timings[`iframe/${entry}`] = Math.round(performance.now() - started)
+      } catch (error) {
+        failures.push(`iframe/${entry}: ${error.message ?? error}`)
+      } finally {
+        await closeTarget(opened).catch(() => {})
+      }
+    }
+    assert.deepEqual(failures, [])
+    return timings
   })
   await check('G: observe rereads once when the document changes mid-read', async () => {
     const opened = (await tool('browser.open', { url: `${rootUrl}/g-churn`, observe: false })).structuredContent

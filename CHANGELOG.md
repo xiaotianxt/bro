@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- `browser.watch` watches a page for a change and reports it without the agent
+  polling: text appears or is gone, a pattern matches, an element becomes
+  visible, hidden, enabled or disabled, or (streaming) any change of a target's
+  text or value and any change in a selector's match count, with the added
+  items' text. A start returns a `watchId`; a read returns the events after a
+  cursor and long-polls up to 50 s. Targets are the page's text, a CSS
+  selector, a ref or role + name; a re-rendered node is found again by its
+  role and name, and the watch carries on across navigations.
+  `bro watch '<start JSON>'` streams the same events as JSON lines and exits
+  when the watch ends (0 when met), so an agent can run it in the background
+  and be woken by each line.
+  Changes are pushed, not polled: an observer in the page re-checks the
+  condition once per task of DOM mutations and sends each new value at once,
+  so a change, even one that shows for a single task, is reported within
+  moments, and a page that mutates without changing what is watched sends
+  nothing. Navigation reinstalls the observer and a closed tab is pushed too.
+  A heartbeat probe on the server's clock (`intervalMs`, default 5 s) covers
+  what a page cannot push. A watch never goes quiet: a frozen, unresponsive or
+  disconnected tab is an event, and every read reports the tab's state and
+  when it was last probed. A watch ends when it is met, stopped, times out
+  (default 30 min, at most 24 h), or its tab closes, is discarded, stays
+  unresponsive for 60 s, or loses its browser for 30 s; the reason is the
+  last event. Watches live in the server and end when it restarts.
+- A watch can run inside a child frame, such as a support chat in a
+  cross-site iframe: pass the frame's `frameId` (from `frames_list`), or a ref
+  that lives in the frame.
+- `bro watch --once` exits 3 after the first change and leaves the watch
+  running; `bro watch --id W --cursor N --once` resumes after event N. This is
+  the loop for agent harnesses that wake only when a background command exits:
+  a change that arrives between two runs is printed by the next one.
+- The `wait` step's text conditions run on the same check: a text that shows
+  for less than a poll is no longer missed, and a frozen tab ends the wait at
+  once with the reason instead of after its timeout.
 - Reads wait for content a page says is still loading. An indeterminate
   `progressbar` or `aria-busy` region in view (an app shell's spinner) keeps
   extract, batch extract, and a target's first observe or act waiting, up to

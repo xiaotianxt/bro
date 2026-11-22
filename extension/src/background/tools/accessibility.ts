@@ -855,9 +855,11 @@ export async function waitAX(tabId: number, raw: unknown): Promise<ToolResult> {
   return { ...textResult('Element did not become visible before the deadline.'), isError: true }
 }
 
-async function mainTree(tabId: number): Promise<{ main: BrowserFrame; nodes: AXNode[] }> {
-  const main = (await getBrowserFrames(tabId)).find((frame) => !frame.parentId)
-  if (!main) throw new Error('Main frame unavailable')
+async function mainTree(tabId: number, frameId?: string): Promise<{ main: BrowserFrame; nodes: AXNode[] }> {
+  const main = (await getBrowserFrames(tabId)).find((frame) =>
+    frameId === undefined ? !frame.parentId : frame.id === frameId,
+  )
+  if (!main) throw new Error(frameId === undefined ? 'Main frame unavailable' : `Frame ${frameId} not found; observe to read current frame IDs`)
   await sendToFrame(tabId, main, 'Accessibility.enable', {})
   const { nodes } = await sendToFrame<{ nodes: AXNode[] }>(
     tabId,
@@ -871,12 +873,13 @@ async function mainTree(tabId: number): Promise<{ main: BrowserFrame; nodes: AXN
 const normalize = (value: unknown) => String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase()
 
 // Resolved at execution, not from an earlier observation, so a target that
-// re-rendered between observe and act still resolves. Main frame only. Roles
+// re-rendered between observe and act still resolves. Main frame unless a
+// frame is named (a watch's target frame). Roles
 // and names come from the same AX tree observe prints. An exact accessible
 // name wins; otherwise a unique substring match. Ambiguity fails instead of
 // guessing, and so does a near-miss role: the error names the roles found.
-async function resolveNamed(tabId: number, role: string, name: string): Promise<string> {
-  const { main, nodes } = await mainTree(tabId)
+export async function resolveNamed(tabId: number, role: string, name: string, frameId?: string): Promise<string> {
+  const { main, nodes } = await mainTree(tabId, frameId)
   const wanted = normalize(name)
   const visibleMatches = async (withRole: (role: string) => boolean): Promise<AXNode[]> => {
     const named = nodes.filter(
@@ -915,6 +918,19 @@ async function resolveNamed(tabId: number, role: string, name: string): Promise<
   const ref = snapshots.handle(tabId, target)
   snapshots.publish(tabId, new Map([[ref, target]]))
   return ref
+}
+
+/** The accessible role and name of a ref's node, as observe prints them. */
+export async function describeNode(tabId: number, ref: string): Promise<{ role: string; name: string }> {
+  const { frame, backendNodeId } = await refNode(tabId, ref)
+  await sendToFrame(tabId, frame, 'Accessibility.enable', {})
+  const { nodes } = await sendToFrame<{ nodes: AXNode[] }>(tabId, frame, 'Accessibility.getPartialAXTree', {
+    backendNodeId,
+    fetchRelatives: false,
+  })
+  const node = nodes.find((n) => n.backendDOMNodeId === backendNodeId) ?? nodes[0]
+  if (!node) throw new Error(`Stale ref ${ref}: no accessibility node. Read a fresh snapshot.`)
+  return { role: String(node.role?.value ?? ''), name: String(node.name?.value ?? '') }
 }
 
 const LAYER_ROLES = new Set(['dialog', 'alertdialog', 'menu', 'listbox'])

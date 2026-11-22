@@ -35,6 +35,10 @@ Usage:
   bro [serve] [--port N]                 start the HTTP/WebSocket/MCP server
   bro call TOOL [JSON] [--json] [--port N]
                                          call a tool on the local server
+  bro watch JSON | --id WATCHID [--cursor N] [--once] [--port N]
+                                         stream a browser.watch as JSON lines;
+                                         exit 0 when met, 1 on another end,
+                                         3 after one change with --once
   bro doctor [--json] [--port N]         read-only diagnostics
   bro setup codex [--config PATH] [--port N] [--json]
                                          point Codex at the local server
@@ -44,7 +48,15 @@ Usage:
 `
 
 func main() {
-	if err := run(os.Args[1:]); err != nil {
+	err := run(os.Args[1:])
+	var exit exitError
+	if errors.As(err, &exit) {
+		if exit.err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", exit.err)
+		}
+		os.Exit(exit.code)
+	}
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -65,6 +77,8 @@ func run(args []string) error {
 		return serve(args[1:])
 	case "call":
 		return call(args[1:])
+	case "watch":
+		return watchCmd(args[1:])
 	case "doctor":
 		return doctor(args[1:])
 	case "setup":
@@ -140,6 +154,23 @@ func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
 	return http.DefaultTransport.RoundTrip(r)
 }
 
+// connect opens an MCP session to the local server with the settings token.
+func connect(ctx context.Context, port int) (*mcp.ClientSession, error) {
+	s, err := settings.Load()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load settings: %w", err)
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "bro-cli", Version: version}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint:   fmt.Sprintf("http://127.0.0.1:%d/mcp", port),
+		HTTPClient: &http.Client{Transport: bearer{s.Token}},
+	}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to bro on port %d: %w", port, err)
+	}
+	return session, nil
+}
+
 func call(args []string) error {
 	fs := flags("call")
 	port := fs.Int("port", defaultPort, "")
@@ -163,18 +194,10 @@ func call(args []string) error {
 		}
 		arguments = object
 	}
-	s, err := settings.Load()
-	if err != nil {
-		return fmt.Errorf("failed to load settings: %w", err)
-	}
 	ctx := context.Background()
-	client := mcp.NewClient(&mcp.Implementation{Name: "bro-cli", Version: version}, nil)
-	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
-		Endpoint:   fmt.Sprintf("http://127.0.0.1:%d/mcp", *port),
-		HTTPClient: &http.Client{Transport: bearer{s.Token}},
-	}, nil)
+	session, err := connect(ctx, *port)
 	if err != nil {
-		return fmt.Errorf("failed to connect to bro on port %d: %w", *port, err)
+		return err
 	}
 	defer session.Close()
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: positional[0], Arguments: arguments})

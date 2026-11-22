@@ -96,6 +96,14 @@ type Bridge struct {
 	seq      uint64
 	pending  map[string]*pendingCall
 	log      *slog.Logger
+	// watchEvent receives the changes a watch's page pushes between probes.
+	watchEvent func(browserID string, tabID int64, watchID string, result json.RawMessage)
+}
+
+// OnWatchEvent sets the receiver of watch_event messages. It runs on the
+// connection's reader, so it must not block. Set it before serving.
+func (b *Bridge) OnWatchEvent(fn func(browserID string, tabID int64, watchID string, result json.RawMessage)) {
+	b.watchEvent = fn
 }
 
 func New(log *slog.Logger) *Bridge {
@@ -384,6 +392,8 @@ func (b *Bridge) handleMessage(browserID, sessionID string, data []byte) {
 		Error     struct {
 			Message string `json:"message"`
 		} `json:"error"`
+		WatchID string `json:"watchId"`
+		TabID   int64  `json:"tabId"`
 	}
 	if json.Unmarshal(data, &msg) != nil {
 		return
@@ -402,6 +412,10 @@ func (b *Bridge) handleMessage(browserID, sessionID string, data []byte) {
 	case "tool_error":
 		b.complete(msg.RequestID, browserID, sessionID, errorResult(msg.Error.Message))
 	case "pong":
+	case "watch_event":
+		if b.watchEvent != nil {
+			b.watchEvent(browserID, msg.TabID, msg.WatchID, msg.Result)
+		}
 	default:
 		return
 	}

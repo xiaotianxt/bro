@@ -552,32 +552,22 @@ func (f *Facade) actElement(ctx context.Context, s session, args map[string]any,
 	return report, nil
 }
 
-// waitFor polls until the condition holds or the timeout passes. A check that
-// fails transiently (a navigation in flight) counts as not yet met.
+// waitFor waits until the condition holds or the timeout passes. Text
+// conditions run on the watch probe (waitText); a ref condition polls the
+// ref, and a check that fails transiently (a navigation in flight) counts as
+// not yet met.
 func (f *Facade) waitFor(ctx context.Context, s session, cond waitCondition, timeoutMs int64) (map[string]any, error) {
 	started := time.Now()
-	deadline := started.Add(time.Duration(timeoutMs) * time.Millisecond)
-	lastError := ""
-	met := false
-	for {
-		ok, transient, err := f.conditionMet(ctx, s, cond)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			met = true
-			break
-		}
-		lastError = transient
-		now := time.Now()
-		if !now.Before(deadline) {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return nil, bridge.ErrCancelled
-		case <-time.After(min(waitPoll, deadline.Sub(now))):
-		}
+	var met bool
+	var lastError string
+	var err error
+	if cond.kind == "ref" {
+		met, lastError, err = f.pollRefState(ctx, s, cond, started.Add(time.Duration(timeoutMs)*time.Millisecond))
+	} else {
+		met, lastError, err = f.waitText(ctx, s, cond, timeoutMs)
+	}
+	if err != nil {
+		return nil, err
 	}
 	value := map[string]any{"met": met, "ms": time.Since(started).Milliseconds(), "condition": cond.describe()}
 	if !met && lastError != "" {
@@ -586,48 +576,53 @@ func (f *Facade) waitFor(ctx context.Context, s session, cond waitCondition, tim
 	return value, nil
 }
 
-// conditionMet: err means the wait cannot continue; transient names a check
-// that failed and may succeed on the next poll.
-func (f *Facade) conditionMet(ctx context.Context, s session, cond waitCondition) (met bool, transient string, err error) {
-	if cond.kind == "ref" {
-		r, err := f.dispatch(ctx, "get_element_info", map[string]any{"refId": cond.refID}, s.TabID, s.Browser)
-		if err != nil {
-			return false, "", err
+func (f *Facade) pollRefState(ctx context.Context, s session, cond waitCondition, deadline time.Time) (met bool, lastError string, err error) {
+	for {
+		ok, transient, err := f.refStateMet(ctx, s, cond)
+		if err != nil || ok {
+			return ok, "", err
 		}
-		if msg, failed := toolErrorMessage(r); failed {
-			// A node that left the document is hidden; no other state can hold for it.
-			if strings.Contains(msg, "Stale") {
-				if cond.state == "hidden" {
-					return true, "", nil
-				}
-				return false, "", ToolFailedError{"get_element_info", msg}
-			}
-			return false, msg, nil
+		lastError = transient
+		now := time.Now()
+		if !now.Before(deadline) {
+			return false, lastError, nil
 		}
-		var info map[string]any
-		_ = json.Unmarshal([]byte(textOf(decode(r.Result))), &info)
-		visible, disabled := info["visible"] == true, info["disabled"] == true
-		switch cond.state {
-		case "visible":
-			return visible, "", nil
-		case "hidden":
-			return !visible, "", nil
-		case "enabled":
-			return !disabled, "", nil
-		default:
-			return disabled, "", nil
+		select {
+		case <-ctx.Done():
+			return false, "", bridge.ErrCancelled
+		case <-time.After(min(waitPoll, deadline.Sub(now))):
 		}
 	}
-	r, err := f.dispatch(ctx, "javascript_tool", javascriptArgs(textPresentScript(cond.text), false, nil), s.TabID, s.Browser)
+}
+
+// refStateMet: err means the wait cannot continue; transient names a check
+// that failed and may succeed on the next poll.
+func (f *Facade) refStateMet(ctx context.Context, s session, cond waitCondition) (met bool, transient string, err error) {
+	r, err := f.dispatch(ctx, "get_element_info", map[string]any{"refId": cond.refID}, s.TabID, s.Browser)
 	if err != nil {
 		return false, "", err
 	}
 	if msg, failed := toolErrorMessage(r); failed {
+		// A node that left the document is hidden; no other state can hold for it.
+		if strings.Contains(msg, "Stale") {
+			if cond.state == "hidden" {
+				return true, "", nil
+			}
+			return false, "", ToolFailedError{"get_element_info", msg}
+		}
 		return false, msg, nil
 	}
-	found, err := javascriptStringResult(decode(r.Result))
-	if err != nil {
-		return false, "", err
+	var info map[string]any
+	_ = json.Unmarshal([]byte(textOf(decode(r.Result))), &info)
+	visible, disabled := info["visible"] == true, info["disabled"] == true
+	switch cond.state {
+	case "visible":
+		return visible, "", nil
+	case "hidden":
+		return !visible, "", nil
+	case "enabled":
+		return !disabled, "", nil
+	default:
+		return disabled, "", nil
 	}
-	return (found == "true") == (cond.kind == "text"), "", nil
 }
