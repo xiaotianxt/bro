@@ -24,6 +24,11 @@ export function keepRendering(tabId: number): void {
   timer ??= setInterval(tick, PUMP_MS)
 }
 
+/** Whether bro is pumping frames into this (hidden) tab. */
+export function isRendering(tabId: number): boolean {
+  return tabs.has(tabId)
+}
+
 export async function restoreRenderPump(): Promise<void> {
   const stored = await chrome.storage.session.get(STORAGE_KEY)
   const ids = stored[STORAGE_KEY] as number[] | undefined
@@ -73,11 +78,17 @@ async function pump(tabId: number): Promise<void> {
   try {
     // No clip: a clipped capture resizes the viewport while it runs, which
     // races hit tests of concurrent clicks.
-    await cdpSession.send(tabId, 'Page.captureScreenshot', {
-      format: 'jpeg',
-      quality: 1,
-      optimizeForSpeed: true,
-    })
+    // The reply waits for the renderer to draw a frame, which a busy renderer
+    // delays past the session timeout (a large AX tree read takes seconds).
+    // A session-bound timeout would detach the tab under that read, so this
+    // is caller-bound. inFlight leaves at most one waiting capture per tab,
+    // and a detach rejects it.
+    await cdpSession.send(
+      tabId,
+      'Page.captureScreenshot',
+      { format: 'jpeg', quality: 1, optimizeForSpeed: true },
+      'caller',
+    )
   } catch (error) {
     // Navigation and closing race the pump; the next tick retries.
     console.debug(`[RenderPump] tab ${tabId}:`, error)

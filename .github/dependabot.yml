@@ -1,11 +1,11 @@
 version: 2
 updates:
-  - package-ecosystem: cargo
+  - package-ecosystem: gomod
     directory: /
     schedule:
       interval: weekly
     groups:
-      rust:
+      go:
         patterns:
           - "*"
   - package-ecosystem: npm

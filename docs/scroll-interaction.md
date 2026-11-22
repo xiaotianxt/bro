@@ -68,8 +68,8 @@ fall back to DOM scrolling. The existing CDP timeout bounds the rendering wait.
 
 The result now says **Dispatched wheel**, not **Scrolled**. Rendering is
 synchronized, but a boundary, canceled wheel, snap point or ongoing animation
-can still affect movement. Read the application's resulting state; use
-`scroll_element` for measured ref-based offsets and boundary results. A failed
+can still affect movement. Read the application's resulting state; use a ref
+`scroll` step in `browser.act` for measured ref-based movement and boundary results. A failed
 rendering barrier explicitly reports that the wheel was already dispatched.
 This does not wait for arbitrary network loads or promise that every child-frame
 animation has completed.
@@ -82,20 +82,20 @@ to hidden. A separate isolated check of the originally failing MDN
 
 ## Efficient bro usage
 
-No new MCP tools are added. The existing `browser.flow.act` accepts a ref-only `scroll` step:
+No new MCP tools are added. `browser.act` accepts a ref-only `scroll` step:
 
 ```json
-{"sessionId":"FLOW","steps":[
+{"targetId":"TARGET","steps":[
   {"type":"scroll","refId":"PANEL_REF","direction":"down","amount":100},
-  {"type":"read_text"},
+  {"type":"observe","mode":"text"},
   {"type":"scroll","refId":"PANEL_REF","direction":"down","amount":10000},
-  {"type":"read_text"},
+  {"type":"observe","mode":"text"},
   {"type":"scroll","refId":"PANEL_REF","direction":"down","amount":100},
-  {"type":"read_text"}
+  {"type":"observe","mode":"text"}
 ]}
 ```
 
-The native scroll barrier makes each following read useful. `read_text` does not create a new AX snapshot, so the same ref can be reused while its node/document remains valid. Default direction is down, default amount 400 CSS pixels; amount must be 1–10000. Invalid direction, target or amount is rejected before executing earlier steps in that request. Fresh-tab `browser.batch.flow` cannot accept these existing-tab refs.
+The native scroll barrier makes each following read useful. A text observation does not create a new AX snapshot, so the same ref can be reused while its node/document remains valid. Default direction is down, default amount 400 CSS pixels; amount must be 1–10000. Invalid direction, target or amount is rejected before executing earlier steps in that request. Fresh-tab `browser.batch.flow` cannot accept these existing-tab refs.
 
 ## Efficient agent-browser usage
 
@@ -123,8 +123,8 @@ This exact approach was independently executed successfully: eight commands in o
 - Green: the same test reads `SCROLL_TOP:100` immediately after the scroll returns, without screenshot/manual activation/fixed sleep.
 - A second real-browser contract starts hidden and executes all scroll/read stages in one flow call; visible states are exactly 100/920/920, with moved flags true/true/false and boundary flags false/true/true.
 - Unit cases cover actual movement, boundary/no-replay behavior, event-driven range growth, RTL offsets, disconnected targets and non-scrollable axes.
-- Rust parsing checks cover invalid direction, absent/ref+CSS targets, empty ref, zero/negative/oversized amount, and rejection of refs in fresh-tab batches.
-- `make check`: 45 Rust, 37 extension and 20 Pi adapter tests passed. Eleven real-browser contract groups passed.
+- Server parsing checks cover invalid direction, absent/ref+CSS targets, empty ref, zero/negative/oversized amount, and rejection of refs in fresh-tab batches.
+- `make check`: 45 server, 37 extension and 20 Pi adapter tests passed. Eleven real-browser contract groups passed.
 
 Use the isolated build/run instructions in [ref-interaction.md](ref-interaction.md). `live-refs.mjs --checks background` selects the two relevant lifecycle contracts. Model comparisons remain explicitly opt-in.
 

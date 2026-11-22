@@ -22,15 +22,13 @@ function tool(name: string, description = "", properties: string[] = []): Tool {
 }
 
 describe("bro tool catalog", () => {
-  it("honors native defaults and falls back to legacy flows only on older servers", () => {
-    const old = buildBroCatalog([tool("browser.flow.start"), tool("browser.flow.observe"), tool("javascript_tool")], []);
-    expect(defaultBroTools(old).map((t) => t.upstream.name)).toEqual(["browser.flow.start", "browser.flow.observe"]);
-    const modern = buildBroCatalog([
+  it("activates only the tools the server marks as default", () => {
+    const catalog = buildBroCatalog([
       { ...tool("browser.open"), _meta: { "bro/default": true } },
-      { ...tool("browser.flow.start"), _meta: { "bro/default": false } },
       { ...tool("browser.network.capture"), _meta: { "bro/default": false } },
+      tool("javascript_tool"),
     ], []);
-    expect(defaultBroTools(modern).map((t) => t.upstream.name)).toEqual(["browser.open"]);
+    expect(defaultBroTools(catalog).map((t) => t.upstream.name)).toEqual(["browser.open"]);
   });
 
   it("keeps target identity separate from automatic or explicit owner naming", () => {
@@ -46,7 +44,7 @@ describe("bro tool catalog", () => {
 
   it("omits server-owned internal tools from Pi registration", () => {
     const internal = {
-      ...tool("agent_done"),
+      ...tool("internal_tool"),
       _meta: { "bro/piVisibility": "internal" },
     } as Tool;
 
@@ -71,30 +69,6 @@ describe("bro tool catalog", () => {
     expect(() => buildBroCatalog([tool("find")], ["bro_find"])).toThrow(
       "Pi tool name already registered: bro_find",
     );
-  });
-
-  it("loads the complete flow pack for interaction intent", () => {
-    const flowTools = [
-      tool("browser.flow.start"),
-      tool("browser.flow.observe"),
-      tool("browser.flow.act"),
-      tool("browser.flow.finish"),
-    ].map((entry) => ({
-      ...entry,
-      _meta: { "bro/capability": "interaction" },
-    })) as Tool[];
-    const catalog = buildBroCatalog(flowTools, []);
-
-    expect(
-      searchBroCatalog(catalog, "interact with a multi-step page", 8).map(
-        (entry) => entry.piName,
-      ),
-    ).toEqual([
-      "bro_browser_flow_start",
-      "bro_browser_flow_observe",
-      "bro_browser_flow_act",
-      "bro_browser_flow_finish",
-    ]);
   });
 
   it("loads a complete server-owned capability pack", () => {
@@ -163,12 +137,6 @@ describe("prepareBroArguments", () => {
     expect(
       prepareBroArguments("tabs_finalize", { sessionId: "explicit" }, { id: "session-1" }),
     ).toEqual({ sessionId: "explicit" });
-  });
-
-  it("does not replace browser flow ids with the Pi session id", () => {
-    expect(
-      prepareBroArguments("browser.flow.finish", { sessionId: "flow-1" }, { id: "session-1" }),
-    ).toEqual({ sessionId: "flow-1" });
   });
 
   it("adds the current display name to session_name", () => {

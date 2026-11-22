@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"net/http"
 	"regexp"
 	"strings"
 	"testing"
@@ -73,7 +74,9 @@ func TestCancelledOpenCleansTheLateAllocation(t *testing.T) {
 	p := c.Start("browser.open", j(`{"url":"https://test.invalid","observe":false}`))
 	create := ext.NextTool("tabs_create")
 	p.Cancel()
-	time.Sleep(100 * time.Millisecond)
+	// Reply only once the server has seen the cancellation; before that the
+	// open may legitimately complete.
+	s.waitLog(t, "cancelled")
 	ext.Reply(create, "Created tab: 42")
 	close := ext.NextTool("tabs_close")
 	equalJSON(t, close.Args["tabId"], `42`)
@@ -183,4 +186,31 @@ func TestBatchCleanupOutlivesTheDeadlineWithoutDuplicateClose(t *testing.T) {
 			ext.Quiet()
 		})
 	}
+}
+
+func TestClosedClientSessionCleansTheLateAllocation(t *testing.T) {
+	s := startServer(t)
+	ext := s.connectExt(t, "a")
+	c := s.client(t)
+	c.Start("browser.open", j(`{"url":"https://test.invalid","observe":false}`))
+	create := ext.NextTool("tabs_create")
+	// The client ends its session mid-call (DELETE /mcp): the in-flight open is
+	// cancelled, so the tab that arrives later is closed instead of left open
+	// and unknown.
+	req, err := http.NewRequest(http.MethodDelete, s.URL("/mcp"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Mcp-Session-Id", c.session.ID())
+	resp, err := (&http.Client{Transport: bearer{http.DefaultTransport}}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	s.waitLog(t, "cancelled")
+	ext.Reply(create, "Created tab: 42")
+	close := ext.NextTool("tabs_close")
+	equalJSON(t, close.Args["tabId"], `42`)
+	ext.Reply(close, "closed")
+	ext.Quiet()
 }

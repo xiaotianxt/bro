@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Credential-transport regression: disposable browser/profile/provider only.
-// Build bro with --features credential-test-provider --target-dir target/credential-test.
+// Build bro with: go build -tags credtest -o target/credential-test/bro ./cmd/bro
 import assert from 'node:assert/strict'
 import { spawn, execFileSync } from 'node:child_process'
 import { once } from 'node:events'
@@ -12,7 +12,7 @@ import { randomUUID } from 'node:crypto'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
-const [extension, chrome, binary = 'target/credential-test/debug/bro'] = process.argv.slice(2)
+const [extension, chrome, binary = 'target/credential-test/bro'] = process.argv.slice(2)
 if (!extension || !chrome) throw new Error('Usage: live-login.mjs EXTENSION_DIR CHROME_BINARY [TEST_BRO_BINARY]')
 assert.match(execFileSync(resolve(binary), ['--version'], { encoding: 'utf8' }), /\+credential-test-provider/, 'Refuse a production binary: this test must never access real vaults')
 const dir = await mkdtemp(join(tmpdir(), 'bro-login-test-'))
@@ -114,7 +114,7 @@ console.log(JSON.stringify(process.argv.includes('list')?[item]:item));
   const port = probe.address().port
   await new Promise(r => probe.close(r))
   const home = join(dir, 'home'); await mkdir(home)
-  launch(resolve(binary), ['serve', '--port', String(port)], { HOME: home, RUST_LOG: 'trace',
+  launch(resolve(binary), ['serve', '--port', String(port)], { HOME: home,
     BRO_TEST_OP: provider, BRO_TEST_MODE: mode, BRO_TEST_CALLS: join(dir, 'provider-calls'),
     BRO_TEST_SECRET: canary, BRO_TEST_USERNAME: username, BRO_TEST_ORIGIN: origin })
   const token = await wait(async () => { try { return JSON.parse(await readFile(join(home, '.bro/settings.json'), 'utf8')).token } catch { return null } }, 'broker')
@@ -224,9 +224,9 @@ console.log(JSON.stringify(process.argv.includes('list')?[item]:item));
   socket.close(); socket = undefined
   await stopChildren()
   const logs = await readFile(join(dir, 'process.log'), 'utf8')
-  assert.ok(!logs.includes(canary) && !logs.includes(username), 'credential appeared in TRACE process log')
+  assert.ok(!logs.includes(canary) && !logs.includes(username), 'credential appeared in process log')
   assert.ok(!publicResults.join('').includes(canary) && !publicResults.join('').includes(username), 'credential appeared in transcript')
-  console.log('PASS synthetic credentials absent from public requests/results and TRACE process log')
+  console.log('PASS synthetic credentials absent from public requests/results and process log')
 } finally {
   await client?.close().catch(() => {})
   socket?.close()

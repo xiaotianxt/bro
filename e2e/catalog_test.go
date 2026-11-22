@@ -13,9 +13,7 @@ import (
 
 var update = flag.Bool("update", false, "rewrite e2e/testdata snapshots")
 
-// removedTools leave the surface with the Go server (docs/go-migration.md).
-// They are excluded from the snapshot so it gates both implementations; the
-// merged ones change kept schemas, which shows up as a reviewed snapshot diff.
+// removedTools left the surface in 2.0 (CHANGELOG.md); none may return.
 var removedTools = map[string]bool{
 	"browser.flow.start": true, "browser.flow.observe": true, "browser.flow.act": true, "browser.flow.finish": true,
 	"browser.batch.run": true, "agent_done": true, "tabs_claim": true, "tabs_create_mcp": true, "tabs_context_mcp": true,
@@ -38,9 +36,10 @@ func TestToolCatalogSnapshot(t *testing.T) {
 	}
 	kept := map[string]any{}
 	for _, tool := range list.Tools {
-		if !removedTools[tool.Name] {
-			kept[tool.Name] = tool
+		if removedTools[tool.Name] {
+			t.Errorf("removed tool %s is listed", tool.Name)
 		}
+		kept[tool.Name] = tool
 	}
 	got, err := json.MarshalIndent(kept, "", "  ")
 	if err != nil {

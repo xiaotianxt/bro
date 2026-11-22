@@ -9,5 +9,5 @@ OpenBrowserMCP:
 OpenBrowserMCP is licensed under the Apache License, Version 2.0. This
 repository keeps the Apache-2.0 license and preserves attribution for that
 upstream work. bro renames the project and packages, replaces the local MCP
-server core with Rust, and keeps a minimal WebExtension adapter for the browser
+server core with Go, and keeps a minimal WebExtension adapter for the browser
 APIs that must run inside Chromium's extension environment.

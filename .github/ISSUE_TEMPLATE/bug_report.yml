@@ -21,7 +21,7 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: OS, Rust version, browser, and MCP client.
+      description: OS, bro version, browser, and MCP client.
     validations:
       required: true
   - type: textarea

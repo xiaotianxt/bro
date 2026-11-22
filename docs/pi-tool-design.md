@@ -1,6 +1,7 @@
 # Pi Tool Design From Agent Benchmarks
 
 Status: revised after the 2026-09-03 `v1.0.1` pilot and post-fix benchmark.
+The 2.0 tool surface (43 tools) is recorded in the [changelog](../CHANGELOG.md).
 
 ## Decision
 

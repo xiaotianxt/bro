@@ -16,67 +16,39 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  rust:
-    name: Rust
+  go:
+    name: Go
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2.9.1
-      - name: Format
-        run: cargo fmt --all -- --check
-      - name: Clippy
-        run: cargo clippy --locked --all-targets --all-features -- -D warnings
-      - name: Test
-        run: cargo test --locked --all-features
-
-  contracts:
-    name: Contracts
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2.9.1
       - uses: actions/setup-go@v5.5.0
         with:
           go-version-file: go.mod
-      - name: Contracts against the Rust binary
-        run: make e2e
+      - name: Format
+        run: test -z "$(gofmt -l cmd internal e2e)"
+      - name: Vet
+        run: go vet ./...
+      - name: Unit tests and contracts
+        run: go test -count=1 -race ./...
 
-  platform-build:
-    name: Platform build (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-          - os: ubuntu-22.04-arm
-            target: aarch64-unknown-linux-gnu
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-          - os: macos-15
-            target: aarch64-apple-darwin
-          - os: windows-2022
-            target: x86_64-pc-windows-msvc
-          - os: windows-11-vs2026-arm
-            target: aarch64-pc-windows-msvc
+  cross-build:
+    name: Cross build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
-      - name: Install Rust
-        run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@v5.5.0
         with:
-          key: ${{ matrix.target }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Build target
-        run: cargo +stable build --locked --target ${{ matrix.target }}
+          go-version-file: go.mod
+      - name: Build every release target
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            GOOS="${target%/*}" GOARCH="${target#*/}" go build -o /dev/null ./cmd/bro
+          done
 
   extension:
     name: Extension

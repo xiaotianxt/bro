@@ -72,6 +72,21 @@ describe('document readiness at navigation dispatch', () => {
     expectClean()
   })
 
+  it('bounds a slow commit by readiness, not by the session-killing command timeout', async () => {
+    mock.send.mockImplementation(async (_tab, method) => {
+      if (method === 'Page.navigate') return new Promise(() => {})
+      if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'main', loaderId: 'existing', url: 'https://page.test' } } }
+      return {}
+    })
+    const pending = navigateDocument(42, 'https://slow.test')
+    const assertion = expect(pending).rejects.toThrow(/DOMContentLoaded/)
+    await flush()
+    expect(mock.send).toHaveBeenCalledWith(42, 'Page.navigate', { url: 'https://slow.test' }, 'caller')
+    await vi.advanceTimersByTimeAsync(10000)
+    await assertion
+    expectClean()
+  })
+
   it('cleans up dispatch failures without an orphan rejected wait', async () => {
     mock.send.mockImplementation(async (_tab, method) => {
       if (method === 'Page.navigate') throw new Error('navigation denied')

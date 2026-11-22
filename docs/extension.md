@@ -1,8 +1,8 @@
 # Extension Adapter
 
-bro uses a minimal Chromium-family WebExtension adapter. The Rust server owns
+bro uses a minimal Chromium-family WebExtension adapter. The Go server owns
 MCP transport, auth, tool schemas, routing, facade behavior, batching, cleanup,
-and tests. The extension owns only the browser APIs that Rust cannot call from a
+and tests. The extension owns only the browser APIs that Go cannot call from a
 normal local process: tabs, debugger/CDP attachment, content scripts, downloads,
 notifications, and extension options.
 
@@ -15,7 +15,7 @@ Options accept only `ws://` URLs on `localhost`, `127.0.0.1`, or `[::1]`. The
 token stays in local extension storage. The extension refuses to connect unless
 Chromium first restricts that storage to trusted extension contexts. Older
 synced tokens are migrated once and removed from sync storage. The extension
-reports connected only after the Rust server acknowledges authentication.
+reports connected only after the server acknowledges authentication.
 
 ## User Scripts
 
@@ -57,7 +57,7 @@ For Homebrew installs, `bro setup browser` reveals the installed extension
 directory and copies the token to the clipboard. For source checkouts, run:
 
 ```bash
-cargo run -- setup browser --extension-dir extension/dist
+go run ./cmd/bro setup browser --extension-dir extension/dist
 ```
 
 Load that directory as an unpacked extension in a Chromium-family browser. Open

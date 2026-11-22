@@ -1,7 +1,7 @@
 # Interaction Internals
 
-Developer contracts behind `browser.open/observe/act/close`, `browser.batch.*`
-and legacy `browser.flow.*`. The model-facing usage is in
+Developer contracts behind `browser.open/attach/observe/act/close` and
+`browser.batch.*`. The model-facing usage is in
 [Browser facade](browser-facade.md); keep invariants here so the injected
 prompt stays small.
 
@@ -44,8 +44,7 @@ DOMContentLoaded (`readyState` is not `loading`), and shows readable text:
 a nav shell nor a loading placeholder ("Loading…"), so a small page is ready
 at once instead of waiting out the cap. At the cap the call proceeds and
 shows whatever the page has; it never fails for slowness. A page that loaded
-during the model's turn costs one probe. Every other caller (batch, extract,
-`flow.start`) still waits for readiness inside `tabs_create` and closes the tab
+during the model's turn costs one probe. Every other caller (batch, extract) still waits for readiness inside `tabs_create` and closes the tab
 when it fails; the extension keeps `allowNotReady` for compatibility, unused by
 the facade. Application
 readiness is an explicit act `wait` condition or observe/evaluate contract.
@@ -79,12 +78,11 @@ are deliberately absent: `status: ok` means the steps executed, not that the
 site's postcondition holds. `browser.observe` returns the observation text as
 content and `{targetId, content}` as structured content.
 
-Observe budgets: standalone 8000 characters, 3000 inside act/flow.act, 8000 in
+Observe budgets: standalone 8000 characters, 3000 inside act, 8000 in
 batch.flow. Facade ceilings (observe, act, batch.flow): `maxChars` above 20000
 is rejected, matching the schema, and a11y budgets above 12000 are reduced to
 12000. Text is the cheap way to read content; a11y exists to find refs, and
-models otherwise request 16000–20000 a11y characters by habit. Legacy
-`flow.observe`/`flow.act` keep the 1.3 bound of 60000.
+models otherwise request 16000–20000 a11y characters by habit.
 
 Truncated a11y output reports the effective budget and `cursor=N` (node lines
 emitted so far); frame headers are always repeated so a continued page keeps
@@ -110,7 +108,7 @@ Every failure to resolve an observation scope starts `Scoped ref <ref>`. In
 `browser.act` only, such a failure re-reads the page with the same budget and
 filter (scope and cursor dropped) and prefixes `scope <ref> was replaced;
 observed page`: observation is read-only, so failing would discard the record
-of the steps already executed. Standalone observe and legacy flow.act still fail.
+of the steps already executed. Standalone observe still fails.
 
 Act `wait` takes exactly one condition and no fixed delay: `text` appears or
 `textGone` disappears in the main frame's rendered text (`innerText`, compared
@@ -123,8 +121,8 @@ the condition holds. Not meeting it is a step result (`met: false`, rendered
 steps still show the page. A check that fails transiently (a navigation in
 flight) counts as not yet met, and the last such error is reported on timeout.
 A ref that left the document satisfies `hidden` and fails the other states,
-which can never hold for it. `ms` is rejected in act; batch.flow and legacy
-flow.act keep `wait` `ms` with their 0–30000 ms clamp and reject conditions.
+which can never hold for it. `ms` is rejected in act; batch.flow keeps `wait` `ms` with its 0–30000 ms
+clamp and rejects conditions.
 
 Every CDP command shares one 5000 ms reply bound, and a timeout detaches the
 debugger so the next command reattaches cleanly; raising it would delay that
@@ -154,7 +152,7 @@ its nearest composed ancestor that overflows on that axis with
 frame's document scroller. The result names it (`document` or a fresh ref) and
 fails only when nothing on that axis can scroll.
 
-`check` maps to `form_input` with `checked`. It accepts only native checkbox
+`check` maps to the extension's `form_input` with `checked`. It accepts only native checkbox
 and radio inputs (custom ARIA controls must be clicked), treats a visually
 hidden input as visible when one of its labels is, and uses the element's
 activation behavior (`click`/`input`/`change`) rather than pointer input. A
@@ -184,19 +182,8 @@ shutdown and restores them across reload; already-closed tabs count as cleaned.
 Facade allocation keeps cleanup responsibility even when a caller is dropped or
 a batch item times out before the creation reply. A late allocation is
 reclaimed on its original connection. Batch cleanup transfers responsibility to
-one spawned task before any await; timeout results report scheduled, not
+one goroutine before any blocking call; timeout results report scheduled, not
 completed, cleanup. Failures emit a structured warning with tab and target IDs;
 there is no automatic retry. The 30-second bridge bound and 2-second cleanup
 bound still apply: a lost reply or disconnected browser is not proof that an
 effect was undone.
-
-## Legacy flow compatibility
-
-`browser.flow.start/observe/act/finish` keep their 1.3 signatures and result
-envelopes (`sessionId`, `goto`/`eval` names, CSS targets, `wait`, `read_text`,
-optional cleanup). They share the same ownership state, executor, readiness and
-ref registry; they are not a second engine, and are discoverable but not active
-by default. `fill` uses native setters and dispatches input/change; `select`
-accepts an option value or unique visible label. `scroll` requires a ref,
-accepts 1–10000 CSS pixels, emulates focus without activation and returns
-measured movement. `browser.batch.flow` accepts CSS/eval templates, not refs.

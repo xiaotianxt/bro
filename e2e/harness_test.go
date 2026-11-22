@@ -1,7 +1,7 @@
-// Package e2e is bro's black-box contract suite. It runs the binary named by
-// BRO_BIN with an isolated HOME, connects fake extensions to /ws, and drives
-// /mcp with the official Go MCP SDK. It asserts only what MCP clients and the
-// extension can observe, so the same suite gates the Rust and Go servers.
+// Package e2e is bro's black-box contract suite. It runs the bro binary with
+// an isolated HOME, connects fake extensions to /ws, and drives /mcp with the
+// official Go MCP SDK. It asserts only what MCP clients and the extension can
+// observe, so internals can change freely underneath it.
 package e2e
 
 import (
@@ -28,25 +28,45 @@ const (
 	testToken = "e2e-secret-token-0123456789"
 	// A step that fails early never sends the next call; fail, do not hang.
 	callWait = 5 * time.Second
-	// How long "no further browser call" is observed. Rust tests checked an
-	// in-process queue; over a socket the absence needs a short window.
+	// How long "no further browser call" is observed: over a socket an
+	// absence needs a short window.
 	quietWindow = 200 * time.Millisecond
+	// Clients send notifications/cancelled asynchronously and best-effort
+	// (go-sdk allows itself 5 s), so its arrival gets the hang bound, not callWait.
+	cancelWait = 15 * time.Second
 )
 
 var broBin = os.Getenv("BRO_BIN")
 
+// TestMain runs the contracts against BRO_BIN, or against a fresh build of
+// ./cmd/bro when it is unset, so plain `go test ./...` covers them.
 func TestMain(m *testing.M) {
+	os.Exit(run(m))
+}
+
+func run(m *testing.M) int {
 	if broBin == "" {
-		fmt.Fprintln(os.Stderr, "BRO_BIN must name the bro binary under test (make e2e sets it)")
-		os.Exit(2)
+		dir, err := os.MkdirTemp("", "bro-e2e-")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		defer os.RemoveAll(dir)
+		broBin = filepath.Join(dir, "bro")
+		build := exec.Command("go", "build", "-o", broBin, "../cmd/bro")
+		build.Stdout, build.Stderr = os.Stderr, os.Stderr
+		if err := build.Run(); err != nil {
+			fmt.Fprintln(os.Stderr, "build bro:", err)
+			return 2
+		}
 	}
 	abs, err := filepath.Abs(broBin)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		return 2
 	}
 	broBin = abs
-	os.Exit(m.Run())
+	return m.Run()
 }
 
 // Server is one bro process with its own HOME and port.
@@ -63,7 +83,7 @@ func startServer(t *testing.T) *Server {
 	port := freePort(t)
 	logs := &lockedBuffer{}
 	cmd := exec.Command(broBin, "serve", "--port", fmt.Sprint(port))
-	cmd.Env = append(os.Environ(), "HOME="+home, "RUST_LOG=info", "NO_COLOR=1")
+	cmd.Env = append(os.Environ(), "HOME="+home, "NO_COLOR=1")
 	cmd.Stdout = logs
 	cmd.Stderr = logs
 	if err := cmd.Start(); err != nil {
@@ -101,6 +121,19 @@ func (s *Server) URL(path string) string { return fmt.Sprintf("http://127.0.0.1:
 
 // Logs returns everything the server wrote so far.
 func (s *Server) Logs() string { return s.logs.String() }
+
+// waitLog waits until the server log contains want: a state the server
+// reports, never a guessed delay.
+func (s *Server) waitLog(t *testing.T, want string) {
+	t.Helper()
+	deadline := time.Now().Add(cancelWait)
+	for !strings.Contains(s.Logs(), want) {
+		if time.Now().After(deadline) {
+			t.Fatalf("server never logged %q", want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
 
 func writeSettings(t *testing.T, home string) {
 	t.Helper()

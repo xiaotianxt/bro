@@ -2,13 +2,13 @@
 
 ## 1.0
 
-- Stable Rust MCP server and CLI with a minimal authenticated WebExtension
+- Stable MCP server and CLI with a minimal authenticated WebExtension
   adapter.
 - Batch extraction, leased-tab flows, browser monitoring, and generic browser
   primitives.
 - Cross-platform GitHub artifacts, extension packaging, and Homebrew service
   installation.
-- CI coverage for Rust, the extension, version synchronization, and the local
+- CI coverage for the server, the extension, version synchronization, and the local
   authentication boundary.
 
 ## Next

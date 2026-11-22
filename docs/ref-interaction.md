@@ -10,7 +10,7 @@ Introduced in **v1.1.0**. Upgrade the server and browser extension together. Exi
 
 ## User-facing workflow
 
-In 1.4, `browser.observe` (and compatibility `browser.flow.observe`) defaults to a compact native accessibility snapshot containing frame trees, Shadow DOM controls, labels, values and relevant states. The same observation is composable inside `browser.act`. `mode: "text"` remains an explicit main-frame text option.
+In 1.4, `browser.observe` defaults to a compact native accessibility snapshot containing frame trees, Shadow DOM controls, labels, values and relevant states. The same observation is composable inside `browser.act`. `mode: "text"` remains an explicit main-frame text option.
 
 Use the returned opaque refs directly in `browser.act`:
 
@@ -30,13 +30,12 @@ Typical sequence:
 browser.open (first observation) → browser.act(refs + observe, close: true)
 ```
 
-Ref-only `scroll` steps are also supported in `flow.act`; pair them with
+Ref-only `scroll` steps are also supported in `browser.act`; pair them with
 `observe` to verify intermediate UI states in one call without replacing refs.
-Legacy `flow.act` also retains `read_text`.
 See [Input focus](input-focus.md) for current focus/rendering semantics
 and structured movement/boundary results.
 
-`read_page`, `find`, `form_input`, `fill_element`, `click_element`, `scroll_element`, `get_element_info`, `wait_for_element` and `file_upload` share the same ref identity/resolution mechanism. `browser.observe` and `browser.flow.observe` expose the same `refId`, `filter`, `depth`, `maxChars`, `cursor` and `compact` controls as `read_page`; these options are rejected with `mode: text`. `read_page` defaults to `filter: all`, `compact: true`, `depth: 20`, and a shared 8,000-character budget (3,000 for an act `observe` step); truncated output reports a `cursor` for continuation. Use `filter: interactive` for a shorter controls-only view. `compact: false` retains unnamed structural nodes. Scope `refId` narrows to its AX subtree **within its owning document**; omit it for all frame trees.
+`read_page`, `find`, `get_element_info`, `wait_for_element`, `file_upload` and the `browser.*` interaction tools share the same ref identity/resolution mechanism. `browser.observe` exposes the same `refId`, `filter`, `depth`, `maxChars`, `cursor` and `compact` controls as `read_page`; these options are rejected with `mode: text`. `read_page` defaults to `filter: all`, `compact: true`, `depth: 20`, and a shared 8,000-character budget (3,000 for an act `observe` step); truncated output reports a `cursor` for continuation. Use `filter: interactive` for a shorter controls-only view. `compact: false` retains unnamed structural nodes. Scope `refId` narrows to its AX subtree **within its owning document**; omit it for all frame trees.
 
 ## Identity and failure contracts
 
@@ -48,7 +47,7 @@ and structured movement/boundary results.
 - Service-worker restart loses the volatile registry and starts a new epoch; refs from the old epoch fail with an explicit "earlier page registry" error. There is no attempt to resurrect uncertain identity.
 - A covered ref click dispatches nothing and names the covering element and its overlay as fresh refs. `check` sets a native radio/checkbox through its activation behavior instead; see [Interaction internals](interaction-internals.md).
 - `browser.batch.flow` creates new tabs and cannot reuse existing snapshot refs. It accepts CSS/eval templates; the server rejects ref steps before creating tabs.
-- Flow argument validation completes before any step executes. Invalid `css + refId`, `refId + frameId`, missing targets, or missing values cannot produce partially executed flows. Runtime failure still stops subsequent steps and propagates MCP failure.
+- Act argument validation completes before any step executes. Invalid `css + refId`, `refId + frameId`, missing targets, or missing values cannot produce partially executed flows. Runtime failure still stops subsequent steps and propagates MCP failure.
 - Clicks temporarily emulate page focus without activating the tab/window, check actionability and occlusion, and dispatch trusted CDP input. There is **no JavaScript-click or coordinate-tool fallback**. Internally computed coordinates are part of the ref executor, not an agent-selected alternative target.
 - Ancestor iframe geometry is transformed into top-level CSS coordinates. Rendering is synchronized after scrolling before hit testing and dispatch; clicks are never replayed as a timing workaround.
 - Form setters reject disabled, inert, read-only and hidden targets in their owning document; invalid select options fail. Clicks additionally check ancestor iframe hit surfaces. Form events are composed across Shadow DOM boundaries and use native setters for controlled-form compatibility. These checks are not a claim of atomic actionability across concurrently changing frame ancestors.
@@ -85,10 +84,10 @@ The opt-in test uses a **fresh Chrome for Testing profile and a separate bro pro
 OUT="$(mktemp -d "${TMPDIR:-/tmp}/bro-refs.XXXXXX")"
 # Set CHROME_BIN to the Chrome for Testing binary (agent-browser install can provide it).
 make check EXTENSION_OUT_DIR="$OUT/extension"
-cargo build
 node scripts/live-refs.mjs \
   --extension "$OUT/extension" \
   --chrome "$CHROME_BIN" \
+  --bro target/bro \
   --output "$OUT/live"
 ```
 
@@ -103,10 +102,10 @@ Each contract resets the fixture to a fresh document, so a failed group cannot p
 5. Covered/disabled clicks, read-only controls and invalid options, with error reasons and unchanged page state.
 6. Iframe navigation invalidating its former document's refs.
 7. Cross-site file upload with decoded filename/content verification, and the upload patterns of real pages (`U:`): hidden, click-created and label-covered inputs, trusted-click-only buttons, coordinate targets, drop zones, and `showOpenFilePicker`.
-8. Default flow observation, ref-only flow steps, parse-before-effect validation and runtime fail-fast behavior.
+8. Default target observation, ref-only act steps, parse-before-effect validation and runtime fail-fast behavior.
 9. `find`/info/wait/scroll interoperability, actual scroll offsets and explicit no-movement boundary reporting.
 10. Fresh-background-tab scrolling delivers event-driven visible UI before returning.
-11. One flow call batches three scroll/read pairs with visible 100/920/920 states and correct boundary flags.
+11. One act call batches three scroll/read pairs with visible 100/920/920 states and correct boundary flags.
 12. Computer wheel input renders background panels/pages without activation.
 13. Modern targets follow redirects, compose navigate/evaluate/observe, and reuse scoped refs for scroll/observe.
 14. Batch flow's initial evaluations read the intended document, never the initial about:blank.
@@ -139,4 +138,4 @@ The pilot preceded the final padded/tiny-button and scroll-contract additions an
 
 ## Release boundary
 
-v1.1.0 releases the matching Rust server and extension together. Upgrade Homebrew, reload the browser extension, synchronize the bro skill, and reload the agent's tool catalog. Older 1.0.3 clients can retain main-frame text via explicit `mode: "text"`; numeric refs from before the upgrade are not reusable.
+v1.1.0 releases the matching server and extension together. Upgrade Homebrew, reload the browser extension, synchronize the bro skill, and reload the agent's tool catalog. Older 1.0.3 clients can retain main-frame text via explicit `mode: "text"`; numeric refs from before the upgrade are not reusable.

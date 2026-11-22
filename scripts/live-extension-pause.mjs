@@ -11,7 +11,7 @@ import { resolve, join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
-const [extension, chrome, binary = 'target/debug/bro'] = process.argv.slice(2)
+const [extension, chrome, binary = 'target/bro'] = process.argv.slice(2)
 if (!extension || !chrome) throw new Error('Usage: live-extension-pause.mjs EXTENSION_DIR CHROME_BINARY [BRO_BINARY]')
 const dir = await mkdtemp(join(tmpdir(), 'bro-pause-test-'))
 const log = await open(join(dir, 'process.log'), 'w')
@@ -51,7 +51,7 @@ async function tool(name, args = {}, allowError = false) {
   const result = await client.callTool({ name, arguments: args })
   const text = result.content.filter(c => c.type === 'text').map(c => c.text).join('\n')
   if (result.isError && !allowError) throw new Error(`${name}: ${text}`)
-  return { error: result.isError === true, text, json: () => JSON.parse(text) }
+  return { error: result.isError === true, text, json: () => JSON.parse(text), structured: result.structuredContent }
 }
 try {
   await new Promise(r => fixture.listen(0, '127.0.0.1', r))
@@ -115,8 +115,8 @@ try {
   const status = (await tool('extensions_status')).json()
   const target = status.extensions.find(e => e.name === 'Boundary fixture')
   assert.ok(target)
-  const flow = (await tool('browser.flow.start', { url, active: false })).json()
-  const tabId = flow.tabId
+  const opened = (await tool('browser.open', { url, active: false, observe: false })).structured
+  const tabId = opened.tabId
   // The fixture's iframe would reject attach; bro removes it from the page.
   assert.equal(JSON.parse((await tool('javascript_tool', { tabId, code: 'location.origin' })).text), url)
   assert.equal((await tool('extensions_status')).json().pause, null, 'frame removal must not pause anything')
@@ -140,7 +140,7 @@ try {
   console.log('PASS alarm restores extension and clears journal')
   await wait(async () => (await evaluate(optionsSession, 'document.getElementById("pause-status").textContent')).includes('No extensions paused'), 'settings recovery state')
   console.log('PASS settings reflects recovery')
-  await tool('browser.flow.finish', { sessionId: flow.sessionId })
+  await tool('browser.close', { targetId: opened.targetId })
 } catch (error) {
   console.error('Test failed:', error instanceof Error ? error.message : String(error))
   process.exitCode = 1

@@ -10,11 +10,12 @@ interface RegisteredTool {
   execute: (...args: unknown[]) => Promise<unknown>;
 }
 
-function upstreamTool(name: string): Tool {
+function upstreamTool(name: string, isDefault = false): Tool {
   return {
     name,
     description: `${name} description`,
     inputSchema: { type: "object", additionalProperties: false, properties: {} },
+    _meta: { "bro/default": isDefault },
   };
 }
 
@@ -73,7 +74,7 @@ describe("bro Pi extension", () => {
       connected: true,
       async listTools() {
         return [
-          upstreamTool("browser.extract"),
+          upstreamTool("browser.extract", true),
           upstreamTool("browser.network.capture"),
           upstreamTool("javascript_tool"),
           upstreamTool("session_name"),
@@ -98,7 +99,7 @@ describe("bro Pi extension", () => {
     expect(harness.activeTools()).toContain("bash");
     expect(harness.activeTools()).toContain(BRO_SEARCH_TOOL_NAME);
     expect(harness.activeTools()).toContain("bro_browser_extract");
-    expect(harness.activeTools()).toContain("bro_browser_network_capture");
+    expect(harness.activeTools()).not.toContain("bro_browser_network_capture");
     expect(harness.activeTools()).not.toContain("bro_javascript_tool");
     expect(calls[0]).toEqual({
       name: "session_name",
@@ -122,8 +123,8 @@ describe("bro Pi extension", () => {
 
   it("uses server-owned defaults, supplies ownership, and restores targets across reload for cleanup", async () => {
     const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
-    const tools = ["browser.open", "browser.observe", "browser.act", "browser.close", "browser.flow.start", "browser.flow.finish"].map((name) => ({
-      ...upstreamTool(name), _meta: { "bro/default": !name.startsWith("browser.flow.") },
+    const tools = ["browser.open", "browser.observe", "browser.act", "browser.close", "javascript_tool"].map((name) => ({
+      ...upstreamTool(name), _meta: { "bro/default": name.startsWith("browser.") },
     }));
     const client: BroToolClient = {
       connected: true,
@@ -139,7 +140,7 @@ describe("bro Pi extension", () => {
     installBroPiExtension(first.pi, { createClient: () => client });
     await first.emit("session_start", {}, context);
     expect(first.activeTools()).toContain("bro_browser_open");
-    expect(first.activeTools()).not.toContain("bro_browser_flow_start");
+    expect(first.activeTools()).not.toContain("bro_javascript_tool");
     const open = first.tools.get("bro_browser_open")!;
     const args = open.prepareArguments!({ url: "https://example.test" });
     expect(args).toEqual({ url: "https://example.test", ownerSessionId: "pi-session-1", label: "Browser review" });
@@ -185,7 +186,7 @@ describe("bro Pi extension", () => {
     const client: BroToolClient = {
       connected: true,
       async listTools() {
-        return [upstreamTool("browser.extract"), upstreamTool("read_network_requests")];
+        return [upstreamTool("browser.extract", true), upstreamTool("read_network_requests")];
       },
       async callTool() {
         return { content: [{ type: "text", text: "ok" }] } as CallToolResult;

@@ -5,7 +5,8 @@ import { formatDebuggerAttachError, getDebuggerTargetBlockReason } from './debug
 import { isForeignExtensionRejection, removeForeignExtensionFrames } from './foreign-frames.js'
 
 type EventCallback = (params: unknown) => void
-type DetachCallback = (tabId: number) => void
+/** reason says who ended the session: Chrome's detach reason or bro's own cause. */
+type DetachCallback = (tabId: number, reason: string) => void
 /** sessionId names the child (cross-site frame) session that sent the event; undefined for the tab itself. */
 type EveryTabCallback = (tabId: number, params: unknown, sessionId: string | undefined) => void
 
@@ -18,6 +19,15 @@ export class CdpCommandTimeout extends Error {}
 
 /** Chrome closed the debugger session while a command was in flight. */
 export class CdpSessionClosed extends Error {}
+
+/**
+ * How a command's missing reply is bounded. 'session': no reply within
+ * CDP_COMMAND_TIMEOUT_MS means the session is dead, so it is detached.
+ * 'caller': the reply waits on page work (Page.navigate answers at commit,
+ * after the network), so a slow reply is not a dead session; the caller owns
+ * the deadline and never detaches for it.
+ */
+export type ReplyBound = 'session' | 'caller'
 
 /**
  * CDPSession manages chrome.debugger attachments and routes CDP events
@@ -72,7 +82,7 @@ export class CDPSession {
         // Chrome reports a newly created foreign extension frame this way
         // (also a closing tab, for which the removal attempt is harmless).
         if (reason === 'target_closed') this.foreignFrameTabs.add(tabId)
-        this.markDetached(tabId)
+        this.markDetached(tabId, `Chrome detached the debugger: ${reason}`)
       },
     )
   }
@@ -147,10 +157,10 @@ export class CDPSession {
    * Detaches the debugger from the given tab.
    * Gracefully ignores "Not attached" errors.
    */
-  async detach(tabId: number): Promise<void> {
+  async detach(tabId: number, reason = 'bro detached the debugger'): Promise<void> {
     const pending = this.detaching.get(tabId)
     if (pending) return pending
-    const operation = this.detachAttachment(tabId)
+    const operation = this.detachAttachment(tabId, reason)
     this.detaching.set(tabId, operation)
     try {
       await operation
@@ -159,11 +169,11 @@ export class CDPSession {
     }
   }
 
-  private async detachAttachment(tabId: number): Promise<void> {
+  private async detachAttachment(tabId: number, reason: string): Promise<void> {
     await this.attaching.get(tabId)
     // Child-session IDs become unusable as soon as detachment starts, not when
     // its callback happens to arrive. The next ensure waits for this operation.
-    this.markDetached(tabId)
+    this.markDetached(tabId, reason)
     await new Promise<void>((resolve, reject) => {
       chrome.debugger.detach({ tabId }, () => {
         const err = chrome.runtime.lastError
@@ -191,16 +201,16 @@ export class CDPSession {
     if (!this.attached.get(tabId)) return false
     if (this.hasEventListeners(tabId)) return false
 
-    await this.detach(tabId)
+    await this.detach(tabId, 'bro detached the idle debugger')
     return true
   }
 
   /**
    * Sends a CDP command to the given tab. Automatically attaches if needed.
    */
-  async send<T>(tabId: number, method: string, params?: object): Promise<T> {
+  async send<T>(tabId: number, method: string, params?: object, bound: ReplyBound = 'session'): Promise<T> {
     await this.ensure(tabId)
-    return this.sendAttached<T>(tabId, method, params)
+    return this.sendAttached<T>(tabId, method, params, undefined, bound)
   }
 
   async sendToSession<T>(tabId: number, sessionId: string | undefined, method: string, params?: object): Promise<T> {
@@ -234,13 +244,14 @@ export class CDPSession {
     method: string,
     params?: object,
     sessionId?: string,
+    bound: ReplyBound = 'session',
   ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       let settled = false
-      const timeout = setTimeout(() => {
+      const timeout = bound === 'caller' ? undefined : setTimeout(() => {
         if (settled) return
         settled = true
-        this.forceDetach(tabId)
+        this.forceDetach(tabId, `bro detached the debugger after CDP command "${method}" timed out`)
         reject(
           new CdpCommandTimeout(
             `CDP command "${method}" timed out for tab ${tabId} after ${CDP_COMMAND_TIMEOUT_MS}ms`,
@@ -271,7 +282,7 @@ export class CDPSession {
               // Invalidate frame sessions and monitors together for root and
               // child commands. Never replay input across a new attachment.
               if (foreign) this.foreignFrameTabs.add(tabId)
-              this.markDetached(tabId)
+              this.markDetached(tabId, `CDP command "${method}" found the session closed: ${message}`)
               reject(new CdpSessionClosed(`CDP command "${method}" failed for tab ${tabId}: ${message.replace(/\.$/, '')}. Chrome closed the debugger session during this command: DevTools opened, or another extension such as a password manager created its own frame in the page. The next call reattaches and removes such frames; input may have been partly applied, so observe the page before retrying.`))
               return
             }
@@ -281,19 +292,19 @@ export class CDPSession {
     })
   }
 
-  private forceDetach(tabId: number): void {
+  private forceDetach(tabId: number, reason: string): void {
     // Use the same lifecycle barrier as normal idle cleanup.
-    void this.detach(tabId).catch(() => {
+    void this.detach(tabId, reason).catch(() => {
       // The original command timeout is reported to its caller.
     })
   }
 
-  private markDetached(tabId: number): void {
+  private markDetached(tabId: number, reason: string): void {
     const wasAttached = this.attached.delete(tabId)
     this.eventListeners.delete(tabId)
     if (!wasAttached) return
     for (const callback of this.detachCallbacks) {
-      callback(tabId)
+      callback(tabId, reason)
     }
   }
 

@@ -20,7 +20,7 @@ assert.equal(typeof WebSocket, 'function', 'This opt-in test requires Node.js 22
 const output = resolve(option('--output', resolve(tmpdir(), `bro-refs-${Date.now()}`)))
 const extension = option('--extension')
 const chromeBinary = option('--chrome', process.env.CHROME_BIN)
-const broBinary = option('--bro', resolve(repo, 'target/debug/bro'))
+const broBinary = option('--bro', resolve(repo, 'target/bro'))
 if (!extension || !chromeBinary)
   throw new Error(
     'Usage: live-refs.mjs --extension DIR --chrome CHROME_BINARY [--output DIR] [--serve]',
@@ -205,6 +205,11 @@ const fixture = (req, res) => {
   }
   if (url.pathname === '/blank') {
     send('<!doctype html><title>Benchmark ready</title><p>Ready</p>')
+    return
+  }
+  if (url.pathname === '/net-echo') {
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ bro: url.searchParams.get('bro') }))
     return
   }
   if (url.pathname === '/stale') {
@@ -414,6 +419,26 @@ async function tool(name, args = {}, errorExpected = false) {
   }
   return result
 }
+// Targets on the published surface: an opened tab, or an attached one for a
+// tab the fixture navigates itself. Element actions on raw read_page refs go
+// through browser.act on the tab's target.
+const targets = new Map()
+async function openTarget(url, active) {
+  const opened = (await tool('browser.open', { url, active, observe: false })).structuredContent
+  targets.set(opened.tabId, opened.targetId)
+  return opened
+}
+async function closeTarget(opened) {
+  targets.delete(opened.tabId)
+  await tool('browser.close', { targetId: opened.targetId })
+}
+async function act(tabId, steps, errorExpected = false) {
+  if (!targets.has(tabId)) {
+    const attached = await tool('browser.attach', { tabId, observe: false })
+    targets.set(tabId, attached.structuredContent.targetId)
+  }
+  return tool('browser.act', { targetId: targets.get(tabId), steps }, errorExpected)
+}
 const refFor = (snapshot, role, name) => {
   const line = snapshot
     .split('\n')
@@ -422,12 +447,8 @@ const refFor = (snapshot, role, name) => {
   return line.match(/\[([a-z]{3}\d+)\]/)[1]
 }
 async function withBackgroundPanel(test, path = '/scroll') {
-  const foreground = JSON.parse(
-    text(await tool('browser.flow.start', { url: rootUrl + '/blank', active: true })),
-  )
-  const background = JSON.parse(
-    text(await tool('browser.flow.start', { url: rootUrl + path, active: false })),
-  )
+  const foreground = await openTarget(rootUrl + '/blank', true)
+  const background = await openTarget(rootUrl + path, false)
   try {
     await waitUntil(
       async () =>
@@ -462,8 +483,8 @@ async function withBackgroundPanel(test, path = '/scroll') {
       `input must preserve the selected tab even if its window is occluded: ${finalTabs}`,
     )
   } finally {
-    await tool('browser.flow.finish', { sessionId: background.sessionId })
-    await tool('browser.flow.finish', { sessionId: foreground.sessionId })
+    await closeTarget(background)
+    await closeTarget(foreground)
   }
 }
 
@@ -707,7 +728,7 @@ try {
       2,
     ),
   )
-  const flow = JSON.parse(text(await tool('browser.flow.start', { url: rootUrl, active: false })))
+  const flow = await openTarget(rootUrl, false)
   const tabId = flow.tabId
   resetFixture = async () => {
     await tool('navigate', { tabId, url: rootUrl })
@@ -763,16 +784,9 @@ try {
 
   await check('fresh background scroll delivers its event-driven UI before returning', () =>
     withBackgroundPanel(async (background, refId) => {
-      const result = JSON.parse(
-        text(
-          await tool('scroll_element', {
-            tabId: background.tabId,
-            refId,
-            direction: 'down',
-            amount: 100,
-          }),
-        ),
-      )
+      const result = (
+        await act(background.tabId, [{ type: 'scroll', refId, direction: 'down', amount: 100 }])
+      ).structuredContent.results[0].result
       assert.equal(result.after.y, 100)
       assert.equal(result.moved, true)
       assert.equal(result.boundary, false)
@@ -790,32 +804,26 @@ try {
     }),
   )
   await check(
-    'flow batches background scroll and intermediate visible reads without replacing refs',
+    'act batches background scroll and intermediate text observations without replacing refs',
     () =>
       withBackgroundPanel(async (background, refId) => {
-        const result = JSON.parse(
-          text(
-            await tool('browser.flow.act', {
-              sessionId: background.sessionId,
-              steps: [
-                { type: 'scroll', refId, direction: 'down', amount: 100 },
-                { type: 'read_text' },
-                { type: 'scroll', refId, direction: 'down', amount: 10000 },
-                { type: 'read_text' },
-                { type: 'scroll', refId, direction: 'down', amount: 100 },
-                { type: 'read_text' },
-              ],
-            }),
-          ),
-        )
+        const read = { type: 'observe', mode: 'text' }
+        const result = (
+          await act(background.tabId, [
+            { type: 'scroll', refId, direction: 'down', amount: 100 },
+            read,
+            { type: 'scroll', refId, direction: 'down', amount: 10000 },
+            read,
+            { type: 'scroll', refId, direction: 'down', amount: 100 },
+            read,
+          ])
+        ).structuredContent
         assert.equal(result.status, 'ok')
         const reads = result.results
-          .filter((r) => r.type === 'read_text')
-          .map((r) => r.text.match(/SCROLL_TOP:(\d+)/)?.[1])
+          .filter((r) => r.type === 'observe')
+          .map((r) => r.content.match(/SCROLL_TOP:(\d+)/)?.[1])
         assert.deepEqual(reads, ['100', '920', '920'])
-        const scrolls = result.results
-          .filter((r) => r.type === 'scroll')
-          .map((r) => JSON.parse(text(r.result)))
+        const scrolls = result.results.filter((r) => r.type === 'scroll').map((r) => r.result)
         assert.deepEqual(
           scrolls.map((r) => r.moved),
           [true, true, false],
@@ -838,9 +846,7 @@ try {
   await check(
     'native ref input/select/click across frame and nested shadow boundaries',
     async () => {
-      const foreground = JSON.parse(
-        text(await tool('browser.flow.start', { url: rootUrl + '/blank', active: true })),
-      )
+      const foreground = await openTarget(rootUrl + '/blank', true)
       try {
         assert.equal(
           text(await tool('javascript_tool', { tabId, code: 'document.visibilityState' })),
@@ -848,17 +854,15 @@ try {
         )
         for (const kind of ['Same', 'Cross', 'Nested']) {
           snapshot = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
-          await tool('form_input', {
-            tabId,
-            refId: refFor(snapshot, 'textbox', `${kind} Name`),
-            value: 'Luna',
-          })
-          await tool('form_input', {
-            tabId,
-            refId: refFor(snapshot, 'combobox', `${kind} Mode`),
-            value: kind === 'Same' ? 'Gamma' : 'gamma',
-          })
-          await tool('click_element', { tabId, refId: refFor(snapshot, 'button', `${kind} Commit`) })
+          await act(tabId, [
+            { type: 'fill', refId: refFor(snapshot, 'textbox', `${kind} Name`), value: 'Luna' },
+            {
+              type: 'select',
+              refId: refFor(snapshot, 'combobox', `${kind} Mode`),
+              value: kind === 'Same' ? 'Gamma' : 'gamma',
+            },
+            { type: 'click', refId: refFor(snapshot, 'button', `${kind} Commit`) },
+          ])
           const observed = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
           assert.match(observed, new RegExp(`${kind}_OK:Luna:gamma:trusted=true:input=2`))
           assert.equal(
@@ -871,21 +875,19 @@ try {
           )
         }
       } finally {
-        await tool('browser.flow.finish', { sessionId: foreground.sessionId })
+        await closeTarget(foreground)
       }
     },
   )
   await check('refs cannot escape their tab and survive same-node rereads', async () => {
     snapshot = text(await tool('read_page', { tabId }))
     const ref = refFor(snapshot, 'textbox', 'Root Name')
-    const other = JSON.parse(
-      text(await tool('browser.flow.start', { url: rootUrl, active: false })),
-    )
-    await tool('form_input', { tabId: other.tabId, refId: ref, value: 'wrong' }, true)
-    await tool('browser.flow.finish', { sessionId: other.sessionId })
+    const other = await openTarget(rootUrl, false)
+    await act(other.tabId, [{ type: 'fill', refId: ref, value: 'wrong' }], true)
+    await closeTarget(other)
     const reread = text(await tool('read_page', { tabId }))
     assert.equal(refFor(reread, 'textbox', 'Root Name'), ref)
-    await tool('form_input', { tabId, refId: ref, value: 'reread success' })
+    await act(tabId, [{ type: 'fill', refId: ref, value: 'reread success' }])
   })
   await check('detached/clone replacement refs fail instead of silently retargeting', async () => {
     snapshot = text(await tool('read_page', { tabId }))
@@ -894,7 +896,7 @@ try {
       tabId,
       code: '(()=>{const old=document.querySelector("#root-name");old.replaceWith(old.cloneNode(true));return true})()',
     })
-    await tool('form_input', { tabId, refId: ref, value: 'wrong' }, true)
+    await act(tabId, [{ type: 'fill', refId: ref, value: 'wrong' }], true)
     const state = text(
       await tool('javascript_tool', { tabId, code: 'document.querySelector("#root-name").value' }),
     )
@@ -902,28 +904,24 @@ try {
   })
   await check('covered/disabled clicks and invalid selects fail before action', async () => {
     snapshot = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
-    await tool(
-      'click_element',
-      { tabId, refId: refFor(snapshot, 'button', 'Disabled') },
-      /disabled/i,
-    )
-    await tool(
-      'form_input',
-      { tabId, refId: refFor(snapshot, 'textbox', 'Read only'), value: 'wrong' },
+    await act(tabId, [{ type: 'click', refId: refFor(snapshot, 'button', 'Disabled') }], /disabled/i)
+    await act(
+      tabId,
+      [{ type: 'fill', refId: refFor(snapshot, 'textbox', 'Read only'), value: 'wrong' }],
       /read.only/i,
     )
-    await tool(
-      'form_input',
-      { tabId, refId: refFor(snapshot, 'combobox', 'Same Mode'), value: 'missing' },
+    await act(
+      tabId,
+      [{ type: 'select', refId: refFor(snapshot, 'combobox', 'Same Mode'), value: 'missing' }],
       /enabled option/i,
     )
     await tool('javascript_tool', {
       tabId,
       code: '(()=>{const el=document.createElement("div");el.id="overlay";el.style="position:fixed;inset:0;z-index:999999;background:white";document.body.append(el);return true})()',
     })
-    await tool(
-      'click_element',
-      { tabId, refId: refFor(snapshot, 'button', 'Root Commit') },
+    await act(
+      tabId,
+      [{ type: 'click', refId: refFor(snapshot, 'button', 'Root Commit') }],
       /covered by [a-z]{3}\d+ <div id=\\?"overlay\\?">; no click dispatched/,
     )
     await tool('javascript_tool', { tabId, code: 'document.querySelector("#overlay").remove()' })
@@ -948,7 +946,7 @@ try {
       async () => text(await tool('frames_list', { tabId })).includes('kind=New'),
       'iframe navigation',
     )
-    await tool('form_input', { tabId, refId: ref, value: 'wrong' }, true)
+    await act(tabId, [{ type: 'fill', refId: ref, value: 'wrong' }], true)
   })
   await check('file upload sets a local path through cross-site document-bound refs', async () => {
     // A real file read by the browser itself; the page's onchange only runs on the
@@ -969,60 +967,50 @@ try {
     await tool('file_upload', { tabId, refId: refFor(snapshot, 'button', 'Cross File'), paths: ['relative.txt'] }, /must be absolute/)
   })
   await check(
-    'default flow observation and ref steps work without frame IDs; failures stop the flow',
+    'default target observation and ref steps work without frame IDs; failures stop the act',
     async () => {
-      const observe = JSON.parse(
-        text(await tool('browser.flow.observe', { sessionId: flow.sessionId })),
-      )
-      assert.equal(observe.mode, 'a11y')
-      await tool('browser.flow.act', {
-        sessionId: flow.sessionId,
+      const observeTarget = async () =>
+        (await tool('browser.observe', { targetId: flow.targetId })).structuredContent.content
+      const observed = await observeTarget()
+      await tool('browser.act', {
+        targetId: flow.targetId,
         steps: [
-          { type: 'fill', refId: refFor(observe.content, 'textbox', 'Cross Name'), value: 'Flow' },
-          {
-            type: 'select',
-            refId: refFor(observe.content, 'combobox', 'Cross Mode'),
-            value: 'Gamma',
-          },
-          { type: 'click', refId: refFor(observe.content, 'button', 'Cross Commit') },
+          { type: 'fill', refId: refFor(observed, 'textbox', 'Cross Name'), value: 'Flow' },
+          { type: 'select', refId: refFor(observed, 'combobox', 'Cross Mode'), value: 'Gamma' },
+          { type: 'click', refId: refFor(observed, 'button', 'Cross Commit') },
         ],
       })
-      let next = JSON.parse(text(await tool('browser.flow.observe', { sessionId: flow.sessionId })))
-      assert.match(next.content, /Cross_OK:Flow:gamma:trusted=true/)
-      const failed = JSON.parse(
-        text(
-          await tool(
-            'browser.flow.act',
-            {
-              sessionId: flow.sessionId,
-              steps: [
-                { type: 'click', refId: 'ref_deliberately_stale' },
-                {
-                  type: 'fill',
-                  refId: refFor(next.content, 'textbox', 'Cross Name'),
-                  value: 'WRONG',
-                },
-              ],
-            },
-            true,
-          ),
-        ),
-      )
+      let next = await observeTarget()
+      assert.match(next, /Cross_OK:Flow:gamma:trusted=true/)
+      const failed = (
+        await tool(
+          'browser.act',
+          {
+            targetId: flow.targetId,
+            steps: [
+              { type: 'click', refId: 'ref_deliberately_stale' },
+              { type: 'fill', refId: refFor(next, 'textbox', 'Cross Name'), value: 'WRONG' },
+            ],
+          },
+          true,
+        )
+      ).structuredContent
       assert.equal(failed.stoppedAt, 0)
       assert.equal(failed.results.length, 1)
+      // Every step parses before any effect: an invalid second step stops the first.
       await tool(
-        'browser.flow.act',
+        'browser.act',
         {
-          sessionId: flow.sessionId,
+          targetId: flow.targetId,
           steps: [
-            { type: 'fill', refId: refFor(next.content, 'textbox', 'Cross Name'), value: 'WRONG' },
+            { type: 'fill', refId: refFor(next, 'textbox', 'Cross Name'), value: 'WRONG' },
             { type: 'click', refId: 'ref_invalid', css: 'button' },
           ],
         },
         true,
       )
-      next = JSON.parse(text(await tool('browser.flow.observe', { sessionId: flow.sessionId })))
-      assert.match(next.content, /textbox "Cross Name" value="Flow"/)
+      next = await observeTarget()
+      assert.match(next, /textbox "Cross Name" value="Flow"/)
     },
   )
   await check(
@@ -1044,13 +1032,13 @@ try {
       await tool('wait_for_element', { tabId, refId })
       const info = () => tool('get_element_info', { tabId, refId }).then((r) => JSON.parse(text(r)))
       assert.equal((await info()).scroll.top, 0)
-      await tool('scroll_element', { tabId, refId, direction: 'down', amount: 100 })
+      const scroll = async (amount) =>
+        (await act(tabId, [{ type: 'scroll', refId, direction: 'down', amount }])).structuredContent
+          .results[0].result
+      await scroll(100)
       assert.equal((await info()).scroll.top, 100)
-      await tool('scroll_element', { tabId, refId, direction: 'down', amount: 10000 })
-      assert.match(
-        text(await tool('scroll_element', { tabId, refId, direction: 'down', amount: 100 })),
-        /boundary/,
-      )
+      await scroll(10000)
+      assert.equal((await scroll(100)).boundary, true)
     },
   )
   await check('javascript_tool evaluates like a console and computer clicks a ref', async () => {
@@ -1414,6 +1402,39 @@ try {
       if (!closed) await tool('browser.close', { targetId })
     }
   })
+  await check('N: network capture returns the triggered request and its body in one call', async () => {
+    const captured = await tool('browser.network.capture', {
+      url: `${rootUrl}/blank?n=1`,
+      code: "fetch('/net-echo?bro=live-network', {cache: 'no-store'}).then(r => r.json())",
+      urlIncludes: '/net-echo?bro=live-network',
+      includeResponseBodies: true,
+    })
+    const result = captured.structuredContent
+    assert.equal(result.matchedRequests, 1, text(captured))
+    assert.equal(result.timedOut, false)
+    assert.equal(result.requests[0].status, 200)
+    assert.equal(JSON.parse(result.requests[0].body).bro, 'live-network')
+  })
+  await check('B: batch extract reads several pages in parallel', async () => {
+    const batch = await tool('browser.batch.extract', { urls: [`${rootUrl}/blank?b=1`, `${rootUrl}/g-long`], maxChars: 20000 })
+    const results = batch.structuredContent.results
+    assert.equal(results.length, 2, text(batch))
+    for (const result of results) assert.equal(result.status, 'ok', JSON.stringify(result))
+    assert.match(results[0].text, /Ready/)
+    assert.match(results[1].text, /REVIEW_OK/)
+    // Without a url, extract reads an existing tab in place and leaves it open.
+    const opened = await openTarget(`${rootUrl}/g-long`, false)
+    try {
+      const inPlace = (await tool('browser.extract', { tabId: opened.tabId })).structuredContent
+      assert.equal(inPlace.status, 'ok', JSON.stringify(inPlace))
+      assert.equal(inPlace.tabId, opened.tabId)
+      assert.match(inPlace.text, /REVIEW_OK/)
+      const still = text(await tool('javascript_tool', { tabId: opened.tabId, code: 'document.title' }))
+      assert.match(still, /G long/)
+    } finally {
+      await closeTarget(opened)
+    }
+  })
   await check('W: an owned tab groups in its own window while a popup has focus', async () => {
     const opener = (await tool('browser.open', { url: `${rootUrl}/popup-opener`, observe: false })).structuredContent
     try {
@@ -1566,7 +1587,7 @@ try {
     assert.match(JSON.stringify(batch.results[0].results), /Benchmark ready/)
     assert.match(JSON.stringify(batch.results[1].results), /Scroll contract/)
   })
-  await tool('browser.flow.finish', { sessionId: flow.sessionId })
+  await closeTarget(flow)
   resetFixture = undefined
   // Last: it closes every remaining tab. Chrome unloads the profile, and with it
   // the extension worker and its alarms, once the last window closes.

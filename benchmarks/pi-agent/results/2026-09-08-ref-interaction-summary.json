@@ -6,10 +6,10 @@
   "verification": {
     "makeCheck": {
       "passed": true,
-      "rustTests": 44,
+      "serverTests": 44,
       "extensionTests": 32,
       "piAdapterTests": 20,
-      "note": "Two external live Rust tests and one opt-in Pi integration test remain opt-in; the dedicated real-browser suite below was run instead."
+      "note": "Two external live server tests and one opt-in Pi integration test remain opt-in; the dedicated real-browser suite below was run instead."
     },
     "realBrowser": {
       "browser": "Chrome for Testing 152.0.7977.82",

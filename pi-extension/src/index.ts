@@ -20,7 +20,8 @@ const CLEANUP_TIMEOUT_MS = 3_000;
 interface RuntimeState {
   client: BroToolClient;
   session: BroSessionDescriptor;
-  activeTargets: Map<string, "browser.close" | "browser.flow.finish">;
+  /** targetIds this Pi session opened and has not closed. */
+  activeTargets: Set<string>;
   catalog: BroCatalogTool[] | undefined;
   catalogPromise: Promise<BroCatalogTool[]> | undefined;
 }
@@ -195,7 +196,7 @@ export function installBroPiExtension(
             signal,
           );
           throwIfMcpToolFailed(upstream.name, result);
-          trackFlowResult(current, upstream.name, params, result);
+          trackTargetResult(current, upstream.name, params, result);
           ctx.ui.setStatus("bro", undefined);
           return mapMcpToolResult(upstream.name, result);
         } catch (error) {
@@ -237,11 +238,10 @@ async function cleanupBrowserState(runtime: RuntimeState): Promise<string[]> {
   const failures: string[] = [];
   // Serialize shared tab/group cleanup. Each call has a bounded timeout; report
   // errors rather than silently presenting a failed finalization as success.
-  for (const [id, tool] of runtime.activeTargets) {
+  for (const id of runtime.activeTargets) {
     try {
-      const args = tool === "browser.close" ? { targetId: id } : { sessionId: id };
-      const result = await runtime.client.callTool(tool, args, undefined, CLEANUP_TIMEOUT_MS);
-      throwIfMcpToolFailed(tool, result);
+      const result = await runtime.client.callTool("browser.close", { targetId: id }, undefined, CLEANUP_TIMEOUT_MS);
+      throwIfMcpToolFailed("browser.close", result);
       runtime.activeTargets.delete(id);
     } catch (error) { failures.push(errorMessage(error)); }
   }
@@ -254,7 +254,7 @@ async function cleanupBrowserState(runtime: RuntimeState): Promise<string[]> {
   return failures;
 }
 
-function trackFlowResult(
+function trackTargetResult(
   runtime: RuntimeState,
   upstreamName: string,
   params: unknown,
@@ -265,15 +265,10 @@ function trackFlowResult(
     runtime.activeTargets.delete(closed);
     return;
   }
-  const modern = upstreamName === "browser.open" || upstreamName === "browser.close";
-  const key = modern ? "targetId" : "sessionId";
-  const id = stringProperty(result.structuredContent, key) ?? stringProperty(params, key);
+  const id = stringProperty(result.structuredContent, "targetId") ?? stringProperty(params, "targetId");
   if (!id) return;
-  if (upstreamName === "browser.open" || upstreamName === "browser.flow.start") {
-    runtime.activeTargets.set(id, modern ? "browser.close" : "browser.flow.finish");
-  } else if (upstreamName === "browser.close" || upstreamName === "browser.flow.finish") {
-    runtime.activeTargets.delete(id);
-  }
+  if (upstreamName === "browser.open") runtime.activeTargets.add(id);
+  else if (upstreamName === "browser.close") runtime.activeTargets.delete(id);
 }
 
 /** A target call with close:true (or browser.close) reports the target it ended. */
@@ -282,7 +277,7 @@ function closedTarget(content: unknown): string | undefined {
 }
 
 function restoreActiveTargets(ctx: PiExtensionContext): RuntimeState["activeTargets"] {
-  const active: RuntimeState["activeTargets"] = new Map();
+  const active: RuntimeState["activeTargets"] = new Set();
   for (const entry of ctx.sessionManager.getBranch()) {
     const details = broDetailsFromBranchEntry(entry);
     if (!details) continue;
@@ -291,12 +286,10 @@ function restoreActiveTargets(ctx: PiExtensionContext): RuntimeState["activeTarg
       active.delete(closed);
       continue;
     }
-    const modern = details.upstreamTool === "browser.open" || details.upstreamTool === "browser.close";
-    const id = stringProperty(details.structuredContent, modern ? "targetId" : "sessionId");
+    const id = stringProperty(details.structuredContent, "targetId");
     if (!id) continue;
-    if (details.upstreamTool === "browser.open" || details.upstreamTool === "browser.flow.start")
-      active.set(id, modern ? "browser.close" : "browser.flow.finish");
-    if (details.upstreamTool === "browser.close" || details.upstreamTool === "browser.flow.finish") active.delete(id);
+    if (details.upstreamTool === "browser.open") active.add(id);
+    if (details.upstreamTool === "browser.close") active.delete(id);
   }
   return active;
 }

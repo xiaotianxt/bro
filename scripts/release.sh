@@ -23,8 +23,8 @@ artifacts, update the Homebrew tap, and verify the installed binary.
 Options:
   --bump LEVEL       Bump level when the current version is already tagged on
                      another commit. One of: patch, minor, major. Default: patch.
-  --version VERSION  Release this exact x.y.z version, updating Cargo files with
-                     cargo-release first.
+  --version VERSION  Release this exact x.y.z version, updating every version
+                     copy (scripts/version.mjs) and committing it first.
   --skip-checks      Do not run make check before tagging.
   --skip-tests       Alias for --skip-checks.
   --skip-tap         Do not update the Homebrew tap formula.
@@ -54,7 +54,7 @@ need_cmd() {
 }
 
 package_version() {
-  sed -nE 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' Cargo.toml | head -1
+  node scripts/version.mjs
 }
 
 local_tag_commit() {
@@ -85,15 +85,28 @@ tag_commit() {
   printf '%s' "$sha"
 }
 
-cargo_release_version() {
+next_version() {
   local level_or_version="$1"
+  local major minor patch
 
-  cargo release "$level_or_version" \
-    --execute \
-    --no-confirm \
-    --no-publish \
-    --no-tag \
-    --no-push
+  if [[ "$level_or_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    printf '%s' "$level_or_version"
+    return
+  fi
+  IFS=. read -r major minor patch <<<"$(package_version)"
+  case "$level_or_version" in
+    major) printf '%s.0.0' "$((major + 1))" ;;
+    minor) printf '%s.%s.0' "$major" "$((minor + 1))" ;;
+    patch) printf '%s.%s.%s' "$major" "$minor" "$((patch + 1))" ;;
+    *) die "unknown bump level: $level_or_version" ;;
+  esac
+}
+
+bump_version() {
+  local version
+  version="$(next_version "$1")"
+  node scripts/version.mjs "$version" >/dev/null
+  git commit -am "chore: bump bro version to ${version}"
 }
 
 release_asset_sha() {
@@ -165,8 +178,8 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-need_cmd cargo
-need_cmd cargo-release
+need_cmd go
+need_cmd node
 need_cmd git
 need_cmd gh
 need_cmd python3
@@ -208,26 +221,26 @@ if [[ "$HEAD_SHA" != "$ORIGIN_MAIN_SHA" ]]; then
 fi
 
 CURRENT_VERSION="$(package_version)"
-[[ -n "$CURRENT_VERSION" ]] || die "Cargo.toml version not found"
+[[ -n "$CURRENT_VERSION" ]] || die "version not found in cmd/bro/main.go"
 CURRENT_TAG="v${CURRENT_VERSION}"
 CURRENT_TAG_SHA="$(tag_commit "$CURRENT_TAG")"
 
 if [[ -n "$VERSION_OVERRIDE" && "$VERSION_OVERRIDE" != "$CURRENT_VERSION" ]]; then
   TAG_SHA="$(tag_commit "v${VERSION_OVERRIDE}")"
   [[ -z "$TAG_SHA" ]] || die "tag v${VERSION_OVERRIDE} already exists at ${TAG_SHA}; choose a different version"
-  log "bumping Cargo version ${CURRENT_VERSION} -> ${VERSION_OVERRIDE} with cargo-release"
-  cargo_release_version "$VERSION_OVERRIDE"
+  log "bumping version ${CURRENT_VERSION} -> ${VERSION_OVERRIDE}"
+  bump_version "$VERSION_OVERRIDE"
 elif [[ -n "$CURRENT_TAG_SHA" && "$CURRENT_TAG_SHA" != "$HEAD_SHA" ]]; then
-  log "current version ${CURRENT_VERSION} is already tagged; bumping ${BUMP_KIND} with cargo-release"
-  cargo_release_version "$BUMP_KIND"
+  log "current version ${CURRENT_VERSION} is already tagged; bumping ${BUMP_KIND}"
+  bump_version "$BUMP_KIND"
 else
-  log "using Cargo version ${CURRENT_VERSION}"
+  log "using version ${CURRENT_VERSION}"
 fi
 
-[[ -z "$(git status --porcelain -- Cargo.toml Cargo.lock)" ]] || die "cargo-release left uncommitted Cargo version changes"
+[[ -z "$(git status --porcelain)" ]] || die "version bump left uncommitted changes"
 
 VERSION="$(package_version)"
-[[ -n "$VERSION" ]] || die "Cargo.toml version not found"
+[[ -n "$VERSION" ]] || die "version not found in cmd/bro/main.go"
 TAG="v${VERSION}"
 TAG_SHA="$(tag_commit "$TAG")"
 HEAD_SHA="$(git rev-parse HEAD)"
@@ -337,7 +350,7 @@ extension_url = sys.argv[11]
 extension_sha = sys.argv[12]
 
 path.write_text(f'''class Bro < Formula
-  desc "Rust-native local MCP server for browser automation"
+  desc "Local MCP server for browser automation"
   homepage "https://github.com/xiaotianxt/bro"
   version "{version}"
   license "Apache-2.0"
@@ -368,7 +381,7 @@ path.write_text(f'''class Bro < Formula
 
   head do
     url "https://github.com/xiaotianxt/bro.git", branch: "main"
-    depends_on "rust" => :build
+    depends_on "go" => :build
   end
 
   resource "extension" do
@@ -378,7 +391,7 @@ path.write_text(f'''class Bro < Formula
 
   def install
     if build.head?
-      system "cargo", "install", "--locked", "--bin", "bro", "--root", prefix, "."
+      system "go", "build", *std_go_args(output: bin/"bro"), "./cmd/bro"
     else
       bin.install "bro"
     end

@@ -471,8 +471,7 @@ func TestCancellationStopsTheNextEffect(t *testing.T) {
 		{"type":"navigate","url":"https://must-not-run.invalid"}]}`, target))
 	first := ext.NextTool("javascript_tool")
 	p.Cancel()
-	// Give the cancellation notification time to reach the server first.
-	time.Sleep(100 * time.Millisecond)
+	s.waitLog(t, "cancelled")
 	ext.Reply(first, "completed already-dispatched effect")
 	ext.Quiet()
 }

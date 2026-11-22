@@ -76,8 +76,8 @@ async function navigateWithDebugger(tabId: number, url: string): Promise<string>
     readyDocuments.add(`${event.frameId}:${event.loaderId}`)
     check()
   })
-  const offDetach = cdpSession.onDetach((id) => {
-    if (id === tabId) fail(new CdpSessionClosed('Navigation interrupted: debugger detached or tab closed'))
+  const offDetach = cdpSession.onDetach((id, reason) => {
+    if (id === tabId) fail(new CdpSessionClosed(`Navigation interrupted: ${reason}`))
   })
   const timer = setTimeout(() => fail(new ReadinessTimeout()), 10000)
   // Listeners precede lifecycle enablement and dispatch, including cached pages.
@@ -86,7 +86,9 @@ async function navigateWithDebugger(tabId: number, url: string): Promise<string>
     const { frameTree } = await cdpSession.send<{ frameTree: { frame: MainFrame } }>(tabId, 'Page.getFrameTree')
     if (settled) return
     const initial = frameTree.frame
-    const result = await cdpSession.send<NavigationResult>(tabId, 'Page.navigate', { url })
+    // Answered at commit, after the network: the readiness timer below bounds
+    // it, and a slow commit must not detach the session.
+    const result = await cdpSession.send<NavigationResult>(tabId, 'Page.navigate', { url }, 'caller')
     if (settled) return
     if (result.errorText || result.isDownload) throw new Error(result.errorText ?? 'Navigation started a download, not a ready document')
     // A loader-less response preserves the *existing* document, not whichever

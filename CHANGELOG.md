@@ -1,7 +1,28 @@
 # Changelog
 
-## Unreleased
+## 2.0.0
 
+2.0 removes tools that newer ones fully cover: the MCP surface goes from 62
+tools to 43. Which tools stayed was decided from 8,088 recorded agent calls,
+plus the calls the Pi adapter makes on its own. Update the bro skill and the
+Pi adapter together with the server.
+
+Removed, with their replacements:
+
+| Removed | Use instead |
+|---|---|
+| `browser.flow.start/observe/act/finish` | `browser.open/observe/act/close` (same executor; `targetId` instead of `sessionId`) |
+| `browser.batch.run` | `browser.batch.extract` |
+| `browser.current.extract` | `browser.extract` without `url` (below) |
+| `click_element`, `fill_element`, `form_input` | `browser.click` / `browser.fill` / `browser.act`, after `browser.attach` for a tab bro did not open |
+| `agent_done`, `tabs_claim`, `tabs_create_mcp`, `tabs_context_mcp` | `browser.open` / `browser.attach` / `browser.close` |
+| `scroll_element` | an act `scroll` step |
+| `get_response_body` | `browser.network.capture` with `includeResponseBodies` |
+| `gif_creator`, `shortcuts_list`, `shortcuts_execute`, `extract_page` | none; agents did not call them |
+
+- `browser.extract` without `url` reads an existing tab in place and leaves
+  it open: the active tab, or `tabId` from `tabs_context`. Passing both is an
+  error.
 - `browser.attach` makes an existing tab a target: one the user opened, or a
   popup a page opened. Pass its `tabId` from `tabs_context`. Before this,
   `browser.act` and its change reports only worked on tabs bro opened, so
@@ -13,6 +34,33 @@
   file per post used to cost three calls per file (find the new ref,
   `file_upload`, then submit). It is now one act call, because role + name
   targets survive the post's navigation.
+- Ending an MCP session (`DELETE /mcp`) cancels its in-flight calls. A
+  client that left during `browser.open` used to leave the late tab open,
+  owned by a target nobody knew.
+- `browsers_context` no longer reports `nativeInfo` (best-effort browser
+  process and profile paths).
+- The Pi adapter activates exactly the tools the server marks as default and
+  no longer carries fallbacks for servers older than 1.4.
+- A slow navigation no longer loses the tab's debugger session. bro bounded
+  `Page.navigate` by the 5 s CDP command timeout, which treats a missing reply
+  as a dead session and detaches; Chrome replies to `Page.navigate` only at
+  commit, so a slow server cost the session and surfaced as an unrelated
+  detach error. The 10 s readiness wait now bounds navigation, and a detach
+  error names who detached and why.
+- Observing a large page no longer detaches the tab. The background render
+  pump's screenshot waits for the renderer to draw, which a multi-second
+  accessibility-tree read delays past the 5 s command timeout; that timeout
+  detached the whole tab mid-observe. The capture is now bounded by its
+  caller, not by the session timeout.
+- `browser.extract` no longer returns a lazy page's skeleton. A short,
+  stable text counted as ready even before a background tab had rendered a
+  frame, so cards that appear on IntersectionObserver or
+  requestAnimationFrame were missed now and then. Where frames arrive (a
+  visible page, or a background tab bro renders), the text must now stay
+  stable across two rendered frames.
+- Logs no longer carry color codes when stderr is not a terminal (for example
+  under `brew services`).
+- Building from source needs Go: `go build ./cmd/bro`, or `make build`.
 
 ## 1.7.0
 
@@ -259,7 +307,7 @@
 
 ## 1.0.0
 
-- Mark the local Rust MCP server, authenticated extension bridge, and supported
+- Mark the local MCP server, authenticated extension bridge, and supported
   CLI/MCP surface as the first stable bro release.
 - Keep read-only settings access free of filesystem writes and preserve invalid
   settings files with clear errors instead of silently replacing their token.
@@ -267,7 +315,7 @@
   WebSocket authentication timeout.
 - Keep extension tokens in local trusted-context storage and restrict server
   URLs to loopback WebSocket endpoints.
-- Keep the extension manifest version aligned with the Rust package in checks
+- Keep the extension manifest version aligned with the server version in checks
   and release builds.
 
 ## 0.2.5
@@ -311,8 +359,8 @@
 ## 0.1.0
 
 - Initial bro repository.
-- Rust-native MCP server and CLI for local browser automation.
+- Local MCP server and CLI for browser automation.
 - Minimal WebExtension adapter for Chromium-family browsers.
 - Batch extraction and flow tools for short agent/browser interaction loops.
-- CI metadata for Rust fmt, clippy, tests, and extension typecheck/build.
+- CI metadata for server format, lint and tests, and extension typecheck/build.
 - GitHub release workflow metadata for binary artifacts.

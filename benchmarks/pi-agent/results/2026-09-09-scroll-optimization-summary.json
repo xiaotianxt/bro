@@ -21,7 +21,7 @@
     ]
   },
   "fix": {
-    "owner": "ref input preparation and post-scroll rendering lifecycle; Rust flow composition",
+    "owner": "ref input preparation and post-scroll rendering lifecycle; server flow composition",
     "changes": [
       "Reuse foreground/frame/target preparation without global browser suppression flags",
       "One scroll, then rendering-frame synchronization; no synthetic scroll event or replay",
@@ -35,7 +35,7 @@
     "greenSignal": "Same case observes SCROLL_TOP:100 immediately after return without screenshot or manual activation.",
     "makeCheck": {
       "pass": true,
-      "rust": 45,
+      "server": 45,
       "extension": 37,
       "piAdapter": 20
     },

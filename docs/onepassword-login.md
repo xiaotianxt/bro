@@ -65,7 +65,7 @@ not update the saved item's URL.
 Public tool calls contain references and form selection, never credentials:
 
 ```
-agent references → Rust server → scoped op subprocess (stdout pipe)
+agent references → Go server → scoped op subprocess (stdout pipe)
                 → private authenticated WebSocket message
                 → isolated, document-bound extension script → intended inputs
 ```
@@ -93,8 +93,8 @@ already acquired authorization may be in progress: cancellation is not undo.
 No automatic foreground fallback or retry is used if a frozen tab cannot run.
 
 Connection-bound dispatch/replies prevent a replacement or different browser
-from completing another connection's request. Tool-call Debug hides arguments;
-WebSocket DEBUG/TRACE payload logging is excluded independently of RUST_LOG.
+from completing another connection's request. The server logs neither tool
+arguments nor WebSocket payloads.
 The server reconstructs allowlisted outcomes instead of reflecting page errors.
 
 ## Limits on the confidentiality claim
@@ -114,15 +114,15 @@ transport logging do not intentionally contain the credential fields.
 ## Verification and reproducible experiment
 
 ```
-cargo build --features credential-test-provider --target-dir target/credential-test
+go build -tags credtest -o target/credential-test/bro ./cmd/bro
 pnpm --filter @bro/extension exec vite build --outDir "$TMPDIR/bro-login-extension"
-node scripts/live-login.mjs "$TMPDIR/bro-login-extension" "$CHROME_BIN"
+node scripts/live-login.mjs "$TMPDIR/bro-login-extension" "$CHROME_BIN" target/credential-test/bro
 ```
 
-The test build is unmistakably labeled `+credential-test-provider` and refuses
-real vault access. The script refuses a production binary. The injected provider
-executable path is unavailable in production builds. Release workflows do not
-enable the test feature.
+The test build (`credtest` build tag) is unmistakably labeled
+`+credential-test-provider` and refuses real vault access. The script refuses a
+production binary. The injected provider executable path is unavailable in
+production builds. Release workflows do not set the test tag.
 
 An isolated Chrome profile and local HTTP fixture verify:
 
@@ -136,12 +136,12 @@ An isolated Chrome profile and local HTTP fixture verify:
 - No automatic submit; the local server verifies the exact synthetic credentials
   on the one explicitly submitted request, returning only a match result.
 - Synthetic canaries are absent from captured public requests/results and the
-  broker/browser process log with RUST_LOG=trace. These are the scanned surfaces,
+  broker/browser process log. These are the scanned surfaces,
   not a claim that all OS storage or destination-site state was scanned.
 
-Unit tests additionally check registrable-domain matching (public and private
-suffixes, ports, schemes, bare hosts), canonical origins, fixed error projection, redacted
-Debug, and browser/session-bound responses. An independent source review found
+Go unit tests in `internal/credentials` additionally check registrable-domain
+matching (public and private suffixes, ports, schemes, bare hosts), canonical
+origins, exact-origin preference, and fixed error projection. An independent source review found
 and drove the Stop-during-provider and autocomplete-token fixes.
 
 **Real-provider status:** on the development machine, `op 2.40.0` help confirmed

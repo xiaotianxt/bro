@@ -10,27 +10,7 @@ const ERROR_MAX_BYTES = 4_096;
 const ERROR_MAX_LINES = 100;
 const MAX_IMAGES = 4;
 
-export const DEFAULT_ACTIVE_UPSTREAM_TOOLS = new Set([
-  "browser.extract",
-  "browser.current.extract",
-  "browser.batch.extract",
-  "browser.batch.flow",
-  "browser.network.capture",
-  "browser.flow.start",
-  "browser.flow.observe",
-  "browser.flow.act",
-  "browser.flow.finish",
-]);
-
-const PI_SESSION_TOOLS = new Set([
-  "tabs_context",
-  "tabs_create",
-  "tabs_context_mcp",
-  "tabs_create_mcp",
-  "session_name",
-  "tabs_claim",
-  "tabs_finalize",
-]);
+const PI_SESSION_TOOLS = new Set(["tabs_context", "tabs_create", "session_name", "tabs_finalize"]);
 
 export interface BroSessionDescriptor {
   id?: string;
@@ -179,11 +159,9 @@ function toolPiVisibility(tool: Tool): string | undefined {
   return typeof visibility === "string" && visibility.length > 0 ? visibility : undefined;
 }
 
+/** The server marks the tools Pi activates by default (`bro/default`). */
 export function defaultBroTools(catalog: BroCatalogTool[]): BroCatalogTool[] {
-  const serverOwnsDefaults = catalog.some((tool) => typeof tool.upstream._meta?.["bro/default"] === "boolean");
-  return catalog.filter((tool) => serverOwnsDefaults
-    ? tool.upstream._meta?.["bro/default"] === true
-    : DEFAULT_ACTIVE_UPSTREAM_TOOLS.has(tool.upstream.name));
+  return catalog.filter((tool) => tool.upstream._meta?.["bro/default"] === true);
 }
 
 export function prepareBroArguments(

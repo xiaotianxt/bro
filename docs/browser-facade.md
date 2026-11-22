@@ -13,8 +13,9 @@ invariants (ownership, reconnect authority, ref retention, cleanup) live in
 - One interactive page: `browser.open` (returns the first observation) →
   `browser.click` / `browser.fill` / `browser.press` (or `browser.act` for
   several steps at once), with `close: true` on the last call.
-- A page the user already opened: `browser.current.extract` to read it;
-  `browser.attach` (by `tabId` from `tabs_context`) to interact with it.
+- A page the user already opened: to read it, `browser.extract` without `url`
+  (the active tab, or `tabId` from `tabs_context`); to act on it,
+  `browser.attach` with that `tabId`.
 - Console or network evidence: `browser.console.capture` /
   `browser.network.capture`.
 
@@ -193,15 +194,15 @@ only when links are part of the answer), `maxLinks` (default 20),
 
 ## Single and Current-Tab Extraction
 
-`browser.extract` is the one-URL version. It returns `status` (`ok`,
+`browser.extract` is the one-page version. With `url` it opens the page in a
+background tab and closes it afterwards; without `url` it reads an existing
+tab in place (`tabId`, else the active tab) and leaves it open. Passing both
+is an error. It returns `status` (`ok`,
 `partial`, `failed`), `text`, `links` and `diagnostics`. Text is the page's
 rendered `innerText` (a table row stays on one line), plus open Shadow DOM,
 up to `maxChars` (default 20000, so a long table or doc page fits one call).
 A small page is ready as soon as its complete document's text stops changing;
 only a short loading placeholder keeps waiting.
-
-`browser.current.extract` reads the current/default active tab in one call, for
-pages the user already opened (`maxChars`, `includeLinks`).
 
 ## Console and Network Capture
 

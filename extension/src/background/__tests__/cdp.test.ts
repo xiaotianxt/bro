@@ -102,7 +102,7 @@ describe('CDP attachment lifecycle', () => {
     cdpSession.onDetach(invalidate)
     const cleanup = cdpSession.detachIfIdle(1)
     await started.promise
-    expect(invalidate).toHaveBeenCalledWith(1)
+    expect(invalidate).toHaveBeenCalledWith(1, 'bro detached the idle debugger')
     const next = cdpSession.send(1, 'Page.getFrameTree')
     await Promise.resolve()
     expect(chrome.debugger.attach).toHaveBeenCalledTimes(1)
@@ -114,13 +114,34 @@ describe('CDP attachment lifecycle', () => {
     expect(invalidate).toHaveBeenCalledTimes(1)
   })
 
+  it('detaches a silent session, but never for a caller-bounded reply', async () => {
+    vi.useFakeTimers()
+    try {
+      const { cdpSession } = await import('../cdp.js')
+      const detached = vi.fn()
+      cdpSession.onDetach(detached)
+      vi.mocked(chrome.debugger.sendCommand).mockImplementation(async (_target, method) =>
+        method === 'Page.navigate' || method === 'Runtime.evaluate' ? new Promise(() => {}) : {})
+      const navigate = cdpSession.send(3, 'Page.navigate', { url: 'https://slow.test' }, 'caller')
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(detached).not.toHaveBeenCalled()
+      const evaluate = expect(cdpSession.send(3, 'Runtime.evaluate')).rejects.toThrow(/timed out/)
+      await vi.advanceTimersByTimeAsync(5_000)
+      await evaluate
+      expect(detached).toHaveBeenCalledWith(3, expect.stringContaining('"Runtime.evaluate" timed out'))
+      void navigate
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('notifies frame owners and never replays a command after attachment loss', async () => {
     const { cdpSession } = await import('../cdp.js')
     const invalidate = vi.fn()
     cdpSession.onDetach(invalidate)
     vi.mocked(chrome.debugger.sendCommand).mockRejectedValueOnce(new Error('Debugger is not attached'))
     await expect(cdpSession.send(2, 'Input.dispatchMouseEvent')).rejects.toThrow('Debugger is not attached')
-    expect(invalidate).toHaveBeenCalledWith(2)
+    expect(invalidate).toHaveBeenCalledWith(2, expect.stringContaining('Debugger is not attached'))
     expect(chrome.debugger.attach).toHaveBeenCalledTimes(1)
     expect(chrome.debugger.sendCommand).toHaveBeenCalledTimes(1)
     await cdpSession.ensure(2)

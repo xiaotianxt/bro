@@ -63,7 +63,6 @@ TASKS = {
 MINIMAL_EXPOSURE_EXTENSION = """const KEEP = new Set([
   "bro_search_tools",
   "bro_browser_extract",
-  "bro_browser_current_extract",
   "bro_browser_batch_extract",
 ]);
 export default function (pi) {

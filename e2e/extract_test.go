@@ -86,3 +86,39 @@ func TestExtractFailureIsAToolErrorWithoutCleanup(t *testing.T) {
 	contains(t, r.Str("error"), "tabs_create failed: no window")
 	ext.Quiet()
 }
+
+func TestExtractWithoutURLReadsAnExistingTabAndLeavesItOpen(t *testing.T) {
+	s := startServer(t)
+	ext := s.connectExt(t, "a")
+	c := s.client(t)
+
+	// No url and no tabId: the extension reads its active tab and reports it.
+	p := c.Start("browser.extract", j(`{}`))
+	read := ext.NextTool("extract_page")
+	if tabID(read) != -1 {
+		t.Fatalf("extract_page named tab %d; the extension picks the active tab", tabID(read))
+	}
+	page := snapshot(readablePage)
+	page["tabId"] = 7
+	ext.ReplyResult(read, page)
+	r := p.Wait()
+	equalJSON(t, r.Get("id"), `"current"`)
+	equalJSON(t, r.Get("status"), `"ok"`)
+	equalJSON(t, r.Get("tabId"), `7`)
+	equalJSON(t, r.Get("url"), `"https://a.test"`)
+	ext.Quiet() // bro did not open the tab, so it does not close it.
+
+	// A given tab is read in place.
+	p = c.Start("browser.extract", j(`{"tabId":9,"id":"mine"}`))
+	read = ext.NextTool("extract_page")
+	if tabID(read) != 9 {
+		t.Fatalf("extract_page tab %d", tabID(read))
+	}
+	ext.ReplyResult(read, snapshot(readablePage))
+	r = p.Wait()
+	equalJSON(t, r.Get("id"), `"mine"`)
+	equalJSON(t, r.Get("tabId"), `9`)
+	ext.Quiet()
+
+	isErrorWith(t, c.Call("browser.extract", j(`{"url":"https://a.test","tabId":9}`)), "url or tabId, not both")
+}

@@ -1,11 +1,11 @@
 # bro Agent Notes
 
-This repo ships bro: a Rust-native MCP server for controlling a local browser
+This repo ships bro: a Go MCP server for controlling a local browser
 through a minimal WebExtension adapter.
 
 ## Boundaries
 
-- Keep the Rust core and bro WebExtension protocol small and compatible with
+- Keep the Go core and bro WebExtension protocol small and compatible with
   each other.
 - Bind local services to `127.0.0.1` by default.
 - Do not print authentication tokens. It is acceptable to print the settings file path.
@@ -19,7 +19,7 @@ through a minimal WebExtension adapter.
 - `browserId` means extension `instanceId`.
 - Default browser selection is the latest connected instance.
 - Every pending tool call has a bounded timeout and is completed on extension disconnect.
-- Extension tool errors become MCP tool results with `isError=true`; transport/protocol failures remain Rust errors.
+- Extension tool errors become MCP tool results with `isError=true`; transport/protocol failures remain Go errors.
 
 ## Verification
 

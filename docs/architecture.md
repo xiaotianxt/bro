@@ -1,19 +1,19 @@
 # Architecture
 
-bro has one hard boundary: the MCP server is Rust; browser execution is a thin
+bro has one hard boundary: the MCP server is Go; browser execution is a thin
 WebExtension adapter.
 
 ```text
 Codex MCP / bro Pi adapter
-  -> bro Rust server
+  -> bro Go server
   -> authenticated WebSocket bridge
   -> bro extension service worker
   -> Chromium tab / CDP / content scripts
 ```
 
-## Rust Core
+## Go Core
 
-The Rust core owns product policy:
+The Go core (`cmd/bro`, `internal/`) owns product policy:
 
 - bind only to localhost by default
 - authenticate browser bridge connections with the token in `~/.bro/settings.json`
@@ -22,14 +22,23 @@ The Rust core owns product policy:
 - route raw browser tools to the extension
 - compose higher-level tools such as `browser.batch.extract`,
   `browser.batch.flow`, `browser.console.capture`, `browser.network.capture`,
-  and frame-aware `browser.open/observe/act/close` (legacy `browser.flow.*`
-  shares the same executor and ownership state)
+  and frame-aware `browser.open/attach/observe/act/close`
 - publish capability metadata so clients can load coherent dynamic tool packs
 - bound concurrency, cleanup, and response sizes
 
-The core deliberately avoids site-specific workflows. Reddit, LinkedIn, X,
-Threads, and similar sites are covered only by live regression tests for generic
-browser extraction behavior.
+Packages: `internal/server` (HTTP, `/mcp`, `/ws`, `/health`, `/status`),
+`internal/bridge` (extension WebSocket bridge), `internal/facade` (`browser.*`
+tools), `internal/catalog` (tool list, embedded `tools.json`),
+`internal/credentials` (1Password via `op`), `internal/setup`,
+`internal/settings`, and `internal/ids`. MCP uses
+`github.com/modelcontextprotocol/go-sdk`; the bridge uses `coder/websocket`.
+
+The core deliberately avoids site-specific workflows.
+
+`e2e/` is a black-box contract suite: it starts the built binary with an
+isolated `HOME`, connects a fake extension to `/ws`, and drives `/mcp`. It
+asserts only what clients and the extension can observe and is the main
+regression gate. `make live-refs` runs the real-browser contracts.
 
 The bridge shape and initial extension adapter are derived from the
 Apache-2.0 OpenBrowserMCP project. bro keeps that attribution in the README and
@@ -37,7 +46,7 @@ NOTICE while using `bro` for project and package names.
 
 ## Browser Extension Adapter
 
-The browser extension owns mechanisms that cannot be implemented directly in Rust:
+The browser extension owns mechanisms that cannot be implemented directly in Go:
 
 - `chrome.tabs`
 - `chrome.debugger`
@@ -50,13 +59,13 @@ The browser extension owns mechanisms that cannot be implemented directly in Rus
   full frame inventories invalidate documents, not scoped AX omissions
 
 It should stay small and primitive. Any policy that affects MCP users should
-move into Rust unless the browser API forces it to live in the extension.
+move into Go unless the browser API forces it to live in the extension.
 
 ## Pi Adapter
 
 The Pi package in `pi-extension/` is a client adapter over the same MCP endpoint
 used by Codex. It uses the official MCP TypeScript SDK, discovers schemas from
-the Rust server, and registers namespaced Pi tools without copying browser
+the server, and registers namespaced Pi tools without copying browser
 policy. One MCP connection is retained per Pi session.
 
 The adapter owns only Pi-specific concerns:
@@ -89,12 +98,12 @@ visible and recoverable.
 - Unknown `browserId`: the request fails instead of falling back silently.
 - Extension authentication must finish within five seconds; an open socket is
   not registered as connected before the server acknowledges authentication.
-- Request cancellation: RMCP cancels the request token, not the handler future.
-  The facade checks it before new dispatches/steps; dispatched effects are not
-  rolled back. Required cleanup ignores that token.
-- Tool timeout: pending bridge registration is removed even if an outer future
-  is dropped. Facade allocation keeps a bounded late-reply handoff so abandoned
-  owned tabs can be reclaimed after an item timeout.
+- Request cancellation: the facade checks the request context before new
+  dispatches/steps; dispatched effects are not rolled back. Required cleanup
+  ignores cancellation.
+- Tool timeout: pending bridge registration is removed on every exit, including
+  cancellation. Tab allocation runs to its bounded bridge reply even if the
+  caller left, so a late-allocated owned tab is closed after an item timeout.
 - Dependent dispatch and cleanup carry the authenticated connection identity,
   not just browserId. Reconnection rejects old authority rather than targeting
   a reused tab ID. Failed cleanup retains ownership and reports failure.
@@ -105,5 +114,5 @@ visible and recoverable.
 
 - Cloud relay or hosted browser service.
 - Site-specific research agents.
-- Claiming that Chromium extension code can be made 100% Rust.
+- Claiming that Chromium extension code can be made 100% Go.
 - Persisting browsing traces by default.

@@ -18,7 +18,7 @@ The bearer token is read directly from `~/.bro/settings.json`. It is not copied 
 Install the tagged bro repository as a Pi package:
 
 ```bash
-pi install git:github.com/xiaotianxt/bro@v1.7.0
+pi install git:github.com/xiaotianxt/bro@v2.0.0
 ```
 
 For development from a checkout:
@@ -36,8 +36,8 @@ entry with `pi remove /absolute/path/to/bro` to avoid loading both copies.
 ## Behavior
 
 - MCP tool names are normalized, for example `browser.batch.extract` becomes `bro_browser_batch_extract`.
-- With 1.4, the server marks the default tools: search, extract/current.extract/batch.extract/batch.flow, and `browser.open/observe/act/close`. Older servers keep the legacy defaults. Internal tools are not registered in Pi; legacy `browser.flow.*` stays discoverable.
-- `bro_search_tools` loads server-owned capability packs (tabs, frames, accessibility, console, visual, upload, shortcuts, user scripts). Search `CDP extension recovery` (v1.2.0+) for extension diagnosis/pause/resume, or `1Password login` (v1.3.0+) for same-site, non-CDP login filling that never submits; see [security boundaries](../docs/onepassword-login.md).
+- The server marks the default tools: search, extract/batch.extract/batch.flow, and `browser.open/attach/observe/click/fill/press/act/close`. Older servers keep the legacy defaults. Internal tools are not registered in Pi.
+- `bro_search_tools` loads server-owned capability packs (tabs, frames, accessibility, console, visual, upload, user scripts). Search `CDP extension recovery` (v1.2.0+) for extension diagnosis/pause/resume, or `1Password login` (v1.3.0+) for same-site, non-CDP login filling that never submits; see [security boundaries](../docs/onepassword-login.md).
 - `browser.open` receives Pi's session identity and label automatically; no session naming calls are needed.
 - Ref input emulates page focus without activating the user's tab; reserve `tabs_activate` for genuine foreground work.
 - MCP errors become failed Pi tool results. Text output is bounded to Pi's 50 KB / 2,000-line limit.

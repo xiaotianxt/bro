@@ -884,7 +884,7 @@
       "bro/capability": "internal",
       "bro/default": true
     },
-    "description": "Read one URL: open it in a background tab, wait until its content settles, return its visible text as rendered (a table row stays on one line), and close the tab. Up to maxChars (20000). Use it instead of open + evaluate to read or search a page. Links and a11y fallback are opt-in.",
+    "description": "Read one page's visible text as rendered (a table row stays on one line). With url: open it in a background tab, wait until its content settles, and close the tab. Without url: read an existing tab (tabId from tabs_context, else the active tab) and leave it open. Up to maxChars (20000). Use it instead of open + evaluate to read or search a page. Links and a11y fallback are opt-in.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -901,7 +901,7 @@
           "type": "boolean"
         },
         "id": {
-          "description": "Optional caller-supplied result id. Defaults to url-1.",
+          "description": "Optional caller-supplied result id. Defaults to url-1, or current without url.",
           "minLength": 1,
           "type": "string"
         },
@@ -934,14 +934,15 @@
           "minimum": 1,
           "type": "integer"
         },
+        "tabId": {
+          "description": "Existing tab to read instead of opening url. Omit both to read the active tab.",
+          "type": "integer"
+        },
         "url": {
           "format": "uri",
           "type": "string"
         }
       },
-      "required": [
-        "url"
-      ],
       "type": "object"
     },
     "name": "browser.extract"

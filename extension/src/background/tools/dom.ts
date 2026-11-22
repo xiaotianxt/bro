@@ -4,12 +4,20 @@ import type { ToolResult } from '@bro/shared'
 import { CDP_COMMAND_TIMEOUT_MS, CdpCommandTimeout, cdpSession } from '../cdp.js'
 import { armDialogs } from '../dialogs.js'
 import { getBrowserFrames, sendToFrame } from '../frames.js'
+import { isRendering } from '../render-pump.js'
 import { registerTool } from '../tool-registry.js'
 import { readAXPage, findAX, refTool, waitAX, actElement } from './accessibility.js'
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+interface PageRenderState {
+  shell: boolean
+  // Frames rendered since the first read; visible pages render continuously.
+  frames: number
+  visible: boolean
+}
 
 interface ExtractPageResult {
   tabId?: number
@@ -244,7 +252,7 @@ function pageGetBodyText(maxChars: number, cursor: number): string {
 function pageExtractSnapshot(options: {
   maxChars: number
   maxLinks: number
-}): ExtractPageResult & { shell: boolean } {
+}): ExtractPageResult & PageRenderState {
   const maxChars = options.maxChars
   const maxLinks = options.maxLinks
 
@@ -359,8 +367,29 @@ function pageExtractSnapshot(options: {
     }
   }
 
+  // Count rendered frames for a while after each read, so the caller can tell
+  // whether lazy content (IntersectionObserver, requestAnimationFrame) has had
+  // frames to run in. The chain stops itself: no lasting work in the page.
+  const scope = window as typeof window & { __broFrames?: { count: number; until: number; running: boolean } }
+  const frames = (scope.__broFrames ??= { count: 0, until: 0, running: false })
+  frames.until = performance.now() + 2000
+  if (!frames.running) {
+    frames.running = true
+    const tick = () => {
+      frames.count++
+      if (performance.now() < frames.until) requestAnimationFrame(tick)
+      else frames.running = false
+    }
+    requestAnimationFrame(tick)
+  }
+
   const result = snapshot()
-  return { ...result, shell: looksLikeNavigationShell(result.text) }
+  return {
+    ...result,
+    shell: looksLikeNavigationShell(result.text),
+    frames: frames.count,
+    visible: document.visibilityState === 'visible',
+  }
 }
 
 // get_page_text tool
@@ -458,7 +487,13 @@ async function executeExtractPage(
   // past its timeout. Stable means two equal reads quietMs apart.
   const deadline = Date.now() + guardMs
   let lastSignature = ''
-  let result: ExtractPageResult & { shell: boolean }
+  let result: ExtractPageResult & PageRenderState
+  // A hidden tab renders only while bro pumps frames into it. Where frames
+  // arrive, stable text counts only once it survived two of them: one for an
+  // IntersectionObserver callback, one for the animation frame it schedules.
+  // Elsewhere no frame will ever come, so waiting for one would only hit the cap.
+  const pumped = isRendering(tabId)
+  let framesAtSignature = 0
   let failures = 0
   for (;;) {
     try {
@@ -475,10 +510,13 @@ async function executeExtractPage(
     }
     const { text, links, readiness } = result
     const signature = `${text.length}:${links.length}:${readiness.documentReadyState}:${text.slice(0, 160)}:${text.slice(-160)}`
+    if (signature !== lastSignature) framesAtSignature = result.frames
+    const rendered = !(pumped || result.visible) || result.frames - framesAtSignature >= 2
     // A complete document's short, stable text is its content; only a short
     // loading placeholder ("Loading…") keeps waiting for the real page.
     const ready =
       signature === lastSignature &&
+      rendered &&
       readiness.documentReadyState !== 'loading' &&
       !result.shell &&
       (text.length >= minChars ||
@@ -490,7 +528,7 @@ async function executeExtractPage(
     lastSignature = signature
     await new Promise<void>((resolve) => setTimeout(resolve, quietMs))
   }
-  const { shell: _shell, ...page } = result
+  const { shell: _shell, frames: _frames, visible: _visible, ...page } = result
   const extracted: ExtractPageResult = { ...page, tabId }
 
   return {

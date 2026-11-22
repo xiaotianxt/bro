@@ -1,6 +1,6 @@
 # bro
 
-Rust-native MCP server for controlling a real local browser through a minimal
+Go MCP server for controlling a real local browser through a minimal
 WebExtension bridge.
 
 bro is built for agents that need a shorter browser interaction loop:
@@ -9,7 +9,7 @@ bro is built for agents that need a shorter browser interaction loop:
 - keep a single tab leased for sequential click/fill/read flows
 - use a logged-in Chromium-family browser without sending browsing data through
   a cloud relay
-- keep the MCP server, API policy, concurrency, and tests in Rust
+- keep the MCP server, API policy, concurrency, and tests in Go
 
 The browser runtime itself is still a WebExtension because Chromium exposes
 `chrome.tabs`, `chrome.debugger`, content scripts, and service workers only to
@@ -20,7 +20,7 @@ the extension environment. bro keeps that layer intentionally thin.
 bro is inspired by and initially prototyped against
 [OpenBrowserMCP](https://github.com/thezzisu/openbrowsermcp). OpenBrowserMCP
 proved the local WebSocket bridge + browser extension shape; bro takes that
-idea into a Rust-native MCP server with a smaller agent-facing API, tighter
+idea into a Go MCP server with a smaller agent-facing API, tighter
 regression tests, and a minimal extension adapter. OpenBrowserMCP is
 Apache-2.0, and this repository keeps the Apache-2.0 license and attribution in
 [NOTICE](NOTICE).
@@ -29,12 +29,12 @@ Apache-2.0, and this repository keeps the Apache-2.0 license and attribution in
 
 ```text
 Codex MCP / bro Pi adapter
-  -> bro Rust server (:3500 /mcp, /ws, /health, /status)
+  -> bro Go server (:3500 /mcp, /ws, /health, /status)
   -> bro WebExtension adapter
   -> Chromium-family browser tab
 ```
 
-The Rust server owns:
+The Go server owns:
 
 - MCP Streamable HTTP
 - WebSocket bridge registry
@@ -63,7 +63,7 @@ bro setup browser
 For native bro tools in Pi, install the bro-owned adapter and reload Pi:
 
 ```bash
-pi install git:github.com/xiaotianxt/bro@v1.7.0
+pi install git:github.com/xiaotianxt/bro@v2.0.0
 ```
 
 Install the optional Codex/agent skill for bro-specific browser workflows:
@@ -95,7 +95,7 @@ For source development:
 ```bash
 git clone https://github.com/xiaotianxt/bro.git
 cd bro
-cargo run -- serve
+go run ./cmd/bro serve
 ```
 
 The first run creates `~/.bro/settings.json`:
@@ -122,7 +122,7 @@ pnpm --filter @bro/extension build
 For source checkouts, pass the local extension directory explicitly:
 
 ```bash
-cargo run -- setup browser --extension-dir extension/dist
+go run ./cmd/bro setup browser --extension-dir extension/dist
 ```
 
 ## MCP Configuration
@@ -162,17 +162,16 @@ tokens.
 The Pi package in `pi-extension/` uses Pi's extension API and the official MCP
 TypeScript SDK. It reads the bearer token directly from `~/.bro/settings.json`,
 keeps one MCP connection per Pi session, and registers bro's live tool schemas
-under a `bro_` namespace. Nine tools start active: search, open/observe/act/close,
-and extract/current.extract/batch.extract/batch.flow, selected by server metadata. `bro_search_tools` enables server-owned capability
-packs for tabs, frames, accessibility, console, visual input, uploads,
-shortcuts, and user scripts. Internal tools are not registered. Legacy flow
-compatibility tools remain discoverable but inactive by default. Older servers
-retain the old default catalog.
+under a `bro_` namespace. Search, extract/batch.extract/batch.flow, and
+open/attach/observe/click/fill/press/act/close start active, selected by server
+metadata. `bro_search_tools` enables server-owned capability packs for tabs,
+frames, accessibility, console, visual input, uploads, and user scripts.
+Internal tools are not registered. Older servers retain the old default catalog.
 
 The adapter maps Pi session identity into bro's tab lifecycle, preserves browser
 state across `/reload`, and finalizes owned tabs and unfinished targets when the
 session ends. Owner labels are automatic and separate from pinned target IDs. It remains a protocol adapter: browser policy, tool schemas,
-timeouts, and cleanup behavior stay in the Rust server.
+timeouts, and cleanup behavior stay in the server.
 
 For development from this checkout:
 
@@ -239,19 +238,11 @@ bro call browsers_context
 
 `extensionCount` should be at least `1`.
 
-`browsers_context` also includes best-effort native metadata under
-`nativeInfo` when the local server can identify the browser process. On macOS
-and Unix-like systems this includes fields such as `appName`, `processId`,
-`executablePath`, `userDataDir`, `profilePath`, `cookieStorePath`, and
-`safeStorageService`. Use `nativeInfo` for cookie/storage export workflows;
-`browserInfo` is only the browser identity visible to the WebExtension.
-
 ## Main Tools
 
-- `browser.extract`: open one URL, extract visible text, close by default
-- `browser.current.extract`: extract the current/default active tab in one call
+- `browser.extract`: open one URL, extract visible text, close by default;
+  without `url`, read the active tab (or `tabId`) in place
 - `browser.batch.extract`: extract many URLs in parallel
-- `browser.batch.run`: open many URLs, read plain text, close by default
 - `browser.batch.flow`: run the same ordered interaction on many URLs in
   parallel, close by default
 - `browser.console.capture`: open a page, trigger console output, collect logs
@@ -260,6 +251,8 @@ and Unix-like systems this includes fields such as `appName`, `processId`,
   request metadata and bounded response bodies in one call
 - `browser.open`: create an owned background tab and return a browser/tab-pinned
   `targetId` with the first observation (`observe: false` returns at dispatch)
+- `browser.attach`: make a tab bro did not open (from `tabs_context`) a target;
+  bro never closes an attached tab
 - `browser.observe`: scoped, bounded a11y observations with short stable refs
   (`kqx12`) and cursor continuation; text mode for reading main-frame content
 - `browser.act`: compose ordered `navigate`, `evaluate`, `wait`, ref
@@ -268,9 +261,7 @@ and Unix-like systems this includes fields such as `appName`, `processId`,
 - `browser.close`: close the owned target; `close: true` on a target's last
   observe/act/click/fill/press does it in the same call
 
-Legacy `browser.flow.start/observe/act/finish` keep their `sessionId` signatures
-and CSS/wait/read_text steps on the same executor. See the [facade
-guide](docs/browser-facade.md) and [interaction
+See the [facade guide](docs/browser-facade.md) and [interaction
 internals](docs/interaction-internals.md). A dispatched action is not proof of
 the application outcome; observe to verify it.
 
@@ -278,21 +269,21 @@ Use `browser.batch.flow` when each page needs the same interaction before
 reading data, for example opening a reviews modal on every product page and
 then returning a structured `evaluate` result. It keeps the repeated workflow inside
 one MCP call with bounded per-URL timeouts and cleanup, instead of requiring the
-agent to start, act on, and finish many separate flow sessions.
+agent to open, act on, and close many separate targets.
 
 Raw browser primitives such as `tabs_create`, `tabs_close`, `read_page`,
-`frames_list`, `javascript_tool`, `click_element`, `fill_element`, and
-`computer` remain available for lower-level work. Ref click/scroll and real
-`computer` input temporarily emulate page focus without selecting a tab or
-focusing its window; emulation is cleared before returning. Use `tabs_activate`
-only when a task genuinely needs physical foreground interaction. See
+`frames_list`, `javascript_tool`, and `computer` remain available for
+lower-level work. Ref click/scroll and real `computer` input temporarily
+emulate page focus without selecting a tab or focusing its window; emulation
+is cleared before returning. Use `tabs_activate` only when a task genuinely
+needs physical foreground interaction. See
 [Input focus](docs/input-focus.md) for lifecycle and visibility semantics.
 Use `frames_list` frame IDs with frame-aware flow steps for iframe interaction.
 
 Extraction defaults are intentionally compact for agent workflows:
 
-- text is capped at 20,000 characters for one page (`browser.extract`,
-  `browser.current.extract`) and 8,000 per page in `browser.batch.extract`
+- text is capped at 20,000 characters for one page (`browser.extract`) and
+  8,000 per page in `browser.batch.extract`
 - links are omitted unless `includeLinks:true`
 - accessibility-tree fallback is omitted unless `includeA11y:true`
 - screenshots default to lower JPEG quality; pass `quality` only when visual
@@ -305,16 +296,17 @@ pnpm install --frozen-lockfile
 make check
 ```
 
-Run live dynamic-site regression tests when a local bro server and extension are
-connected:
+`make check` runs gofmt, `go vet`, the Go unit tests, the `e2e/` contract
+suite, and the extension and Pi adapter checks. `e2e/` is a black-box suite
+that drives the built binary through `/mcp` with a fake extension on `/ws`; it
+is the main regression gate. `go test ./...` runs it too and builds the binary
+itself unless `BRO_BIN` names one.
+
+Run the real-browser contracts in an isolated Chromium profile:
 
 ```bash
-make live-test
+make live-refs CHROME_BIN=/path/to/chromium
 ```
-
-The live tests open Reddit, LinkedIn, X, and Threads search pages in background
-tabs, verify dynamic extraction, and exercise one-call request/body capture
-against httpbin.
 
 Run isolated multi-model Pi browser benchmarks from
 `benchmarks/pi-agent/`. Keep raw sessions outside the repository because they
@@ -325,17 +317,15 @@ can contain sensitive browser content. The current tool-design findings are in
 
 Tagged releases build GitHub-hosted binaries for:
 
-- `x86_64-unknown-linux-gnu`
-- `aarch64-unknown-linux-gnu`
-- `x86_64-apple-darwin`
-- `aarch64-apple-darwin`
-- `x86_64-pc-windows-msvc`
-- `aarch64-pc-windows-msvc`
+- Linux x86_64 and arm64
+- macOS x86_64 and arm64
+- Windows x86_64 and arm64
 
-The Homebrew formula in `xiaotianxt/tap` installs the GitHub release binary for
-the current macOS or Linux architecture, installs the matching browser
-extension asset, and exposes `brew services start bro`. Releases also include an
-npm-compatible tarball for the Pi adapter; the tagged Git repository is directly
+The Homebrew formula in `xiaotianxt/tap` installs the prebuilt Go release
+binary for the current macOS or Linux architecture (a HEAD build runs
+`go build ./cmd/bro`), installs the matching browser extension asset, and
+exposes `brew services start bro`. Releases also include an npm-compatible
+tarball for the Pi adapter; the tagged Git repository is directly
 installable as a Pi package.
 
 Maintainers release from a clean `main` checkout with

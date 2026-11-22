@@ -10,13 +10,13 @@
 bro should add a browser-side Page Interaction Engine that improves page
 reading and operation reliability while preserving the current product
 strengths: local browser control, background execution, parallel batching, small
-bridge protocol, and Rust-owned facade policy.
+bridge protocol, and server-owned facade policy.
 
 The engine is not a new agent loop. It is a generic page model plus a
 verification-oriented action layer.
 
 ```text
-Rust facade / MCP tools
+Server facade / MCP tools
   -> extension tool registry
   -> Page Interaction Engine
        -> snapshot/read model
@@ -65,7 +65,7 @@ is the generic browser mechanism inside the extension.
 - Make element references more durable across multi-step MCP workflows.
 - Make click, fill, scroll, and select operations CDP-first and verified.
 - Return structured diagnostics that agents can use to recover.
-- Keep Rust as the facade and policy owner.
+- Keep the server as the facade and policy owner.
 - Keep extension APIs generic and small.
 
 ## Non-Goals
@@ -80,7 +80,7 @@ is the generic browser mechanism inside the extension.
 
 Architecture before the native-AX/ref implementation:
 
-- Rust owns MCP transport, auth, facade behavior, batching, cleanup, routing,
+- The server owns MCP transport, auth, facade behavior, batching, cleanup, routing,
   and response limits.
 - The extension owns Chrome APIs, debugger/CDP, content scripts, page-side JS,
   and tool execution.
@@ -490,7 +490,7 @@ Add internal extension tools only if needed:
 Avoid exposing too many new public MCP tools until the internal engine has
 settled.
 
-## Rust/Extension Boundary
+## Server/Extension Boundary
 
 Extension owns:
 
@@ -501,7 +501,7 @@ Extension owns:
 - action execution
 - post-action browser signals
 
-Rust owns:
+The server owns:
 
 - public MCP schemas
 - facade defaults
@@ -512,7 +512,7 @@ Rust owns:
 - policy about whether to call observe/action/extract
 
 This preserves the existing architecture rule: the extension performs browser
-mechanisms; Rust owns product behavior.
+mechanisms; the server owns product behavior.
 
 ## Implementation Plan
 
@@ -601,7 +601,7 @@ Verification:
 
 ### Phase 4: Facade Integration
 
-Update Rust facade behavior:
+Update server facade behavior:
 
 - `browser.flow.observe` can request `interactive_html`
 - `browser.flow.act` gets structured action results
@@ -713,9 +713,7 @@ Live regression tests:
 Required pre-handoff checks remain:
 
 ```bash
-cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+make check
 pnpm --filter @bro/shared build
 pnpm --filter @bro/extension typecheck
 pnpm --filter @bro/extension build

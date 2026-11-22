@@ -59,7 +59,7 @@ Runs are resumable: a directory with `meta.json` is skipped.
 
 ## Exposure experiment
 
-`current` uses bro's normal default tools. `minimal` leaves only the three extraction tools and `bro_search_tools` active initially:
+`current` uses bro's normal default tools. `minimal` leaves only the two extraction tools and `bro_search_tools` active initially:
 
 ```bash
 python3 benchmarks/pi-agent/run.py \
