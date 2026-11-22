@@ -63,6 +63,15 @@ let token = ''
 const log = await open(resolve(output, 'processes.log'), 'a')
 const processes = []
 let rootUrl, crossUrl, socket, client, resetFixture, heldScript, heldFrame
+// Watch fixtures change only once the test releases their key, after it has
+// seen the watch start; a change before the start would race the watch.
+// A key holds the pending /watch-release response or, once released, true.
+const watchGates = new Map()
+const releaseWatch = (key) => {
+  const held = watchGates.get(key)
+  if (held && held !== true) held.end('released')
+  watchGates.set(key, true)
+}
 const correctionCheck = 'navigation correction: internal sources and same-document readiness'
 const checks = []
 const cancellation = new AbortController()
@@ -132,39 +141,53 @@ const fixture = (req, res) => {
     return
   }
   if (url.pathname === '/watch') {
-    // Watch shapes. Delays are server-side unless the shape is about page
-    // timers, which Chrome throttles in background tabs.
+    // Watch shapes. Each changes after the test releases its key. Delays are
+    // server-side unless the shape is about page timers, which Chrome
+    // throttles in background tabs.
     const shape = url.searchParams.get('shape') ?? ''
+    const key = url.searchParams.get('key') ?? ''
     send(`<!doctype html><title>Watch</title><main><h1>Jobs</h1>
     <ul id="jobs"><li class="job"><span role="status" aria-label="Job 1" class="state">Running</span></li></ul>
     <p id="toast"></p></main>
     <script>
     const shape=${JSON.stringify(shape)};
     const data=(ms)=>fetch('/watch-data?ms='+ms).then(r=>r.text());
+    const released=fetch('/watch-release?key='+${JSON.stringify(encodeURIComponent(key))}).then(()=>data(500));
     const state=()=>document.querySelector('.state');
-    if(shape==='late')data(2000).then(t=>{state().textContent=t});
+    if(shape==='late')released.then(t=>{state().textContent=t});
     // The whole row is replaced: a pinned node is gone.
-    if(shape==='rerender')data(1500).then(t=>{jobs.innerHTML='<li class="job"><span role="status" aria-label="Job 1" class="state">'+t+'</span></li>'});
-    if(shape==='navigate')data(800).then(()=>{location.href='/watch-next'});
-    if(shape==='timer')setTimeout(()=>{state().textContent='Status Done'},2500);
-    // Shown for one task only: no poll can see it; the page's latch can.
-    if(shape==='transient')data(1500).then(()=>{toast.textContent='Saved Done';const c=new MessageChannel();c.port1.onmessage=()=>{toast.textContent=''};c.port2.postMessage(0)});
+    if(shape==='rerender')released.then(t=>{jobs.innerHTML='<li class="job"><span role="status" aria-label="Job 1" class="state">'+t+'</span></li>'});
+    if(shape==='navigate')released.then(()=>{location.href='/watch-next'});
+    if(shape==='timer')released.then(()=>setTimeout(()=>{state().textContent='Status Done'},1000));
+    // Shown for one task only, so no poll can see it; the page's latch can.
+    // It repeats until the tab closes: the wait step gives no start signal
+    // to release on, and one flash before its latch is installed is missed.
+    const flash=()=>{toast.textContent='Saved Done';const c=new MessageChannel();c.port1.onmessage=()=>{toast.textContent=''};c.port2.postMessage(0);data(300).then(flash)};
+    if(shape==='transient')released.then(flash);
     </script>`)
     return
   }
   if (url.pathname === '/watch-chat') {
     // A support chat in a cross-site iframe, as on carrier support pages.
     send(`<!doctype html><title>Watch chat</title><main><h1>Account</h1>
-    <iframe title="Support chat" src="${crossUrl}/watch-chat-frame" style="width:400px;height:300px"></iframe></main>`)
+    <iframe title="Support chat" src="${crossUrl}/watch-chat-frame?key=${encodeURIComponent(url.searchParams.get('key') ?? '')}" style="width:400px;height:300px"></iframe></main>`)
     return
   }
   if (url.pathname === '/watch-chat-frame') {
-    // Replies arrive from the server, 1.5 s apart.
+    // Each reply arrives when the test releases KEY/1, then KEY/2.
+    const key = encodeURIComponent(url.searchParams.get('key') ?? '')
     send(`<!doctype html><title>Chat</title><ul id="msgs" aria-label="Messages"><li class="msg">Agent: Hi, how can I help?</li></ul>
     <script>
     const say=(t)=>{const li=document.createElement('li');li.className='msg';li.textContent=t;msgs.append(li)};
-    fetch('/watch-data?ms=1500').then(()=>say('Agent: first reply')).then(()=>fetch('/watch-data?ms=1500')).then(()=>say('Agent: renewal Done'));
+    const reply=(n)=>fetch('/watch-release?key=${key}%2F'+n);
+    reply(1).then(()=>say('Agent: first reply')).then(()=>reply(2)).then(()=>say('Agent: renewal Done'));
     </script>`)
+    return
+  }
+  if (url.pathname === '/watch-release') {
+    const key = url.searchParams.get('key') ?? ''
+    if (watchGates.get(key) === true) res.end('released')
+    else watchGates.set(key, res)
     return
   }
   if (url.pathname === '/watch-next') {
@@ -1653,7 +1676,10 @@ try {
       { name: 'close', want: 'tabClosed' },
       { name: 'timeout', want: 'timeout' },
     ]
-    const cli = (start, flags = []) =>
+    // onStart runs once the watch bro watch starts is listed. A watch is
+    // listed only after its first probe, so the page latch is in place; a
+    // text watch prints no line until it changes, so its output can't tell.
+    const cli = (start, flags = [], onStart) =>
       new Promise((resolveRun, reject) => {
         const args = start ? ['watch', JSON.stringify(start), ...flags] : ['watch', ...flags]
         const child = spawn(broBinary, [...args, '--port', String(port)], {
@@ -1662,13 +1688,19 @@ try {
         })
         let out = ''
         let err = ''
+        const listed = onStart && waitUntil(async () =>
+          (await tool('browser.watch', { list: true })).structuredContent.watches
+            .find((w) => w.targetId === start.targetId && w.active), 'listed watch').then(onStart)
+        // Rethrown when the run exits; caught here so it is not unhandled first.
+        listed?.catch(() => {})
         child.stdout.on('data', (d) => (out += d))
         child.stderr.on('data', (d) => (err += d))
         const timer = setTimeout(() => child.kill('SIGKILL'), 20000)
         child.once('error', reject)
-        child.once('exit', (code) => {
+        child.once('exit', async (code) => {
           clearTimeout(timer)
           try {
+            await listed
             const lines = out.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
             resolveRun({ code, lines, err })
           } catch (error) {
@@ -1680,15 +1712,16 @@ try {
     const timings = {}
     for (const shape of shapes) {
       for (const entry of ['mcp', 'cli', 'wait']) {
-        const opened = await openTarget(`${rootUrl}/watch?shape=${shape.name}`, false)
+        const key = `${shape.name}/${entry}/${Math.random().toString(36).slice(2)}`
+        const opened = await openTarget(`${rootUrl}/watch?shape=${shape.name}&key=${encodeURIComponent(key)}`, false)
         const { targetId, tabId } = opened
         let closed = false
-        const closeSoon = () =>
-          shape.name === 'close' &&
-          new Promise((r) => setTimeout(r, 1200)).then(async () => {
-            closed = true
-            await tool('tabs_close', { tabId })
-          })
+        // The watch has started: let the page change, or close its tab.
+        const afterStart = async () => {
+          if (shape.name !== 'close') return releaseWatch(key)
+          closed = true
+          await tool('tabs_close', { tabId })
+        }
         const started = performance.now()
         try {
           const start = { targetId, text: 'Done', maxDurationMs: shape.name === 'timeout' ? 2500 : 15000 }
@@ -1702,23 +1735,28 @@ try {
             let r = (await tool('browser.watch', start)).structuredContent
             const id = r.watchId
             events.push(...r.events)
-            const closing = closeSoon()
+            await afterStart()
             while (r.active) {
               r = (await tool('browser.watch', { watchId: id, cursor: r.cursor, waitMs: 20000 })).structuredContent
               events.push(...r.events)
             }
-            await closing
             reason = r.reason
           } else if (entry === 'cli') {
-            const closing = closeSoon()
-            const run = await cli(start)
-            await closing
+            const run = await cli(start, [], afterStart)
             events = run.lines
             reason = run.lines.at(-1)?.reason
             const wantCode = shape.want === 'met' ? 0 : 1
             if (run.code !== wantCode) throw new Error(`exit ${run.code}, want ${wantCode}: ${run.err}`)
           } else {
-            const closing = closeSoon()
+            // The wait step gives no signal when it has started, so the page
+            // is released at once (its changes tolerate an early release) and
+            // the tab closes after a pause.
+            releaseWatch(key)
+            const closing = shape.name === 'close' &&
+              new Promise((r) => setTimeout(r, 1200)).then(async () => {
+                closed = true
+                await tool('tabs_close', { tabId })
+              })
             // A wait whose tab closes fails the act, naming the closed tab.
             const r = await tool('browser.act', { targetId, steps: [{ type: 'wait', text: 'Done', timeoutMs: shape.name === 'timeout' ? 2500 : 12000 }] },
               shape.name === 'close' && /failed at step 1 \(wait\): tab \d+ closed/)
@@ -1747,7 +1785,9 @@ try {
     // frameId (count, then text) and by a ref the frame owns. The CLI loop is
     // --once, resumed with --cursor, as a harness that wakes on exit runs it.
     for (const entry of ['mcp frameId', 'mcp ref', 'cli once']) {
-      const opened = await openTarget(`${rootUrl}/watch-chat`, false)
+      const key = `chat/${entry}/${Math.random().toString(36).slice(2)}`
+      const reply = (n) => releaseWatch(`${key}/${n}`)
+      const opened = await openTarget(`${rootUrl}/watch-chat?key=${encodeURIComponent(key)}`, false)
       const { targetId, tabId } = opened
       const started = performance.now()
       try {
@@ -1758,24 +1798,30 @@ try {
           assert.match(r.condition, /in frame /)
           assert.equal(r.events[0]?.type, 'initial', JSON.stringify(r))
           assert.equal(r.events[0].count, 1)
+          reply(1)
           r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: 20000 })).structuredContent
           assert.deepEqual(r.events.map((e) => [e.type, e.count, e.added]), [['count', 2, ['Agent: first reply']]], JSON.stringify(r))
           await tool('browser.watch', { watchId: r.watchId, stop: true })
-          r = (await tool('browser.watch', { targetId, frameId: frame.frameId, text: 'renewal done', waitMs: 20000 })).structuredContent
+          r = (await tool('browser.watch', { targetId, frameId: frame.frameId, text: 'renewal done' })).structuredContent
+          reply(2)
           while (r.active) r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: 20000 })).structuredContent
           assert.equal(r.reason, 'met', JSON.stringify(r))
         } else if (entry === 'mcp ref') {
           const tree = text(await tool('browser.observe', { targetId }))
           const list = refFor(tree, 'list', 'Messages')
           let r = (await tool('browser.watch', { targetId, refId: list, text: 'renewal done' })).structuredContent
+          reply(1)
+          reply(2)
           while (r.active) r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: 20000 })).structuredContent
           assert.equal(r.reason, 'met', JSON.stringify(r))
           assert.match(r.events.find((e) => e.type === 'met')?.value ?? '', /renewal Done/)
         } else {
-          let run = await cli({ targetId, frameId: frame.frameId, css: 'li.msg', count: true }, ['--once'])
+          let run = await cli({ targetId, frameId: frame.frameId, css: 'li.msg', count: true }, ['--once'], () => reply(1))
           assert.equal(run.code, 3, run.err)
           assert.deepEqual(run.lines.map((e) => e.type), ['initial', 'count'])
           const { watchId, seq } = run.lines.at(-1)
+          // The renewal arrives while no CLI runs; the resumed run still gets it.
+          reply(2)
           run = await cli(null, ['--id', watchId, '--cursor', String(seq), '--once'])
           assert.equal(run.code, 3, run.err)
           assert.deepEqual(run.lines.map((e) => [e.seq, e.added]), [[seq + 1, ['Agent: renewal Done']]])
