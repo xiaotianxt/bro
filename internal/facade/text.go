@@ -190,8 +190,6 @@ type textQuality struct {
 	score int
 }
 
-func hasPageText(text string) bool { return quality(text, defaultTextReadyMin).ready }
-
 func quality(text string, minChars int) textQuality {
 	text = strings.TrimSpace(text)
 	if text == "" || text == "(no text content found)" || text == "Skip to main content" {
@@ -216,21 +214,6 @@ func quality(text string, minChars int) textQuality {
 		score = max(score-200, 0)
 	}
 	return textQuality{ready: chars >= minChars && tokens >= 12 && !shell, score: score}
-}
-
-// isLoadingPlaceholder is short text announcing content still on its way.
-func isLoadingPlaceholder(text string) bool {
-	text = strings.TrimSpace(text)
-	lower := strings.ToLower(text)
-	if utf8.RuneCountInString(text) >= 200 {
-		return false
-	}
-	for _, marker := range []string{"loading", "please wait", "just a moment"} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	return strings.HasSuffix(text, "...") || strings.HasSuffix(text, "…")
 }
 
 func isProbableNavShell(text string) bool {

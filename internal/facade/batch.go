@@ -264,9 +264,12 @@ func failedExtract(in batchInput, tabID *int64, err string) extractItem {
 
 type extractOptions struct {
 	minChars, maxChars, maxLinks int
-	includeA11y, includeLinks    bool
-	cleanup, active              bool
-	browser                      bridge.Target
+	// minCharsSet: the caller asked for minChars, so short text is not ready
+	// however settled the page looks.
+	minCharsSet               bool
+	includeA11y, includeLinks bool
+	cleanup, active           bool
+	browser                   bridge.Target
 }
 
 type rawExtractOptions struct {
@@ -284,6 +287,7 @@ func (r rawExtractOptions) bind(b *bridge.Bridge, defaultMaxChars int) (extractO
 	browser, err := b.Bind(r.BrowserID)
 	return extractOptions{
 		minChars:     clamp(r.MinChars, defaultTextReadyMin, 1, maxTextReadyMin),
+		minCharsSet:  r.MinChars != nil,
 		maxChars:     clamp(r.MaxChars, defaultMaxChars, 1, maxExtractMaxChars),
 		maxLinks:     clamp(r.MaxLinks, defaultExtractMaxLinks, 0, maxExtractMaxLinks),
 		includeA11y:  boolOr(r.IncludeA11y, false),
@@ -441,7 +445,7 @@ func (f *Facade) finishExtract(ctx context.Context, in batchInput, s session, ti
 		links = append(links, initial.Links...)
 		bestText = initial.Text
 		best = quality(bestText, o.minChars)
-		best.ready = best.ready || (settled && strings.TrimSpace(bestText) != "")
+		best.ready = best.ready || (settled && !o.minCharsSet && strings.TrimSpace(bestText) != "")
 	} else {
 		d.Errors = append(d.Errors, "extract_page: "+initialErr.Error())
 	}
@@ -514,13 +518,16 @@ func (f *Facade) extractPage(ctx context.Context, tabID *int64, browser bridge.T
 	if ctx.Err() != nil {
 		return domSnapshot{}, bridge.ErrCancelled
 	}
-	r, err := browser.Dispatch(ctx, f.bridge, "extract_page", map[string]any{
-		"minChars": o.minChars,
+	args := map[string]any{
 		"quietMs":  textReadyPoll.Milliseconds(),
 		"guardMs":  extractPageGuardMs,
 		"maxChars": o.maxChars,
 		"maxLinks": maxLinks,
-	}, tabID)
+	}
+	if o.minCharsSet {
+		args["minChars"] = o.minChars
+	}
+	r, err := browser.Dispatch(ctx, f.bridge, "extract_page", args, tabID)
 	if err != nil {
 		return domSnapshot{}, err
 	}
@@ -669,11 +676,7 @@ func (f *Facade) capture(ctx context.Context, a captureArgs, tool string, toolAr
 	}
 	defer owned.release()
 	value, err := func() (map[string]any, error) {
-		ready, err := f.readTextWithRetry(ctx, owned.TabID, browser, map[string]any{})
-		if err != nil {
-			return nil, err
-		}
-		if err := failIfToolError("get_page_text", ready); err != nil {
+		if err := f.waitDocumentReady(ctx, owned.TabID, browser); err != nil {
 			return nil, err
 		}
 		r, err := f.dispatch(ctx, tool, toolArgs, owned.TabID, browser)

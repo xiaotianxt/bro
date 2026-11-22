@@ -65,12 +65,11 @@ func TestTargetsStayPinnedAndActsFailFast(t *testing.T) {
 		{"type":"observe","refId":"scope","maxChars":900,"filter":"interactive"},
 		{"type":"evaluate","code":"mustNotRun()"}]}`, target))
 	// The open's deferred readiness settles first, on the pinned connection.
-	probe := a.NextTool("javascript_tool")
-	if tabID(probe) != 42 {
-		t.Fatalf("probe tab %d", tabID(probe))
+	ready := a.NextTool("extract_page")
+	if tabID(ready) != 42 {
+		t.Fatalf("readiness wait went to tab %d", tabID(ready))
 	}
-	ready, _ := json.Marshal(map[string]any{"state": "complete", "blank": false, "text": readablePage})
-	a.Reply(probe, string(ready))
+	a.ReplyResult(ready, snapshot(readablePage))
 	for _, step := range []struct {
 		tool, text string
 		failed     bool
@@ -413,27 +412,21 @@ func TestOpenReturnsAtDispatchAndFirstUseSettlesReadiness(t *testing.T) {
 	}
 	target := opened.Str("targetId")
 
-	// Loading, then a shell without readable text, then ready: one probe per
-	// poll, and only then the observation itself.
-	started := time.Now()
+	// The first use waits once for the page, by extract's readiness rule (the
+	// extension polls; live-refs E covers the rule itself), then reads.
 	p := c.Start("browser.observe", j(`{"targetId":%q,"mode":"text"}`, target))
-	for _, probe := range []map[string]any{
-		{"state": "loading", "blank": false, "text": ""},
-		{"state": "complete", "blank": false, "text": "Loading…"},
-		{"state": "complete", "blank": false, "text": readablePage},
-	} {
-		call := ext.NextTool("javascript_tool")
-		code, _ := call.Args["code"].(string)
-		contains(t, code, "document.readyState")
-		data, _ := json.Marshal(probe)
-		ext.Reply(call, string(data))
+	ready := ext.NextTool("extract_page")
+	// Its guard is what remains of the 4 s cap.
+	if guard, _ := ready.Args["guardMs"].(float64); guard <= 3000 || guard > 4000 {
+		t.Fatalf("readiness guard %vms", ready.Args["guardMs"])
 	}
+	delete(ready.Args, "guardMs")
+	equalJSON(t, ready.Args, `{"maxChars":2000,"maxLinks":0,"quietMs":250}`)
+	ext.ReplyResult(ready, snapshot("Short."))
+	// A short page's text is its content: no second readiness rule.
 	read := ext.NextTool("get_page_text")
-	if time.Since(started) < 500*time.Millisecond {
-		t.Fatalf("readiness polled too fast: %v", time.Since(started))
-	}
-	ext.Reply(read, readablePage)
-	equalJSON(t, p.Wait().Get("content"), fmt.Sprintf("%q", readablePage))
+	ext.Reply(read, "Short.")
+	equalJSON(t, p.Wait().Get("content"), `"Short."`)
 
 	// Settled once: the next act goes straight to its step.
 	p = c.Start("browser.act", j(`{"targetId":%q,"steps":[{"type":"evaluate","code":"1"}]}`, target))
@@ -442,21 +435,25 @@ func TestOpenReturnsAtDispatchAndFirstUseSettlesReadiness(t *testing.T) {
 	ext.Reply(eval, "1")
 	equalJSON(t, p.Wait().Get("status"), `"ok"`)
 
-	// A page that never becomes ready is capped at 4 s, then used anyway.
+	// A page that never runs script (still parsing) fails every readiness
+	// poll: the wait keeps polling to its 4 s cap, then the step runs anyway.
 	slow := open()
+	started := time.Now()
 	p = c.Start("browser.act", j(`{"targetId":%q,"steps":[{"type":"evaluate","code":"2"}]}`, slow.Str("targetId")))
-	probes := 0
 	for {
 		call := ext.Next()
-		if call.Args["code"] == "2" {
+		if call.Tool == "javascript_tool" {
+			equalJSON(t, call.Args["code"], `"2"`)
 			ext.Reply(call, "2")
 			break
 		}
-		probes++
-		ext.ReplyError(call, "Cannot find context")
+		if call.Tool != "extract_page" {
+			t.Fatalf("unexpected %s during the readiness wait", call.Tool)
+		}
+		ext.ReplyError(call, "Cannot find default execution context")
 	}
-	if probes < 14 || probes > 18 {
-		t.Fatalf("expected about 16 probes in the 4 s cap, got %d", probes)
+	if waited := time.Since(started); waited < 3500*time.Millisecond || waited > 5*time.Second {
+		t.Fatalf("readiness wait ran %v; the cap is 4 s", waited)
 	}
 	equalJSON(t, p.Wait().Get("status"), `"ok"`)
 }

@@ -336,13 +336,10 @@ func (f *Facade) observe(ctx context.Context, s session, o observeOptions, defau
 			args["maxChars"] = *o.MaxChars
 		}
 		if o.Cursor != nil && *o.Cursor > 0 {
-			// A continuation may legitimately be a short tail; readiness was
-			// established by the read that produced the cursor.
 			args["cursor"] = *o.Cursor
-			r, err = f.dispatch(ctx, tool, args, s.TabID, s.Browser)
-		} else {
-			r, err = f.readTextWithRetry(ctx, s.TabID, s.Browser, args)
 		}
+		// Readiness is settled's: a short page's text is its content.
+		r, err = f.dispatch(ctx, tool, args, s.TabID, s.Browser)
 	} else {
 		tool = "read_page"
 		if o.MaxChars == nil {
@@ -359,82 +356,15 @@ func (f *Facade) observe(ctx context.Context, s session, o observeOptions, defau
 	return textOf(decode(r.Result)), nil
 }
 
-// readTextWithRetry rereads page text until it is readable, the tool fails,
-// or textReadyTimeout passes.
-func (f *Facade) readTextWithRetry(ctx context.Context, tabID int64, browser bridge.Target, args map[string]any) (bridge.Result, error) {
-	deadline := time.Now().Add(textReadyTimeout)
-	for {
-		r, err := f.dispatch(ctx, "get_page_text", args, tabID, browser)
-		if err != nil {
-			return r, err
-		}
-		if _, failed := toolErrorMessage(r); failed || hasPageText(textOf(decode(r.Result))) || !time.Now().Before(deadline) {
-			return r, nil
-		}
-		if err := sleep(ctx, textReadyPoll); err != nil {
-			return bridge.Result{}, err
-		}
-	}
-}
-
-func sleep(ctx context.Context, d time.Duration) error {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return bridge.ErrCancelled
-	case <-t.C:
-		return nil
-	}
-}
-
-type documentProbe struct {
-	State string `json:"state"`
-	Blank bool   `json:"blank"`
-	Text  string `json:"text"`
-}
-
-func (p documentProbe) hasContent() bool {
-	return p.State != "loading" && !p.Blank && hasPageText(p.Text)
-}
-
-// settledShort is short text of a fully loaded document that is not a placeholder.
-func (p documentProbe) settledShort() bool {
-	return p.State == "complete" && !p.Blank && strings.TrimSpace(p.Text) != "" &&
-		!isLoadingPlaceholder(p.Text) && !isProbableNavShell(p.Text)
-}
-
 // settled: an opened target's first observe/act establishes readiness, so a
-// page that loaded during the model's turn costs one probe. At the cap the
-// call proceeds and shows whatever the page has.
+// page that loaded during the model's turn costs one probe.
 func (f *Facade) settled(ctx context.Context, id string) (session, error) {
 	s, err := f.session(id)
 	if err != nil || !s.ReadyPending {
 		return s, err
 	}
-	deadline := time.Now().Add(openSettleTimeout)
-	var previous *string
-	for {
-		probe, err := f.documentProbe(ctx, s)
-		if err != nil {
-			return session{}, err
-		}
-		if probe != nil {
-			// Enough readable text passes at once; a complete document's short
-			// text passes once it holds still across two probes.
-			if probe.hasContent() || (probe.settledShort() && previous != nil && *previous == probe.Text) {
-				break
-			}
-			previous = &probe.Text
-		} else {
-			previous = nil
-		}
-		if !time.Now().Before(deadline) {
-			break
-		}
-		if err := sleep(ctx, textReadyPoll); err != nil {
-			return session{}, err
-		}
+	if err := f.waitDocumentReady(ctx, s.TabID, s.Browser); err != nil {
+		return session{}, err
 	}
 	f.mu.Lock()
 	if stored, ok := f.sessions[id]; ok {
@@ -446,21 +376,36 @@ func (f *Facade) settled(ctx context.Context, id string) (session, error) {
 	return s, nil
 }
 
-// documentProbe reads the document's load state and text; nil while a
-// navigation makes the probe fail.
-func (f *Facade) documentProbe(ctx context.Context, s session) (*documentProbe, error) {
-	r, err := f.dispatch(ctx, "javascript_tool", javascriptArgs(
-		"({state: document.readyState, blank: location.href === 'about:blank', text: (document.body?.innerText ?? '').slice(0, 2000)})",
-		false, nil), s.TabID, s.Browser)
-	if err != nil {
-		return nil, err
+// waitDocumentReady waits until the tab's content is ready to read, by the
+// rule extract uses: extract_page polls the page until its text is stable
+// across rendered frames, past loading, not a navigation shell or loading
+// placeholder, and nothing in view says content is still on its way. It
+// returns at its guard even if the page never got there; at the cap the caller
+// proceeds with whatever the page has. extract_page fails while no document
+// can run script (still parsing, mid-navigation), so a failure polls again
+// until the cap rather than ending the wait.
+func (f *Facade) waitDocumentReady(ctx context.Context, tabID int64, browser bridge.Target) error {
+	deadline := time.Now().Add(openSettleTimeout)
+	for {
+		remaining := time.Until(deadline)
+		r, err := f.dispatch(ctx, "extract_page", map[string]any{
+			"quietMs":  textReadyPoll.Milliseconds(),
+			"guardMs":  max(remaining, 0).Milliseconds(),
+			"maxChars": readyProbeChars,
+			"maxLinks": 0,
+		}, tabID, browser)
+		if err != nil {
+			return err
+		}
+		if _, failed := toolErrorMessage(r); !failed || !time.Now().Before(deadline) {
+			return nil
+		}
+		t := time.NewTimer(textReadyPoll)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return bridge.ErrCancelled
+		case <-t.C:
+		}
 	}
-	if _, failed := toolErrorMessage(r); failed {
-		return nil, nil
-	}
-	var probe documentProbe
-	if json.Unmarshal([]byte(textOf(decode(r.Result))), &probe) != nil {
-		return nil, nil
-	}
-	return &probe, nil
 }

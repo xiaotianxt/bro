@@ -199,6 +199,34 @@ const fixture = (req, res) => {
     </script>`)
     return
   }
+  if (url.pathname === '/app-feed') {
+    // A single-page app: the document completes with only its chrome (enough
+    // words to pass a length check), then the post arrives from a slow API.
+    // ?spinner=1 shows an indeterminate progressbar meanwhile; a determinate
+    // one (a video's) stays after load. A widget's shadow root carries a
+    // <style> and a hidden panel that are not page text.
+    const spinner = url.searchParams.get('spinner') === '1'
+    send(`<!doctype html><title>App feed</title>
+    <nav aria-label="Primary">Explore Bookmarks Communities Premium Profile Lists Topics Settings Help Shortcuts Accessibility Display Languages Ads info</nav>
+    <main>${spinner ? '<div id="spinner" role="progressbar" aria-label="Loading timeline" style="width:24px;height:24px"></div>' : ''}<div id="feed"></div></main>
+    <div id="widget"></div>
+    <script>
+    const shadow = document.querySelector('#widget').attachShadow({ mode: 'open' })
+    shadow.innerHTML = '<style>:host { position: fixed; z-index: 2147483647 }</style><button>GUARD_WIDGET</button><div style="display:none">HIDDEN_SHADOW_TEXT</div>'
+    fetch('/app-post' + location.search).then((r) => r.text()).then((post) => {
+      document.querySelector('#feed').innerHTML = '<article>' + post + '</article><div role="progressbar" aria-valuenow="0" aria-valuemax="100" style="width:80px;height:4px"></div>'
+      document.querySelector('#spinner')?.remove()
+    })
+    </script>`)
+    return
+  }
+  if (url.pathname === '/app-post') {
+    // Server-side delay: background tabs align page timers to about 1 s, and
+    // the gap must outlast several of bro's stable-text polls. Each page asks
+    // with its own query: Chrome's cache lock serializes identical URLs.
+    setTimeout(() => res.end('APP_POST_BODY ' + 'The post body arrived from the API after the shell had settled. '.repeat(8)), 2000).unref()
+    return
+  }
   if (url.pathname === '/slow-post') {
     setTimeout(() => send('<!doctype html><title>Posted</title><p>POSTED</p>'), 1200)
     return
@@ -1369,17 +1397,10 @@ try {
     return { openMs, observeMs, heldOpenMs, heldObserveMs }
   })
   await check('S: a small, loaded page is ready at once; no length threshold to wait out', async () => {
-    // /blank is five characters. Readiness used to require 120, so every
-    // small page waited out the cap: 8 s for extract, 4 s for a first observe.
-    let started = performance.now()
-    const extracted = JSON.parse(text(await tool('browser.extract', { url: `${rootUrl}/blank?s=1` })))
-    const extractMs = Math.round(performance.now() - started)
-    assert.equal(extracted.status, 'ok', JSON.stringify(extracted))
-    assert.equal(extracted.diagnostics.ready, true)
-    assert.ok(extractMs < 2000, `extract took ${extractMs}ms`)
     // open returns the first observation, and close:true on the last call
-    // ends the target: open, read, close in two calls, not four.
-    started = performance.now()
+    // ends the target: open, read, close in two calls, not four. (Extract
+    // timing for the same page is part of E.)
+    let started = performance.now()
     const opened = await tool('browser.open', { url: `${rootUrl}/blank?s=2` })
     const openMs = Math.round(performance.now() - started)
     const targetId = opened.structuredContent.targetId
@@ -1397,7 +1418,7 @@ try {
       closed = true
       const again = await tool('browser.observe', { targetId }, /unknown flow session/)
       assert.equal(again.isError, true, text(again))
-      return { extractMs, openMs }
+      return { openMs }
     } finally {
       if (!closed) await tool('browser.close', { targetId })
     }
@@ -1415,14 +1436,7 @@ try {
     assert.equal(result.requests[0].status, 200)
     assert.equal(JSON.parse(result.requests[0].body).bro, 'live-network')
   })
-  await check('B: batch extract reads several pages in parallel', async () => {
-    const batch = await tool('browser.batch.extract', { urls: [`${rootUrl}/blank?b=1`, `${rootUrl}/g-long`], maxChars: 20000 })
-    const results = batch.structuredContent.results
-    assert.equal(results.length, 2, text(batch))
-    for (const result of results) assert.equal(result.status, 'ok', JSON.stringify(result))
-    assert.match(results[0].text, /Ready/)
-    assert.match(results[1].text, /REVIEW_OK/)
-    // Without a url, extract reads an existing tab in place and leaves it open.
+  await check('B: extract without a url reads an existing tab in place and leaves it open', async () => {
     const opened = await openTarget(`${rootUrl}/g-long`, false)
     try {
       const inPlace = (await tool('browser.extract', { tabId: opened.tabId })).structuredContent
@@ -1446,16 +1460,74 @@ try {
       await tool('browser.close', { targetId: opener.targetId })
     }
   })
-  await check('R: background tabs render lazy content', async () => {
-    const extracted = JSON.parse(text(await tool('browser.extract', { url: `${rootUrl}/lazy-feed` })))
-    assert.match(extracted.text, /LAZY_CARD_11/, JSON.stringify(extracted))
-    const opened = (await tool('browser.open', { url: `${rootUrl}/lazy-feed`, observe: false })).structuredContent
-    try {
-      assert.match(text(await tool('browser.observe', { targetId: opened.targetId, mode: 'text' })), /LAZY_CARD_11/)
-    } finally {
-      await tool('browser.close', { targetId: opened.targetId })
+  await check('E: every read path waits for the content a page is loading, and reads only rendered text', async () => {
+    // One table of page shapes, each read through extract, batch extract and
+    // open → first observe, in background tabs. A shape states the content a
+    // reader must get and the text it must never get; `extracted` is what
+    // extract adds by reading shadow roots (text observe is the main frame).
+    const notRendered = /z-index|:host|HIDDEN_SHADOW_TEXT/
+    const shapes = [
+      // A small complete page is ready at once: no length threshold to wait out.
+      { name: 'small page', path: '/blank', want: /Ready/, maxMs: 2000 },
+      // Cards render only on IntersectionObserver + requestAnimationFrame.
+      { name: 'lazy feed', path: '/lazy-feed', want: /LAZY_CARD_11/ },
+      // A slow document whose body is a placeholder until its data arrives.
+      { name: 'slow document', path: '/h-slow', want: /SLOW_CONTENT_OK/, never: /Loading…/ },
+      // An app shell that says it is loading (indeterminate progressbar).
+      { name: 'app shell with spinner', path: '/app-feed?spinner=1', want: /APP_POST_BODY/, extracted: /GUARD_WIDGET/, never: notRendered },
+      // An app shell that gives no sign: only the caller knows the content is
+      // larger than the shell, and says so with minChars.
+      { name: 'silent app shell, minChars', path: '/app-feed', args: { minChars: 400 }, want: /APP_POST_BODY/, never: notRendered, paths: ['extract', 'batch'] },
+    ]
+    const verify = (shape, via, read, elapsedMs) => {
+      const where = `${shape.name} via ${via}`
+      assert.match(read, shape.want, `${where}: ${read.slice(0, 600)}`)
+      if (shape.extracted && via !== 'observe') assert.match(read, shape.extracted, `${where}: ${read.slice(0, 600)}`)
+      if (shape.never) assert.doesNotMatch(read, shape.never, `${where}: ${read.slice(0, 600)}`)
+      if (shape.maxMs) assert.ok(elapsedMs < shape.maxMs, `${where} took ${elapsedMs}ms`)
     }
-    return { extractMs: extracted.diagnostics.elapsedMs }
+    const timings = {}
+    // Every shape × path runs; the check fails once, listing all misses.
+    const failures = []
+    const attempt = (where, read) => read().catch((error) => failures.push(`${where}: ${error.message.split('\n')[0]}`))
+    for (const [index, shape] of shapes.entries()) {
+      const paths = shape.paths ?? ['extract', 'batch', 'observe']
+      const url = (via) => `${rootUrl}${shape.path}${shape.path.includes('?') ? '&' : '?'}e=${index}-${via}`
+      const args = shape.args ?? {}
+      if (paths.includes('extract')) await attempt(`${shape.name} via extract`, async () => {
+        const started = performance.now()
+        const result = (await tool('browser.extract', { url: url('extract'), ...args })).structuredContent
+        assert.equal(result.status, 'ok', `${shape.name} via extract: ${JSON.stringify(result)}`)
+        verify(shape, 'extract', result.text, Math.round(performance.now() - started))
+        timings[`${shape.name} extract`] = result.diagnostics.elapsedMs
+      })
+      if (paths.includes('batch')) await attempt(`${shape.name} via batch`, async () => {
+        const started = performance.now()
+        const batch = (await tool('browser.batch.extract', { urls: [url('batch')], maxChars: 20000, ...args })).structuredContent
+        const [result] = batch.results
+        assert.equal(result.status, 'ok', `${shape.name} via batch: ${JSON.stringify(result)}`)
+        verify(shape, 'batch', result.text, Math.round(performance.now() - started))
+      })
+      if (paths.includes('observe')) await attempt(`${shape.name} via observe`, async () => {
+        const opened = (await tool('browser.open', { url: url('observe'), observe: false })).structuredContent
+        try {
+          const started = performance.now()
+          const read = text(await tool('browser.observe', { targetId: opened.targetId, mode: 'text' }))
+          verify(shape, 'observe', read, Math.round(performance.now() - started))
+        } finally {
+          await tool('browser.close', { targetId: opened.targetId })
+        }
+      })
+    }
+
+    // minChars the page never reaches is reported, not papered over.
+    await attempt('unreachable minChars via extract', async () => {
+      const short = (await tool('browser.extract', { url: `${rootUrl}/blank?e=unreachable`, minChars: 500 })).structuredContent
+      assert.equal(short.status, 'partial', JSON.stringify(short))
+      assert.equal(short.diagnostics.ready, false)
+    })
+    assert.deepEqual(failures, [])
+    return timings
   })
   await check('G: truncation footer lists scoped refs; ceilings', async () => {
     const opened = (await tool('browser.open', { url: `${rootUrl}/g-long`, observe: false })).structuredContent

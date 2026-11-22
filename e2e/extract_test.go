@@ -28,7 +28,7 @@ func TestExtractReadsOnePageInABackgroundTabAndClosesIt(t *testing.T) {
 	if tabID(read) != 42 {
 		t.Fatalf("extract_page tab %d", tabID(read))
 	}
-	equalJSON(t, read.Args, `{"guardMs":8000,"maxChars":30,"maxLinks":1,"minChars":120,"quietMs":250}`)
+	equalJSON(t, read.Args, `{"guardMs":8000,"maxChars":30,"maxLinks":1,"quietMs":250}`)
 	ext.ReplyResult(read, snapshot(readablePage))
 	closeCall := ext.NextTool("tabs_close")
 	equalJSON(t, closeCall.Args, `{"tabId":42}`)
@@ -51,26 +51,60 @@ func TestExtractLimitsHaveDefaultsAndCeilings(t *testing.T) {
 	s := startServer(t)
 	ext := s.connectExt(t, "a")
 	c := s.client(t)
-	for _, tc := range []struct{ tool, args, read string }{
+	for _, tc := range []struct {
+		tool, args, read string
+		short            bool // readablePage is below the requested minChars
+	}{
 		// Links are opt-in.
-		{"browser.extract", `{"url":"https://a.test"}`, `{"guardMs":8000,"maxChars":20000,"maxLinks":0,"minChars":120,"quietMs":250}`},
+		{"browser.extract", `{"url":"https://a.test"}`, `{"guardMs":8000,"maxChars":20000,"maxLinks":0,"quietMs":250}`, false},
 		{"browser.extract", `{"url":"https://a.test","includeLinks":true,"minChars":999999,"maxChars":999999,"maxLinks":999999}`,
-			`{"guardMs":8000,"maxChars":60000,"maxLinks":200,"minChars":10000,"quietMs":250}`},
-		{"browser.batch.extract", `{"urls":["https://a.test"]}`, `{"guardMs":8000,"maxChars":8000,"maxLinks":0,"minChars":120,"quietMs":250}`},
+			`{"guardMs":8000,"maxChars":60000,"maxLinks":200,"minChars":10000,"quietMs":250}`, true},
+		{"browser.batch.extract", `{"urls":["https://a.test"]}`, `{"guardMs":8000,"maxChars":8000,"maxLinks":0,"quietMs":250}`, false},
 	} {
 		p := c.Start(tc.tool, j("%s", tc.args))
 		ext.Reply(ext.NextTool("tabs_create"), "Created tab: 42")
 		read := ext.NextTool("extract_page")
 		equalJSON(t, read.Args, tc.read)
 		ext.ReplyResult(read, snapshot(readablePage))
+		if tc.short {
+			ext.Reply(ext.NextTool("javascript_tool"), `{"title":"A","url":"https://a.test","text":"","links":[]}`)
+		}
 		ext.Reply(ext.NextTool("tabs_close"), "closed")
 		r := p.Wait()
 		if tc.tool == "browser.batch.extract" {
 			equalJSON(t, r.Get("results", 0, "status"), `"ok"`)
 			equalJSON(t, r.Get("results", 0, "links"), `[]`)
+		} else if tc.short {
+			equalJSON(t, r.Get("status"), `"partial"`)
 		} else {
 			equalJSON(t, r.Get("status"), `"ok"`)
 		}
+	}
+}
+
+// Without minChars, short text of a page the extension saw settle is its
+// content. A caller's minChars is a requirement: the extension waits for it,
+// and short text stays partial however settled the page looked.
+func TestExtractMinCharsIsARequirementNotAHint(t *testing.T) {
+	s := startServer(t)
+	ext := s.connectExt(t, "a")
+	c := s.client(t)
+	const short = "Short settled page."
+	for _, tc := range []struct{ args, read, status string }{
+		{`{"tabId":9}`, `{"guardMs":8000,"maxChars":20000,"maxLinks":0,"quietMs":250}`, `"ok"`},
+		{`{"tabId":9,"minChars":500}`, `{"guardMs":8000,"maxChars":20000,"maxLinks":0,"minChars":500,"quietMs":250}`, `"partial"`},
+	} {
+		p := c.Start("browser.extract", j("%s", tc.args))
+		read := ext.NextTool("extract_page")
+		equalJSON(t, read.Args, tc.read)
+		ext.ReplyResult(read, snapshot(short))
+		if tc.status == `"partial"` {
+			ext.Reply(ext.NextTool("javascript_tool"), `{"title":"A","url":"https://a.test","text":"`+short+`","links":[]}`)
+		}
+		r := p.Wait()
+		equalJSON(t, r.Get("status"), tc.status)
+		equalJSON(t, r.Get("text"), `"`+short+`"`)
+		ext.Quiet()
 	}
 }
 

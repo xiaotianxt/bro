@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- Reads wait for content a page says is still loading. An indeterminate
+  `progressbar` or `aria-busy` region in view (an app shell's spinner) keeps
+  extract, batch extract, and a target's first observe or act waiting, up to
+  their caps. Previously a single-page app's stable shell, such as an X post
+  page before its timeline arrived, was returned as the page.
+- `minChars` is a requirement. Extract waits for that much text and otherwise
+  reports `status: "partial"`; before, a settled short page passed regardless.
+- Extract no longer reads unrendered shadow-root content: a widget's `<style>`
+  or hidden panel was returned as page text.
+- One readiness rule for every read. A target's first observe or act, network
+  and console capture, and `read_text` steps wait by extract's rule; text
+  observe no longer waits up to 4 s on pages under 120 characters.
+- `make check` and CI run staticcheck.
+
 ## 2.0.0
 
 2.0 removes tools that newer ones fully cover: the MCP surface goes from 62

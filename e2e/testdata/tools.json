@@ -587,7 +587,7 @@
         },
         "minChars": {
           "default": 120,
-          "description": "Minimum content size for ready quality; not a sleep duration.",
+          "description": "Text the page must reach to be ready. Without it, a settled short page is its content; with it, extract waits for that much text (up to its cap) and otherwise reports status partial.",
           "maximum": 10000,
           "minimum": 1,
           "type": "integer"
@@ -929,7 +929,7 @@
         },
         "minChars": {
           "default": 120,
-          "description": "Minimum content size for ready quality; not a sleep duration.",
+          "description": "Text the page must reach to be ready. Without it, a settled short page is its content; with it, extract waits for that much text (up to its cap) and otherwise reports status partial.",
           "maximum": 10000,
           "minimum": 1,
           "type": "integer"

@@ -28,20 +28,21 @@ const (
 	maxBatchConcurrency     = 16
 	defaultTimeoutMs        = 12_000
 	maxTimeoutMs            = 60_000
-	textReadyTimeout        = 4 * time.Second
 	openSettleTimeout       = 4 * time.Second
-	defaultTextReadyMin     = 120
-	maxTextReadyMin         = 10_000
-	extractPageGuardMs      = 8_000
-	defaultExtractMaxChars  = 20_000
-	defaultBatchExtractMax  = 8_000
-	maxExtractMaxChars      = 60_000
-	defaultExtractMaxLinks  = 20
-	maxExtractMaxLinks      = 200
-	textReadyPoll           = 250 * time.Millisecond
-	maxWaitMs               = 30_000
-	cleanupTimeout          = 2 * time.Second
-	observeMaxChars         = 8_000
+	// readyProbeChars bounds the text a readiness wait compares between polls.
+	readyProbeChars        = 2000
+	defaultTextReadyMin    = 120
+	maxTextReadyMin        = 10_000
+	extractPageGuardMs     = 8_000
+	defaultExtractMaxChars = 20_000
+	defaultBatchExtractMax = 8_000
+	maxExtractMaxChars     = 60_000
+	defaultExtractMaxLinks = 20
+	maxExtractMaxLinks     = 200
+	textReadyPoll          = 250 * time.Millisecond
+	maxWaitMs              = 30_000
+	cleanupTimeout         = 2 * time.Second
+	observeMaxChars        = 8_000
 	// An act observation verifies one action: a small default budget.
 	actObserveMaxChars    = 3_000
 	maxObserveChars       = 20_000

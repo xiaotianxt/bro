@@ -17,6 +17,9 @@ interface PageRenderState {
   // Frames rendered since the first read; visible pages render continuously.
   frames: number
   visible: boolean
+  // An indeterminate progress indicator or aria-busy region in the viewport:
+  // the page says its content is still on the way.
+  busy: boolean
 }
 
 interface ExtractPageResult {
@@ -340,8 +343,10 @@ function pageExtractSnapshot(options: {
       for (const element of Array.from(root.querySelectorAll('*'))) {
         if (element instanceof HTMLAnchorElement) addLink(element)
         if (!element.shadowRoot) continue
+        // innerText of an unrendered element (a <style>, a hidden panel) is
+        // its raw textContent, so only rendered children contribute.
         for (const child of Array.from(element.shadowRoot.children))
-          if (child instanceof HTMLElement) parts.push(child.innerText)
+          if (child instanceof HTMLElement && child.checkVisibility()) parts.push(child.innerText)
         visit(element.shadowRoot)
       }
     }
@@ -383,12 +388,23 @@ function pageExtractSnapshot(options: {
     requestAnimationFrame(tick)
   }
 
+  // A determinate bar (aria-valuenow, e.g. a video's) reports progress of
+  // something already shown; only the indeterminate kind means loading.
+  const busy = Array.from(
+    document.querySelectorAll('[role="progressbar"]:not([aria-valuenow]), [aria-busy="true"]'),
+  ).some((element) => {
+    if (!element.checkVisibility()) return false
+    const rect = element.getBoundingClientRect()
+    return rect.bottom > 0 && rect.top < window.innerHeight
+  })
+
   const result = snapshot()
   return {
     ...result,
     shell: looksLikeNavigationShell(result.text),
     frames: frames.count,
     visible: document.visibilityState === 'visible',
+    busy,
   }
 }
 
@@ -458,13 +474,12 @@ async function executeExtractPage(
     0,
     MAX_EXTRACT_MAX_LINKS,
   )
-  const minChars = getClampedInteger(
-    args,
-    'minChars',
-    DEFAULT_EXTRACT_MIN_CHARS,
-    1,
-    MAX_EXTRACT_MIN_CHARS,
-  )
+  // A caller's minChars is a requirement; without one, a complete document's
+  // short stable text is accepted as its content.
+  const requiredChars =
+    args.minChars === undefined
+      ? undefined
+      : getClampedInteger(args, 'minChars', DEFAULT_EXTRACT_MIN_CHARS, 1, MAX_EXTRACT_MIN_CHARS)
   const quietMs = getClampedInteger(
     args,
     'quietMs',
@@ -480,12 +495,13 @@ async function executeExtractPage(
     MAX_EXTRACT_GUARD_MS,
   )
 
-  await waitForTabLoadComplete(tabId, EXTRACT_LOAD_GUARD_MS)
+  // guardMs bounds the whole call, the load wait included.
+  const deadline = Date.now() + guardMs
+  await waitForTabLoadComplete(tabId, Math.min(EXTRACT_LOAD_GUARD_MS, guardMs))
 
   // Polled from the service worker: a page-side wait relies on page timers,
   // which Chrome throttles in background tabs, and would hold one CDP command
   // past its timeout. Stable means two equal reads quietMs apart.
-  const deadline = Date.now() + guardMs
   let lastSignature = ''
   let result: ExtractPageResult & PageRenderState
   // A hidden tab renders only while bro pumps frames into it. Where frames
@@ -512,15 +528,18 @@ async function executeExtractPage(
     const signature = `${text.length}:${links.length}:${readiness.documentReadyState}:${text.slice(0, 160)}:${text.slice(-160)}`
     if (signature !== lastSignature) framesAtSignature = result.frames
     const rendered = !(pumped || result.visible) || result.frames - framesAtSignature >= 2
-    // A complete document's short, stable text is its content; only a short
-    // loading placeholder ("Loading…") keeps waiting for the real page.
+    const enough =
+      requiredChars === undefined
+        ? text.length >= DEFAULT_EXTRACT_MIN_CHARS ||
+          (readiness.documentReadyState === 'complete' && text.trim() !== '' && !isLoadingPlaceholder(text))
+        : text.length >= requiredChars
     const ready =
       signature === lastSignature &&
       rendered &&
       readiness.documentReadyState !== 'loading' &&
       !result.shell &&
-      (text.length >= minChars ||
-        (readiness.documentReadyState === 'complete' && text.trim() !== '' && !isLoadingPlaceholder(text)))
+      !result.busy &&
+      enough
     if (ready || Date.now() >= deadline) {
       result.readiness.reason = ready ? 'dom_quiet' : 'guard'
       break
@@ -528,7 +547,7 @@ async function executeExtractPage(
     lastSignature = signature
     await new Promise<void>((resolve) => setTimeout(resolve, quietMs))
   }
-  const { shell: _shell, frames: _frames, visible: _visible, ...page } = result
+  const { shell: _shell, frames: _frames, visible: _visible, busy: _busy, ...page } = result
   const extracted: ExtractPageResult = { ...page, tabId }
 
   return {

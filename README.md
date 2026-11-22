@@ -296,7 +296,7 @@ pnpm install --frozen-lockfile
 make check
 ```
 
-`make check` runs gofmt, `go vet`, the Go unit tests, the `e2e/` contract
+`make check` runs gofmt, `go vet`, staticcheck, the Go unit tests, the `e2e/` contract
 suite, and the extension and Pi adapter checks. `e2e/` is a black-box suite
 that drives the built binary through `/mcp` with a fake extension on `/ws`; it
 is the main regression gate. `go test ./...` runs it too and builds the binary

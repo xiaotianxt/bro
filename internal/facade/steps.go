@@ -487,7 +487,10 @@ func (f *Facade) runStep(ctx context.Context, s session, st step, observeBudget 
 		}
 	case stepReadText:
 		if st.frameID == nil {
-			r, err := f.readTextWithRetry(ctx, s.TabID, s.Browser, map[string]any{})
+			if err := f.waitDocumentReady(ctx, s.TabID, s.Browser); err != nil {
+				return nil, err
+			}
+			r, err := f.dispatch(ctx, "get_page_text", map[string]any{}, s.TabID, s.Browser)
 			if err != nil {
 				return nil, err
 			}
