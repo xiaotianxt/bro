@@ -1303,7 +1303,7 @@
   },
   {
     "name": "browser.watch",
-    "description": "Watch a target's page for a change without polling by hand. Start (target + one condition) returns a watchId; read with watchId and cursor long-polls for events since the cursor; stop with stop:true; list:true lists watches. Text conditions (text/textGone/pattern/state) end the watch when met; change and count stream every change. The watch survives re-renders and navigation, ends on its maxDurationMs, a closed or discarded tab, or a lost browser, and every read reports the tab's state (live, frozen, unresponsive, disconnected). For a background task, run `bro watch '<start JSON>'` instead: it prints one JSON line per event and exits when the watch ends.",
+    "description": "Watch a target's page for a change without polling by hand. Start (target + one condition) returns a watchId; read with watchId and cursor long-polls for events since the cursor; stop with stop:true; list:true lists watches. Text conditions (text/textGone/pattern/state) end the watch when met; change and count stream every change. The watch survives re-renders and navigation, ends on its maxDurationMs, a closed or discarded tab, or a lost browser, and every read reports the tab's state (live, frozen, unresponsive, disconnected). For a background task, run `bro watch '<start JSON>'` instead: it prints one JSON line per event and exits when the watch ends; with --once it exits after one change, and `bro watch --id W --cursor N --once` resumes.",
     "inputSchema": {
       "additionalProperties": false,
       "type": "object",
@@ -1315,6 +1315,11 @@
         },
         "css": {
           "description": "Start target: elements matching this selector, re-queried on every check. The stable choice for a node that re-renders.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "frameId": {
+          "description": "Start: watch inside this frame (a frame ID from browser.observe or frames_list), e.g. a support chat in a cross-site iframe. A ref already names its frame.",
           "minLength": 1,
           "type": "string"
         },

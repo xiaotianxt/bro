@@ -115,6 +115,8 @@ type watchShape struct {
 	wait string // "met", "notMet", "failed"
 	// A substring of the wait's lastError when not met.
 	waitError string
+	// The target of the first and last probes, when the shape resolves one.
+	firstTarget, lastTarget string
 }
 
 var watchShapes = []watchShape{
@@ -140,6 +142,22 @@ var watchShapes = []watchShape{
 			{reply: map[string]any{"tab": "live", "url": "https://a.test", "records": []any{rec(true, "Job 1 Done")}, "resolved": map[string]any{"role": "status", "name": "Job 1"}}},
 		},
 		events: []string{"target:lost", "target:found", "met", "end"}, reason: "met",
+		firstTarget: `{"kind":"node","refId":"r7"}`,
+		lastTarget:  `{"kind":"node","role":"status","name":"Job 1"}`,
+	},
+	{
+		// A support chat in a cross-site iframe: the first probe locates the
+		// frame, and later probes carry its scripting id.
+		name:  "target in a cross-site iframe",
+		start: `"frameId":"CHAT1","text":"Done"`,
+		steps: []probeStep{
+			{reply: map[string]any{"tab": "live", "url": "https://chat.test/", "records": []any{rec(false, "")}, "frame": map[string]any{"frameId": "CHAT1", "scriptFrame": 7}}},
+			{reply: live("https://chat.test/", rec(false, ""))},
+			{reply: live("https://chat.test/", rec(true, "Agent: Done"))},
+		},
+		events: []string{"met", "end"}, reason: "met",
+		firstTarget: `{"kind":"page","frameId":"CHAT1"}`,
+		lastTarget:  `{"kind":"page","frameId":"CHAT1","scriptFrame":7}`,
 	},
 	{
 		name:  "page navigates, then the content appears",
@@ -226,11 +244,7 @@ func TestWatchContractMatrix(t *testing.T) {
 			}
 			checkEvents(t, events, shape.events)
 			equalJSON(t, result.Get("reason"), fmt.Sprintf("%q", shape.reason))
-			if shape.name == "target node replaced by a re-render" {
-				args := p.probeArgs()
-				equalJSON(t, args[0]["target"], `{"kind":"node","refId":"r7"}`)
-				equalJSON(t, args[len(args)-1]["target"], `{"kind":"node","role":"status","name":"Job 1"}`)
-			}
+			checkTargets(t, p, shape)
 		})
 		t.Run(shape.name+"/cli stream", func(t *testing.T) {
 			t.Parallel()
@@ -238,7 +252,7 @@ func TestWatchContractMatrix(t *testing.T) {
 			ext := s.connectExt(t, "a")
 			c := s.client(t)
 			target := openBlank(t, c, ext)
-			probeWith(t, ext, shape.steps)
+			p := probeWith(t, ext, shape.steps)
 			lines, code := s.runWatchCLI(t, fmt.Sprintf(`{"targetId":%q,"intervalMs":250,%s}`, target, shape.start))
 			checkEvents(t, lines, shape.events)
 			last := lines[len(lines)-1]
@@ -253,6 +267,7 @@ func TestWatchContractMatrix(t *testing.T) {
 			if code != want {
 				t.Fatalf("exit code %d, want %d", code, want)
 			}
+			checkTargets(t, p, shape)
 		})
 		if shape.wait == "" {
 			continue
@@ -294,6 +309,16 @@ func TestWatchContractMatrix(t *testing.T) {
 	}
 }
 
+func checkTargets(t *testing.T, p *prober, shape watchShape) {
+	t.Helper()
+	if shape.firstTarget == "" {
+		return
+	}
+	args := p.probeArgs()
+	equalJSON(t, args[0]["target"], shape.firstTarget)
+	equalJSON(t, args[len(args)-1]["target"], shape.lastTarget)
+}
+
 func eventsOf(v map[string]any) []map[string]any {
 	raw, _ := v["events"].([]any)
 	out := make([]map[string]any, 0, len(raw))
@@ -320,8 +345,18 @@ func mustJSON(v any) string {
 	return string(data)
 }
 
-// runWatchCLI runs `bro watch` against s and returns its JSON lines and exit code.
+// runWatchCLI runs `bro watch` against s and returns its JSON lines and exit
+// code; it fails the test when the command prints no line.
 func (s *Server) runWatchCLI(t *testing.T, args ...string) ([]map[string]any, int) {
+	t.Helper()
+	lines, code, stderr := s.runCLI(t, args...)
+	if len(lines) == 0 {
+		t.Fatalf("bro watch printed nothing (exit %d): %s", code, stderr)
+	}
+	return lines, code
+}
+
+func (s *Server) runCLI(t *testing.T, args ...string) ([]map[string]any, int, string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -349,10 +384,7 @@ func (s *Server) runWatchCLI(t *testing.T, args ...string) ([]map[string]any, in
 	if strings.Contains(stdout.String()+stderr.String(), testToken) {
 		t.Fatalf("bro watch printed the token")
 	}
-	if len(lines) == 0 {
-		t.Fatalf("bro watch printed nothing (exit %d): %s", code, stderr.String())
-	}
-	return lines, code
+	return lines, code, stderr.String()
 }
 
 // Streams, buffers and the lifecycle around one watch.
@@ -438,6 +470,8 @@ func TestWatchLifecycle(t *testing.T) {
 		{`{"watchId":"w1","text":"x"}`, "not start fields"},
 		{`{"cursor":3}`, "need a watchId"},
 		{`{"list":true,"watchId":"w1"}`, "list takes only list"},
+		{`{"refId":"r1","frameId":"F","text":"x"}`, "a ref names its own frame"},
+		{`{"frameId":" ","text":"x"}`, "frameId must be nonempty"},
 	} {
 		isErrorWith(t, c.Call("browser.watch", json.RawMessage(tc.args)), tc.message)
 	}
@@ -479,4 +513,80 @@ func TestWatchFollowsAReconnectedBrowser(t *testing.T) {
 	probeWith(t, b, []probeStep{{reply: live("https://a.test", rec(true, "Done"))}})
 	r = c.Call("browser.watch", j(`{"watchId":%q,"cursor":1,"waitMs":5000}`, id))
 	checkEvents(t, append([]map[string]any{{"type": "tab", "state": "disconnected", "seq": 1.0}}, eventsOf(r.Structured)...), []string{"tab:disconnected", "tab:live", "met", "end"})
+}
+
+// --once exits after the first change and leaves the watch running; --cursor
+// resumes after the last event seen, so a change between two runs is printed
+// by the next one and nothing twice. This is the loop for a harness that wakes
+// its agent only when a background command exits.
+func TestWatchCLIOnceResumesFromItsCursor(t *testing.T) {
+	s := startServer(t)
+	ext := s.connectExt(t, "a")
+	c := s.client(t)
+	target := openBlank(t, c, ext)
+	count := func(n int, items ...string) map[string]any {
+		return map[string]any{"at": 0, "count": n, "items": items}
+	}
+	gate := make(chan struct{})
+	p := &prober{quit: make(chan struct{})}
+	t.Cleanup(func() { close(p.quit) })
+	// Two messages arrive, the second only once the test opens the gate.
+	go func() {
+		i := 0
+		for {
+			var call ToolCall
+			select {
+			case call = <-ext.calls:
+			case <-p.quit:
+				return
+			}
+			reply := live("https://chat.test", count(1, "hi"))
+			switch {
+			case call.Args["op"] == "stop":
+				reply = map[string]any{"tab": "live"}
+			case i == 0:
+			case i < 3:
+				reply = live("https://chat.test", count(2, "hi", "first reply"))
+			default:
+				select {
+				case <-gate:
+					reply = live("https://chat.test", count(3, "hi", "first reply", "second reply"))
+				default:
+					reply = live("https://chat.test", count(2, "hi", "first reply"))
+				}
+			}
+			if call.Args["op"] != "stop" {
+				i++
+			}
+			_ = replyJSON(ext, call, reply)
+		}
+	}()
+
+	lines, code := s.runWatchCLI(t, fmt.Sprintf(`{"targetId":%q,"css":"li","count":true,"intervalMs":250}`, target), "--once")
+	if code != 3 {
+		t.Fatalf("exit code %d, want 3", code)
+	}
+	checkEvents(t, lines, []string{"initial", "count"})
+	equalJSON(t, lines[1]["added"], `["first reply"]`)
+	id, _ := lines[1]["watchId"].(string)
+	equalJSON(t, c.Call("browser.watch", j(`{"watchId":%q,"waitMs":0}`, id)).Get("active"), `true`)
+
+	// The second message arrives while no CLI runs.
+	close(gate)
+	r := c.Call("browser.watch", j(`{"watchId":%q,"cursor":2,"waitMs":5000}`, id))
+	equalJSON(t, r.Get("events", 0, "type"), `"count"`)
+
+	lines, code = s.runWatchCLI(t, "--id", id, "--cursor", "2", "--once")
+	if code != 3 {
+		t.Fatalf("exit code %d, want 3", code)
+	}
+	if len(lines) != 1 || lines[0]["seq"] != 3.0 {
+		t.Fatalf("resume printed %v, want only event 3", lines)
+	}
+	equalJSON(t, lines[0]["added"], `["second reply"]`)
+
+	_, code, stderr := s.runCLI(t, "--cursor", "2", "{}")
+	if code != 2 || !strings.Contains(stderr, "--cursor resumes a watch and needs --id") {
+		t.Fatalf("--cursor without --id exited %d", code)
+	}
 }

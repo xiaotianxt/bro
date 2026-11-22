@@ -21,6 +21,13 @@
   (default 30 min, at most 24 h), or its tab closes, is discarded, stays
   unresponsive for 60 s, or loses its browser for 30 s; the reason is the
   last event. Watches live in the server and end when it restarts.
+- A watch can run inside a child frame, such as a support chat in a
+  cross-site iframe: pass the frame's `frameId` (from `frames_list`), or a ref
+  that lives in the frame.
+- `bro watch --once` exits 3 after the first change and leaves the watch
+  running; `bro watch --id W --cursor N --once` resumes after event N. This is
+  the loop for agent harnesses that wake only when a background command exits:
+  a change that arrives between two runs is printed by the next one.
 - The `wait` step's text conditions run on the same check: a text that shows
   for less than a poll is no longer missed, and a frozen tab ends the wait at
   once with the reason instead of after its timeout.

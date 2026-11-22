@@ -35,9 +35,10 @@ Usage:
   bro [serve] [--port N]                 start the HTTP/WebSocket/MCP server
   bro call TOOL [JSON] [--json] [--port N]
                                          call a tool on the local server
-  bro watch JSON | --id WATCHID [--port N]
+  bro watch JSON | --id WATCHID [--cursor N] [--once] [--port N]
                                          stream a browser.watch as JSON lines;
-                                         exit 0 when met, 1 on another end
+                                         exit 0 when met, 1 on another end,
+                                         3 after one change with --once
   bro doctor [--json] [--port N]         read-only diagnostics
   bro setup codex [--config PATH] [--port N] [--json]
                                          point Codex at the local server

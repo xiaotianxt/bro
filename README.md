@@ -270,6 +270,10 @@ bro call browsers_context
   bro watch '{"targetId":"flow-1a2b3c","css":".job-status","text":"Done"}'
   ```
 
+  `frameId` watches inside an iframe (a support chat, say). Where the harness
+  wakes only when a command exits, add `--once` (exit 3 after one change) and
+  resume with `bro watch --id W --cursor N --once`.
+
 See the [facade guide](docs/browser-facade.md) and [interaction
 internals](docs/interaction-internals.md). A dispatched action is not proof of
 the application outcome; observe to verify it.

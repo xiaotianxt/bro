@@ -37,8 +37,13 @@ func (e exitError) Error() string {
 // event, for an agent harness to run in the background: each line can wake
 // the agent, and the process exits when the watch ends (0 when its condition
 // was met, 1 for any other end, 2 for a usage or connection error). The last
-// line is always an "end" event. A watch this command started is stopped when
+// line is then an "end" event. A watch this command started is stopped when
 // the command is interrupted; one it joined with --id is left running.
+//
+// --once is for harnesses that wake an agent only when a background command
+// exits: the command exits 3 after the first change while the watch keeps
+// running in the server, and `--id W --cursor N --once` resumes after event N,
+// so nothing that arrives between two runs is lost.
 //
 // It is a client of the browser.watch tool, so the server owns the watch and
 // its limits; the command only follows the cursor.
@@ -46,9 +51,17 @@ func watchCmd(args []string) error {
 	fs := flags("watch")
 	port := fs.Int("port", defaultPort, "")
 	id := fs.String("id", "", "")
+	once := fs.Bool("once", false, "")
+	from := fs.Int64("cursor", 0, "")
 	positional, err := parse(fs, args)
 	if err != nil {
 		return exitError{2, err}
+	}
+	if *from != 0 && *id == "" {
+		return exitError{2, fmt.Errorf("--cursor resumes a watch and needs --id\n\n%s", usage)}
+	}
+	if *from < 0 {
+		return exitError{2, errors.New("--cursor must be at least 0")}
 	}
 	var start map[string]any
 	switch {
@@ -90,17 +103,22 @@ func watchCmd(args []string) error {
 		return value, nil
 	}
 	// emit prints the read's events; it returns the exit code once the
-	// watch has ended, or -1 while it runs.
+	// watch has ended (or, with --once, changed), or -1 while it runs.
 	emit := func(value map[string]any) (int, error) {
 		events, _ := value["events"].([]any)
+		changed := false
 		for _, e := range events {
 			event, _ := e.(map[string]any)
 			event["watchId"] = value["watchId"]
 			if err := out.Encode(event); err != nil {
 				return 2, err
 			}
+			changed = changed || event["type"] != "initial"
 		}
 		if value["active"] == true {
+			if *once && changed {
+				return 3, nil
+			}
 			return -1, nil
 		}
 		if value["reason"] == "met" {
@@ -114,7 +132,7 @@ func watchCmd(args []string) error {
 	}
 
 	watchID, owned := *id, false
-	var cursor float64
+	cursor := float64(*from)
 	if start != nil {
 		value, err := call(ctx, start)
 		if err != nil {

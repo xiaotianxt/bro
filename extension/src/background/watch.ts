@@ -13,18 +13,33 @@
 //
 // A frozen or discarded tab is reported from Chrome's tab record before any
 // script is sent: a frozen page runs no script and would hold the probe.
+//
+// A target may live in a child frame (a support chat is often a cross-site
+// iframe). The latch then runs in that frame's document. Observe names frames
+// by CDP frame id, which chrome.scripting does not know; locateFrame finds
+// the scripting frame by asking which frame heard an event fired over CDP.
 
 import type { ToolResult } from '@bro/shared'
+import { getBrowserFrames, sendToFrame, type BrowserFrame } from './frames.js'
 import { stalledState } from './render-state.js'
 import { describeNode, refNode, resolveNamed, withRef } from './tools/accessibility.js'
 import { registerTool } from './tool-registry.js'
 
-export type WatchTarget =
-  | { kind: 'page' }
-  | { kind: 'css'; css: string }
-  // A node target pins one element; refId on the first probe, role + name to
-  // find its replacement after a re-render.
-  | { kind: 'node'; refId?: string; role?: string; name?: string }
+// frameId is the CDP frame id observe prints; scriptFrame is the
+// chrome.scripting frame id a probe resolved it to. Neither means the main frame.
+interface InFrame {
+  frameId?: string
+  scriptFrame?: number
+}
+
+export type WatchTarget = InFrame &
+  (
+    | { kind: 'page' }
+    | { kind: 'css'; css: string }
+    // A node target pins one element; refId on the first probe, role + name
+    // to find its replacement after a re-render.
+    | { kind: 'node'; refId?: string; role?: string; name?: string }
+  )
 
 export interface WatchCondition {
   kind: 'text' | 'textGone' | 'pattern' | 'state' | 'change' | 'count'
@@ -56,6 +71,8 @@ export interface ProbeResult {
   // The role and name a node target was resolved to, for later re-resolution.
   resolved?: { role: string; name: string }
   resolveError?: string
+  // The frame this probe resolved the target to, for the next probes.
+  frame?: { frameId: string; scriptFrame: number }
 }
 
 interface ProbeCommand {
@@ -225,17 +242,77 @@ function latch(cmd: ProbeCommand, limits: { records: number; snippet: number; te
 
 const LIMITS = { records: 50, snippet: 160, text: 4000, items: 200, costFactor: 4 }
 
-function inPage(tabId: number, cmd: ProbeCommand) {
+function inPage(tabId: number, frameId: number, cmd: ProbeCommand) {
   return chrome.scripting
-    .executeScript({ target: { tabId, frameIds: [0] }, world: 'ISOLATED', func: latch, args: [cmd, LIMITS] })
+    .executeScript({ target: { tabId, frameIds: [frameId] }, world: 'ISOLATED', func: latch, args: [cmd, LIMITS] })
     .then(([frame]) => frame?.result as ReturnType<typeof latch> | undefined)
+    .catch((error: unknown) => {
+      if (frameId !== 0 && /No frame with id/i.test(String(error)))
+        throw new Error(`the watched frame is gone (its page navigated or removed it); start a new watch on the current frame`)
+      throw error
+    })
 }
 
-// Points the page latch at the element a ref names. Main frame only: the latch
-// lives in the main frame's document.
+// The chrome.scripting frame id of a CDP frame. Every frame bro can script
+// arms a one-shot listener; the target frame then fires the event over CDP,
+// and exactly one frame reports hearing it. Exact even when sibling frames
+// share a URL, which matching by URL is not.
+async function locateFrame(tabId: number, frame: BrowserFrame): Promise<number> {
+  if (!frame.parentId) return 0
+  const type = `__bro_frame_${crypto.randomUUID().replaceAll('-', '')}`
+  type Scope = typeof globalThis & { __broFrameProbe?: { type: string; heard: boolean; stop: () => void } }
+  await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    world: 'ISOLATED',
+    func: (type: string) => {
+      const scope = globalThis as Scope
+      scope.__broFrameProbe?.stop()
+      const probe = { type, heard: false, stop: () => document.removeEventListener(type, hear, true) }
+      const hear = () => {
+        probe.heard = true
+      }
+      document.addEventListener(type, hear, true)
+      scope.__broFrameProbe = probe
+    },
+    args: [type],
+  })
+  const world = await sendToFrame<{ executionContextId: number }>(tabId, frame, 'Page.createIsolatedWorld', {
+    frameId: frame.id,
+    worldName: 'bro-frame-probe',
+    grantUniveralAccess: false,
+  })
+  await sendToFrame(tabId, frame, 'Runtime.evaluate', {
+    contextId: world.executionContextId,
+    expression: `document.dispatchEvent(new CustomEvent(${JSON.stringify(type)}))`,
+  })
+  const results = await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    world: 'ISOLATED',
+    func: (type: string) => {
+      const scope = globalThis as Scope
+      const probe = scope.__broFrameProbe
+      if (probe?.type !== type) return false
+      probe.stop()
+      delete scope.__broFrameProbe
+      return probe.heard
+    },
+    args: [type],
+  })
+  const hits = results.filter((r) => r.result === true)
+  if (hits.length !== 1)
+    throw new Error(`cannot script frame ${frame.id} (${frame.url}): ${hits.length} frames answered`)
+  return hits[0]!.frameId
+}
+
+async function cdpFrame(tabId: number, frameId: string): Promise<BrowserFrame> {
+  const frame = (await getBrowserFrames(tabId)).find((f) => f.id === frameId)
+  if (!frame) throw new Error(`frame ${frameId} not found; observe to read current frame IDs`)
+  return frame
+}
+
+// Points the latch at the element a ref names. The latch must already run in
+// the ref's frame, where the element dispatches the pin event.
 async function pin(tabId: number, watchId: string, ref: string): Promise<void> {
-  const { frame } = await refNode(tabId, ref)
-  if (frame.parentId) throw new Error(`watch targets main-frame elements only; ${ref} is in a child frame`)
   await withRef(
     tabId,
     ref,
@@ -255,21 +332,38 @@ export async function probe(tabId: number, cmd: ProbeCommand & { resolve?: boole
     throw error
   }
   if (stalled) return { tab: stalled }
+  const target = cmd.target
+  let scriptFrame = target.scriptFrame
+  let located: ProbeResult['frame']
+  if (scriptFrame === undefined && cmd.op === 'probe') {
+    // A ref names its own frame; otherwise frameId does, or the main frame.
+    const frame =
+      target.kind === 'node' && target.refId
+        ? (await refNode(tabId, target.refId)).frame
+        : target.frameId !== undefined
+          ? await cdpFrame(tabId, target.frameId)
+          : undefined
+    scriptFrame = frame ? await locateFrame(tabId, frame) : 0
+    if (frame) located = { frameId: frame.id, scriptFrame }
+  }
   if (cmd.op === 'stop') {
-    await inPage(tabId, cmd)
+    await inPage(tabId, scriptFrame ?? 0, cmd)
     return { tab: 'live' }
   }
-  let page = await inPage(tabId, cmd)
+  const frameId = scriptFrame!
+  let page = await inPage(tabId, frameId, cmd)
   if (!page) throw new Error('watch probe returned no result from the page')
   const result: ProbeResult = { tab: 'live', url: page.url, installed: page.installed, records: page.records }
+  if (located) result.frame = located
   if (page.dropped) result.dropped = page.dropped
-  if (page.targetLost && cmd.target.kind === 'node') {
+  if (page.targetLost && target.kind === 'node') {
     if (cmd.resolve) {
       try {
-        const ref = cmd.target.refId ?? (await resolveNamed(tabId, cmd.target.role!, cmd.target.name!))
+        const ref =
+          target.refId ?? (await resolveNamed(tabId, target.role!, target.name!, located?.frameId ?? target.frameId))
         await pin(tabId, cmd.watchId, ref)
         result.resolved = await describeNode(tabId, ref)
-        const pinned = await inPage(tabId, cmd)
+        const pinned = await inPage(tabId, frameId, cmd)
         if (!pinned) throw new Error('watch probe returned no result from the page')
         result.records!.push(...pinned.records)
         result.url = pinned.url

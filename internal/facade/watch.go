@@ -89,6 +89,11 @@ type watchTarget struct {
 	css        string
 	refID      string
 	role, name string
+	// frameID is the CDP frame id observe prints ("" is the main frame, or a
+	// ref's own frame); scriptFrame is the chrome.scripting id a probe
+	// resolved it to, sent back so later probes skip locating the frame.
+	frameID     string
+	scriptFrame *int64
 }
 
 func (t watchTarget) kind() string {
@@ -103,20 +108,24 @@ func (t watchTarget) kind() string {
 }
 
 func (t watchTarget) probeArgs() map[string]any {
+	m := map[string]any{"kind": t.kind()}
 	switch t.kind() {
 	case "css":
-		return map[string]any{"kind": "css", "css": t.css}
+		m["css"] = t.css
 	case "node":
-		m := map[string]any{"kind": "node"}
 		if t.refID != "" {
 			m["refId"] = t.refID
 		} else {
 			m["role"], m["name"] = t.role, t.name
 		}
-		return m
-	default:
-		return map[string]any{"kind": "page"}
 	}
+	if t.frameID != "" {
+		m["frameId"] = t.frameID
+	}
+	if t.scriptFrame != nil {
+		m["scriptFrame"] = *t.scriptFrame
+	}
+	return m
 }
 
 func (t watchTarget) describe() string {
@@ -134,6 +143,13 @@ func (t watchTarget) describe() string {
 }
 
 func describeWatch(c watchCond, t watchTarget) string {
+	if t.frameID != "" {
+		return describeCondition(c, t) + " in frame " + t.frameID
+	}
+	return describeCondition(c, t)
+}
+
+func describeCondition(c watchCond, t watchTarget) string {
 	switch c.kind {
 	case "text":
 		return "text " + jsonText(c.text) + " appears" + t.describe()
@@ -165,14 +181,18 @@ type watchValue struct {
 }
 
 type probeResult struct {
-	Tab          string                       `json:"tab"`
-	URL          string                       `json:"url"`
-	Installed    bool                         `json:"installed"`
-	Records      []watchValue                 `json:"records"`
-	Dropped      int64                        `json:"dropped"`
-	TargetLost   bool                         `json:"targetLost"`
-	Resolved     *struct{ Role, Name string } `json:"resolved"`
-	ResolveError string                       `json:"resolveError"`
+	Tab        string                       `json:"tab"`
+	URL        string                       `json:"url"`
+	Installed  bool                         `json:"installed"`
+	Records    []watchValue                 `json:"records"`
+	Dropped    int64                        `json:"dropped"`
+	TargetLost bool                         `json:"targetLost"`
+	Resolved   *struct{ Role, Name string } `json:"resolved"`
+	Frame      *struct {
+		FrameID     string `json:"frameId"`
+		ScriptFrame int64  `json:"scriptFrame"`
+	} `json:"frame"`
+	ResolveError string `json:"resolveError"`
 }
 
 // WatchEvent is one entry in a watch's event log.
@@ -459,8 +479,12 @@ func (w *watch) probe(ctx context.Context) {
 	}
 	w.url = p.URL
 	w.missed += p.Dropped
+	if p.Frame != nil {
+		w.target.frameID = p.Frame.FrameID
+		w.target.scriptFrame = &p.Frame.ScriptFrame
+	}
 	if p.Resolved != nil {
-		w.target = watchTarget{role: p.Resolved.Role, name: p.Resolved.Name}
+		w.target.refID, w.target.role, w.target.name = "", p.Resolved.Role, p.Resolved.Name
 	}
 	if p.ResolveError != "" {
 		w.resolveFailed = now
@@ -629,6 +653,7 @@ func (r *watchRegistry) get(id string) (*watch, error) {
 type watchArgs struct {
 	TargetID      *string `json:"targetId"`
 	CSS           *string `json:"css"`
+	FrameID       *string `json:"frameId"`
 	RefID         *string `json:"refId"`
 	Role          *string `json:"role"`
 	Name          *string `json:"name"`
@@ -648,7 +673,7 @@ type watchArgs struct {
 }
 
 func (a watchArgs) startFields() bool {
-	return a.TargetID != nil || a.CSS != nil || a.RefID != nil || a.Role != nil || a.Name != nil ||
+	return a.TargetID != nil || a.CSS != nil || a.FrameID != nil || a.RefID != nil || a.Role != nil || a.Name != nil ||
 		a.Text != nil || a.TextGone != nil || a.Pattern != nil || a.State != nil || a.Change != nil ||
 		a.Count != nil || a.MaxDurationMs != nil || a.IntervalMs != nil
 }
@@ -740,6 +765,15 @@ func parseWatchSpec(a watchArgs) (watchTarget, watchCond, error) {
 	}
 	if targets > 1 {
 		return t, watchCond{}, invalid("a watch takes at most one target: css, refId, or role + name (omit for the page's text)")
+	}
+	if a.FrameID != nil {
+		switch {
+		case !nonEmpty(a.FrameID):
+			return t, watchCond{}, invalid("frameId must be nonempty")
+		case t.refID != "":
+			return t, watchCond{}, invalid("a ref names its own frame; frameId goes with css, role + name, or the frame's text")
+		}
+		t.frameID = *a.FrameID
 	}
 	var conds []watchCond
 	if a.Text != nil {

@@ -1293,7 +1293,7 @@
       "bro/capability": "interaction",
       "bro/default": true
     },
-    "description": "Watch a target's page for a change without polling by hand. Start (target + one condition) returns a watchId; read with watchId and cursor long-polls for events since the cursor; stop with stop:true; list:true lists watches. Text conditions (text/textGone/pattern/state) end the watch when met; change and count stream every change. The watch survives re-renders and navigation, ends on its maxDurationMs, a closed or discarded tab, or a lost browser, and every read reports the tab's state (live, frozen, unresponsive, disconnected). For a background task, run `bro watch '\u003cstart JSON\u003e'` instead: it prints one JSON line per event and exits when the watch ends.",
+    "description": "Watch a target's page for a change without polling by hand. Start (target + one condition) returns a watchId; read with watchId and cursor long-polls for events since the cursor; stop with stop:true; list:true lists watches. Text conditions (text/textGone/pattern/state) end the watch when met; change and count stream every change. The watch survives re-renders and navigation, ends on its maxDurationMs, a closed or discarded tab, or a lost browser, and every read reports the tab's state (live, frozen, unresponsive, disconnected). For a background task, run `bro watch '\u003cstart JSON\u003e'` instead: it prints one JSON line per event and exits when the watch ends; with --once it exits after one change, and `bro watch --id W --cursor N --once` resumes.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1317,6 +1317,11 @@
           "description": "Read events after this seq; pass the previous read's cursor.",
           "minimum": 0,
           "type": "integer"
+        },
+        "frameId": {
+          "description": "Start: watch inside this frame (a frame ID from browser.observe or frames_list), e.g. a support chat in a cross-site iframe. A ref already names its frame.",
+          "minLength": 1,
+          "type": "string"
         },
         "intervalMs": {
           "default": 1000,

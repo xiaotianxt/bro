@@ -152,6 +152,21 @@ const fixture = (req, res) => {
     </script>`)
     return
   }
+  if (url.pathname === '/watch-chat') {
+    // A support chat in a cross-site iframe, as on carrier support pages.
+    send(`<!doctype html><title>Watch chat</title><main><h1>Account</h1>
+    <iframe title="Support chat" src="${crossUrl}/watch-chat-frame" style="width:400px;height:300px"></iframe></main>`)
+    return
+  }
+  if (url.pathname === '/watch-chat-frame') {
+    // Replies arrive from the server, 1.5 s apart.
+    send(`<!doctype html><title>Chat</title><ul id="msgs" aria-label="Messages"><li class="msg">Agent: Hi, how can I help?</li></ul>
+    <script>
+    const say=(t)=>{const li=document.createElement('li');li.className='msg';li.textContent=t;msgs.append(li)};
+    fetch('/watch-data?ms=1500').then(()=>say('Agent: first reply')).then(()=>fetch('/watch-data?ms=1500')).then(()=>say('Agent: renewal Done'));
+    </script>`)
+    return
+  }
   if (url.pathname === '/watch-next') {
     send(`<!doctype html><title>Watch next</title><main><p class="state">Loading</p></main>
     <script>fetch('/watch-data?ms=800').then(r=>r.text()).then(t=>{document.querySelector('.state').textContent=t})</script>`)
@@ -1626,7 +1641,7 @@ try {
       await tool('browser.close', { targetId })
     }
   })
-  await check('WATCH: a watch reports late, re-rendered, navigated, background and transient changes, a closed tab and a timeout, through the MCP read, the CLI stream and the wait step', async () => {
+  await check('WATCH: a watch reports late, re-rendered, navigated, background and transient changes, a closed tab, a timeout and a cross-site iframe chat, through the MCP read, the CLI stream and the wait step', async () => {
     // Every shape through every entry point. Each run opens its own
     // background tab; the wait step watches the page's text.
     const shapes = [
@@ -1638,9 +1653,10 @@ try {
       { name: 'close', want: 'tabClosed' },
       { name: 'timeout', want: 'timeout' },
     ]
-    const cli = (start) =>
+    const cli = (start, flags = []) =>
       new Promise((resolveRun, reject) => {
-        const child = spawn(broBinary, ['watch', JSON.stringify(start), '--port', String(port)], {
+        const args = start ? ['watch', JSON.stringify(start), ...flags] : ['watch', ...flags]
+        const child = spawn(broBinary, [...args, '--port', String(port)], {
           env: { ...process.env, HOME: brokerHome },
           stdio: ['ignore', 'pipe', 'pipe'],
         })
@@ -1725,6 +1741,51 @@ try {
           if (!closed) await closeTarget(opened).catch(() => {})
           else targets.delete(tabId)
         }
+      }
+    }
+    // A chat in a cross-site iframe: the watch runs inside that frame, by
+    // frameId (count, then text) and by a ref the frame owns. The CLI loop is
+    // --once, resumed with --cursor, as a harness that wakes on exit runs it.
+    for (const entry of ['mcp frameId', 'mcp ref', 'cli once']) {
+      const opened = await openTarget(`${rootUrl}/watch-chat`, false)
+      const { targetId, tabId } = opened
+      const started = performance.now()
+      try {
+        const frame = await waitUntil(async () =>
+          JSON.parse(text(await tool('frames_list', { tabId }))).find((f) => f.url.includes('/watch-chat-frame')), 'chat frame')
+        if (entry === 'mcp frameId') {
+          let r = (await tool('browser.watch', { targetId, frameId: frame.frameId, css: 'li.msg', count: true })).structuredContent
+          assert.match(r.condition, /in frame /)
+          assert.equal(r.events[0]?.type, 'initial', JSON.stringify(r))
+          assert.equal(r.events[0].count, 1)
+          r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: 20000 })).structuredContent
+          assert.deepEqual(r.events.map((e) => [e.type, e.count, e.added]), [['count', 2, ['Agent: first reply']]], JSON.stringify(r))
+          await tool('browser.watch', { watchId: r.watchId, stop: true })
+          r = (await tool('browser.watch', { targetId, frameId: frame.frameId, text: 'renewal done', waitMs: 20000 })).structuredContent
+          while (r.active) r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: 20000 })).structuredContent
+          assert.equal(r.reason, 'met', JSON.stringify(r))
+        } else if (entry === 'mcp ref') {
+          const tree = text(await tool('browser.observe', { targetId }))
+          const list = refFor(tree, 'list', 'Messages')
+          let r = (await tool('browser.watch', { targetId, refId: list, text: 'renewal done' })).structuredContent
+          while (r.active) r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: 20000 })).structuredContent
+          assert.equal(r.reason, 'met', JSON.stringify(r))
+          assert.match(r.events.find((e) => e.type === 'met')?.value ?? '', /renewal Done/)
+        } else {
+          let run = await cli({ targetId, frameId: frame.frameId, css: 'li.msg', count: true }, ['--once'])
+          assert.equal(run.code, 3, run.err)
+          assert.deepEqual(run.lines.map((e) => e.type), ['initial', 'count'])
+          const { watchId, seq } = run.lines.at(-1)
+          run = await cli(null, ['--id', watchId, '--cursor', String(seq), '--once'])
+          assert.equal(run.code, 3, run.err)
+          assert.deepEqual(run.lines.map((e) => [e.seq, e.added]), [[seq + 1, ['Agent: renewal Done']]])
+          await tool('browser.watch', { watchId, stop: true })
+        }
+        timings[`iframe/${entry}`] = Math.round(performance.now() - started)
+      } catch (error) {
+        failures.push(`iframe/${entry}: ${error.message ?? error}`)
+      } finally {
+        await closeTarget(opened).catch(() => {})
       }
     }
     assert.deepEqual(failures, [])
