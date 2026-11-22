@@ -16,6 +16,14 @@ export function isForeignExtensionRejection(browserMessage: string): boolean {
 
 /** Removes other extensions' iframes from every frame of the tab; returns how many. */
 export async function removeForeignExtensionFrames(tabId: number): Promise<number> {
+  // Chrome can freeze a tab, even the active tab of an unfocused window.
+  // executeScript then waits until Chrome unfreezes it, which can take a
+  // minute, while every CDP command on the tab waits on the attach that called
+  // this. CDP itself works in a frozen page, and a frozen page runs no script,
+  // so it cannot create a frame either.
+  if ((await chrome.tabs.get(tabId)).frozen) {
+    throw new Error(`tab ${tabId} is frozen; Chrome runs no extension script in it until it unfreezes`)
+  }
   const results = await chrome.scripting.executeScript({
     target: { tabId, allFrames: true },
     world: 'ISOLATED',

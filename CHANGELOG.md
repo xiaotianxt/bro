@@ -15,6 +15,13 @@
   and console capture, and `read_text` steps wait by extract's rule; text
   observe no longer waits up to 4 s on pages under 120 characters.
 - `make check` and CI run staticcheck.
+- A tab that once showed a password manager's frame no longer stalls every
+  call while Chrome has it frozen. Attaching to such a tab first removed
+  foreign frames with `chrome.scripting`, which waits until Chrome unfreezes
+  the page, sometimes for a minute. `navigate` then timed out, and the queued
+  navigations aborted each other (`net::ERR_ABORTED`). bro now skips that
+  step in a frozen tab, where no script can add a frame, and attaches over CDP,
+  which works there.
 
 ## 2.0.0
 

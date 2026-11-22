@@ -115,8 +115,9 @@ export class CDPSession {
 
     // Attach checks committed frame URLs only: an extension frame still
     // loading passes, then closes the session when it commits. Once a tab has
-    // shown such frames, remove them before attaching too. A failure here is
-    // not final: the rejection path below removes again and reports.
+    // shown such frames, remove them before attaching too. A failure here (a
+    // frozen tab, say) is not final: the rejection path below removes again
+    // and reports.
     if (this.foreignFrameTabs.has(tabId)) await removeForeignExtensionFrames(tabId).catch(() => 0)
     let failure = await this.attachDebugger(tabId)
     if (failure !== undefined && isForeignExtensionRejection(failure)) {

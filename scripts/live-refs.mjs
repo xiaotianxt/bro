@@ -1494,21 +1494,23 @@ try {
       const paths = shape.paths ?? ['extract', 'batch', 'observe']
       const url = (via) => `${rootUrl}${shape.path}${shape.path.includes('?') ? '&' : '?'}e=${index}-${via}`
       const args = shape.args ?? {}
-      if (paths.includes('extract')) await attempt(`${shape.name} via extract`, async () => {
+      // The paths run concurrently on one session, as agents issue them.
+      const reads = []
+      if (paths.includes('extract')) reads.push(attempt(`${shape.name} via extract`, async () => {
         const started = performance.now()
         const result = (await tool('browser.extract', { url: url('extract'), ...args })).structuredContent
         assert.equal(result.status, 'ok', `${shape.name} via extract: ${JSON.stringify(result)}`)
         verify(shape, 'extract', result.text, Math.round(performance.now() - started))
         timings[`${shape.name} extract`] = result.diagnostics.elapsedMs
-      })
-      if (paths.includes('batch')) await attempt(`${shape.name} via batch`, async () => {
+      }))
+      if (paths.includes('batch')) reads.push(attempt(`${shape.name} via batch`, async () => {
         const started = performance.now()
         const batch = (await tool('browser.batch.extract', { urls: [url('batch')], maxChars: 20000, ...args })).structuredContent
         const [result] = batch.results
         assert.equal(result.status, 'ok', `${shape.name} via batch: ${JSON.stringify(result)}`)
         verify(shape, 'batch', result.text, Math.round(performance.now() - started))
-      })
-      if (paths.includes('observe')) await attempt(`${shape.name} via observe`, async () => {
+      }))
+      if (paths.includes('observe')) reads.push(attempt(`${shape.name} via observe`, async () => {
         const opened = (await tool('browser.open', { url: url('observe'), observe: false })).structuredContent
         try {
           const started = performance.now()
@@ -1517,7 +1519,8 @@ try {
         } finally {
           await tool('browser.close', { targetId: opened.targetId })
         }
-      })
+      }))
+      await Promise.all(reads)
     }
 
     // minChars the page never reaches is reported, not papered over.

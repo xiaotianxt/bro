@@ -85,6 +85,26 @@ describe('CDP attachment lifecycle', () => {
     )
   })
 
+  it('attaches to a frozen tab without waiting on scripts the frozen page cannot run', async () => {
+    const { cdpSession } = await import('../cdp.js')
+    // An earlier foreign frame makes every later attach try to remove frames first.
+    rejectAttach(1)
+    removeFrames([1])
+    await cdpSession.ensure(42)
+    await cdpSession.detach(42)
+    Object.assign(chrome.tabs, { get: vi.fn(async () => ({ url: 'https://example.test', frozen: true })) })
+    Object.assign(chrome, { scripting: { executeScript: vi.fn(() => new Promise(() => {})) } })
+    await cdpSession.send(42, 'Page.navigate', { url: 'https://example.test/next' }, 'caller')
+    expect(chrome.scripting.executeScript).not.toHaveBeenCalled()
+    expect(chrome.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 42 }, 'Page.navigate', { url: 'https://example.test/next' })
+
+    // A frame that does block attach cannot be removed until the tab unfreezes: say so at once.
+    rejectAttach(Infinity)
+    await cdpSession.detach(42)
+    await expect(cdpSession.ensure(42)).rejects.toThrow(/Removing foreign extension frames failed: Error: tab 42 is frozen/)
+    expect(chrome.scripting.executeScript).not.toHaveBeenCalled()
+  })
+
   it('invalidates frame state before idle detach and blocks the next attach until cleanup finishes', async () => {
     const { cdpSession } = await import('../cdp.js')
     await cdpSession.ensure(1)
