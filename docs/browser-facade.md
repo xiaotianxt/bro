@@ -13,7 +13,8 @@ invariants (ownership, reconnect authority, ref retention, cleanup) live in
 - One interactive page: `browser.open` (returns the first observation) →
   `browser.click` / `browser.fill` / `browser.press` (or `browser.act` for
   several steps at once), with `close: true` on the last call.
-- A page the user already opened: `browser.current.extract`.
+- A page the user already opened: `browser.current.extract` to read it;
+  `browser.attach` (by `tabId` from `tabs_context`) to interact with it.
 - Console or network evidence: `browser.console.capture` /
   `browser.network.capture`.
 
@@ -27,6 +28,12 @@ first observation, so the next call can act on its refs. `observe` takes
 browser.observe's options (`{"mode":"text"}` to read); `observe: false`
 returns as soon as the page starts loading, and the first observe or act then
 waits for it.
+
+`browser.attach` takes the `tabId` of a tab bro did not open (the user's, or
+a popup a page opened) and returns a `targetId` and first observation exactly
+as `browser.open` does; `observe` takes the same options. Every target tool
+then works on it. bro never closes an attached tab: `close: true` or
+`browser.close` releases the target (`released: true`) and the tab stays open.
 
 `browser.observe` reads the target as compact accessibility text with short
 refs such as `kqx12`. Read content with `mode: text`; use a11y only to find
@@ -71,6 +78,11 @@ listed. A text line that repeats its parent's name is omitted.
 - `press` (`key`: Escape, Enter, Tab, ArrowDown, `Shift+Tab`…) — a trusted key
   press to the focused element, or to `refId` / `role` + `name` after focusing
   it; Escape closes panels that have no close button
+- `upload` (`paths`, optional `drop`) — by `refId` or `role` + `name`: gives
+  absolute local files to the control a user clicks to pick them (an upload
+  button, a drop zone, or the file input itself, which observes as a button),
+  as `file_upload` does; no OS dialog opens. Paths are checked before any step
+  runs. `drop: true` drags them onto drop-only zones
 - `observe` — same options as `browser.observe`; default `maxChars` 3000; if
   its `refId` scope was replaced, it observes the page and says so
 
@@ -93,6 +105,20 @@ back:
   {"type":"click","role":"button","name":"Access"},
   {"type":"click","role":"menuitem","name":"Read and write"},
   {"type":"click","role":"button","name":"Generate token"}
+]}
+```
+
+A form that takes one file per post is one call. Role + name targets resolve
+on each new document, so the post's navigation between files does not matter:
+
+```json
+{"targetId":"TARGET","steps":[
+  {"type":"upload","role":"button","name":"Choose File","paths":["/tmp/1.png"]},
+  {"type":"fill","role":"textbox","name":"Description","value":"Screenshot 1"},
+  {"type":"click","role":"button","name":"Upload"},
+  {"type":"upload","role":"button","name":"Choose File","paths":["/tmp/2.png"]},
+  {"type":"fill","role":"textbox","name":"Description","value":"Screenshot 2"},
+  {"type":"click","role":"button","name":"Upload"}
 ]}
 ```
 

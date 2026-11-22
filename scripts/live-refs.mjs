@@ -319,6 +319,16 @@ const fixture = (req, res) => {
     </script>`)
     return
   }
+  if (url.pathname === '/upload-form') {
+    // One file per form post, as report and ticket intake forms take them:
+    // every Upload navigates, so refs from the previous document are gone.
+    const name = url.searchParams.get('UploadedFile'), count = Number(url.searchParams.get('count') ?? 0) + (name ? 1 : 0)
+    const done = name ? `<output id="uploaded">${name} uploaded: ${url.searchParams.get('Description')} (files ${count})</output>` : ''
+    send(`<!doctype html><title>Upload form</title>${done}<form action="/upload-form">
+    <input type="file" name="UploadedFile" aria-label="Attachment"><textarea name="Description" aria-label="Description"></textarea>
+    <input type="hidden" name="count" value="${count}"><button>Upload</button></form>`)
+    return
+  }
   if (url.pathname === '/dialogs') {
     res.end('<!doctype html><title>Dialog contract</title><button onclick="out.textContent=confirm(\'Proceed?\')?\'OK\':\'CANCEL\'">Confirm</button><button onclick="out.textContent=\'PROMPT:\'+prompt(\'Name?\')">Prompt</button><button onclick="alert(\'Saved\');out.textContent=\'ALERTED\'">Alert</button><output id="out">NONE</output>')
     return
@@ -1150,6 +1160,37 @@ try {
       await tool('browser.close', { targetId: opened.targetId })
     }
   })
+  await check('A: an attached tab takes one act of upload/fill/click per file across form posts; release keeps it open', async () => {
+    // A tab bro did not open, as a user's tab or a page's popup is.
+    const tabId = Number(text(await tool('tabs_create', { url: `${rootUrl}/upload-form` })).match(/Created tab: (\d+)/)[1])
+    const files = ['a', 'b', 'c'].map((name) => resolve(output, `attach-${name}.txt`))
+    for (const file of files) await writeFile(file, 'FILE')
+    try {
+      const attached = await tool('browser.attach', { tabId, observe: { filter: 'interactive' } })
+      const { targetId } = attached.structuredContent
+      assert.match(text(attached), /button "Attachment"/)
+      const steps = files.flatMap((path, index) => [
+        { type: 'upload', role: 'button', name: 'Attachment', paths: [path] },
+        { type: 'fill', role: 'textbox', name: 'Description', value: `file ${index + 1}` },
+        { type: 'click', role: 'button', name: 'Upload' },
+      ])
+      const report = text(await tool('browser.act', { targetId, steps, close: true }))
+      assert.match(report, /uploaded attach-a\.txt to \w+ \(button "Attachment"\)/)
+      assert.equal(report.match(/→ navigated to /g)?.length, 3, report)
+      assert.match(report, new RegExp(`\nreleased ${targetId}; its tab stays open$`))
+      assert.match(text(await tool('get_page_text', { tabId })), /attach-c\.txt uploaded: file 3 \(files 3\)/)
+      await tool('browser.observe', { targetId }, /unknown flow session/)
+      // Closing an attached target only releases it.
+      const again = (await tool('browser.attach', { tabId, observe: false })).structuredContent
+      assert.deepEqual((await tool('browser.close', { targetId: again.targetId })).structuredContent,
+        { targetId: again.targetId, closed: false, status: 'ok', released: true })
+      assert.match(text(await tool('get_page_text', { tabId })), /files 3/)
+      await tool('browser.act', { targetId: 'unused', steps: [{ type: 'upload', role: 'button', name: 'Attachment', paths: ['relative.txt'] }] }, /must be absolute/)
+    } finally {
+      await tool('tabs_close', { tabId })
+    }
+  })
+
   await check('screenshot captures the scrolled viewport at CSS pixel size', async () => {
     await tool('navigate', { tabId, url: `${rootUrl}/bands` })
     await tool('javascript_tool', { tabId, code: 'scrollTo(0, 1600); scrollY' })

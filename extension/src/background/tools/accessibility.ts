@@ -14,6 +14,7 @@ import { getBrowserFrames, sendToFrame, type BrowserFrame } from '../frames.js'
 import { withInput } from '../input.js'
 import { scrollAndObserve, scrollerFor } from '../scroll.js'
 import { watchChanges } from '../changes.js'
+import { dispatchTool } from '../tool-registry.js'
 import { pressKey } from './computer.js'
 
 const snapshots = new SnapshotStore()
@@ -926,6 +927,7 @@ export async function actElement(tabId: number, raw: unknown): Promise<ToolResul
       ? stringArg(args, 'refId')
       : await resolveNamed(tabId, stringArg(args, 'role'), stringArg(args, 'name'))
   let act: () => Promise<unknown>
+  let files: string[] | undefined
   if (action === 'press') {
     const key = stringArg(args, 'key')
     act = async () => {
@@ -935,6 +937,13 @@ export async function actElement(tabId: number, raw: unknown): Promise<ToolResul
         })
       await pressKey(tabId, key)
     }
+  } else if (action === 'upload') {
+    if (!ref) throw new Error('act_element upload requires refId or role + name')
+    // The server checked paths at its boundary; file_upload owns chooser handling.
+    const paths = args['paths'] as string[]
+    files = paths.map((path) => path.split(/[\\/]/).pop()!)
+    const uploadArgs = { refId: ref, paths, drop: args['drop'] === true }
+    act = () => dispatchTool('file_upload', tabId, uploadArgs)
   } else {
     if (!ref) throw new Error(`act_element ${action} requires refId or role + name`)
     const [tool, toolArgs] =
@@ -959,5 +968,5 @@ export async function actElement(tabId: number, raw: unknown): Promise<ToolResul
       delete report.added
     }
   }
-  return textResult(JSON.stringify(ref ? { refId: ref, changes: report } : { changes: report }))
+  return textResult(JSON.stringify(ref ? { refId: ref, ...(files && { files }), changes: report } : { changes: report }))
 }

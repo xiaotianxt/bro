@@ -395,7 +395,7 @@ impl BrowserFacade {
                 "ownerSessionId and label must be nonempty when supplied".to_string(),
             ));
         }
-        let observe = args.observe_options()?;
+        let observe = observe_options(args.observe.as_ref())?;
         let session = self
             .start_owned(
                 FlowStartArgs {
@@ -424,6 +424,45 @@ impl BrowserFacade {
         match observed {
             Ok(content) => value["content"] = json!(content),
             Err(error) => value["observeError"] = json!(error.to_string()),
+        }
+        Ok(value)
+    }
+
+    /// A tab bro did not open becomes a target it may act on but never closes.
+    /// The probe proves the tab exists and is scriptable before it is registered.
+    pub async fn attach(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
+        let args = parse_args::<AttachArgs>(args)?;
+        let observe = observe_options(args.observe.as_ref())?;
+        let browser = self.bridge.bind(args.browser_id).await?;
+        let probe = self
+            .dispatch(
+                "javascript_tool",
+                javascript_tool_args("location.href".to_string(), false, None),
+                Some(args.tab_id),
+                browser.clone(),
+            )
+            .await?;
+        fail_if_tool_error("javascript_tool", &probe)?;
+        let session = FlowSession {
+            session_id: new_flow_session_id(),
+            tab_id: args.tab_id,
+            browser_id: browser,
+            url: javascript_string_result(&probe.result)?,
+            cleanup: false,
+            owned: false,
+            ready_pending: false,
+        };
+        self.sessions
+            .lock()
+            .await
+            .insert(session.session_id.clone(), session.clone());
+        let mut value =
+            json!({"targetId": session.session_id, "tabId": session.tab_id, "url": session.url});
+        if let Some(options) = observe {
+            match self.observe(&session, options, OBSERVE_MAX_CHARS).await {
+                Ok(content) => value["content"] = json!(content),
+                Err(error) => value["observeError"] = json!(error.to_string()),
+            }
         }
         Ok(value)
     }
@@ -495,6 +534,7 @@ impl BrowserFacade {
                     browser_id: browser,
                     url,
                     cleanup,
+                    owned: true,
                     ready_pending,
                 };
                 facade
@@ -547,9 +587,10 @@ impl BrowserFacade {
     /// turn. A failed close leaves the target registered for an explicit retry.
     async fn close_after(&self, value: &mut Value) -> Result<(), FacadeError> {
         let target_id = plain(&value["targetId"]);
-        let (_session, _cleanup, error) = self.finish(&target_id, Some(true)).await?;
+        let (session, _cleanup, error) = self.finish(&target_id, Some(true)).await?;
         match error {
-            None => value["closed"] = json!(true),
+            None if session.owned => value["closed"] = json!(true),
+            None => value["released"] = json!(true),
             Some(error) => value["closeError"] = json!(error),
         }
         Ok(())
@@ -779,7 +820,7 @@ impl BrowserFacade {
 
     pub async fn close(&self, args: Map<String, Value>) -> Result<Value, FacadeError> {
         let args = parse_args::<TargetCloseArgs>(args)?;
-        let (_session, cleanup, error) = self.finish(&args.target_id, Some(true)).await?;
+        let (session, cleanup, error) = self.finish(&args.target_id, Some(true)).await?;
         let mut value = Map::from_iter([
             ("targetId".to_string(), json!(args.target_id)),
             ("closed".to_string(), json!(cleanup && error.is_none())),
@@ -788,6 +829,9 @@ impl BrowserFacade {
                 json!(if error.is_some() { "failed" } else { "ok" }),
             ),
         ]);
+        if !session.owned {
+            value.insert("released".to_string(), json!(true));
+        }
         if let Some(error) = error {
             value.insert("error".to_string(), json!(error));
         }
@@ -827,7 +871,8 @@ impl BrowserFacade {
         cleanup: Option<bool>,
     ) -> Result<(FlowSession, bool, Option<String>), FacadeError> {
         let session = self.session(session_id).await?;
-        let cleanup = cleanup.unwrap_or(session.cleanup);
+        // An attached tab is the user's or the page's: releasing never closes it.
+        let cleanup = session.owned && cleanup.unwrap_or(session.cleanup);
         let mut close_error = None;
 
         if cleanup {
@@ -1287,6 +1332,11 @@ impl BrowserFacade {
                 args["action"] = json!("press");
                 args["key"] = json!(key);
             }
+            RefAction::Upload { paths, drop } => {
+                args["action"] = json!("upload");
+                args["paths"] = json!(paths);
+                args["drop"] = json!(drop);
+            }
         }
         let result = self
             .dispatch(
@@ -1415,7 +1465,9 @@ impl BrowserFacade {
                 self.act_element(session, json!({}), RefAction::Press(key))
                     .await
             }
-            FlowStep::Ref { ref_id, action } if slim || matches!(action, RefAction::Press(_)) => {
+            FlowStep::Ref { ref_id, action }
+                if slim || matches!(action, RefAction::Press(_) | RefAction::Upload { .. }) =>
+            {
                 self.act_element(session, json!({ "refId": ref_id }), action)
                     .await
             }
@@ -1432,7 +1484,9 @@ impl BrowserFacade {
                     RefAction::Check(checked) => {
                         ("form_input", json!({"refId":ref_id,"checked":checked}))
                     }
-                    RefAction::Press(_) => unreachable!("press always runs through act_element"),
+                    RefAction::Press(_) | RefAction::Upload { .. } => {
+                        unreachable!("press and upload always run through act_element")
+                    }
                 };
                 let result = self
                     .dispatch(tool, args, Some(session.tab_id), session.browser_id.clone())
@@ -2461,6 +2515,8 @@ struct FlowSession {
     browser_id: BrowserTarget,
     url: String,
     cleanup: bool,
+    /// Opened by bro. False for an attached tab, which bro never closes.
+    owned: bool,
     /// Opened with deferred readiness and not yet observed or acted on.
     ready_pending: bool,
 }
@@ -2566,22 +2622,30 @@ struct OpenArgs {
     observe: Option<Value>,
 }
 
-impl OpenArgs {
-    fn observe_options(&self) -> Result<Option<ObserveOptions>, FacadeError> {
-        let options = match &self.observe {
-            Some(Value::Bool(false)) => return Ok(None),
-            None | Some(Value::Bool(true)) => json!({}),
-            Some(value @ Value::Object(_)) => value.clone(),
-            Some(_) => {
-                return Err(FacadeError::InvalidInput(
-                    "observe must be a boolean or an observation object".to_string(),
-                ));
-            }
-        };
-        let options: ObserveOptions = serde_json::from_value(options)
-            .map_err(|error| FacadeError::InvalidInput(format!("observe: {error}")))?;
-        Ok(Some(options.within_ceiling()?))
-    }
+/// open/attach `observe`: false skips the first observation; true or absent
+/// observes with defaults; an object observes with those options.
+fn observe_options(observe: Option<&Value>) -> Result<Option<ObserveOptions>, FacadeError> {
+    let options = match observe {
+        Some(Value::Bool(false)) => return Ok(None),
+        None | Some(Value::Bool(true)) => json!({}),
+        Some(value @ Value::Object(_)) => value.clone(),
+        Some(_) => {
+            return Err(FacadeError::InvalidInput(
+                "observe must be a boolean or an observation object".to_string(),
+            ));
+        }
+    };
+    let options: ObserveOptions = serde_json::from_value(options)
+        .map_err(|error| FacadeError::InvalidInput(format!("observe: {error}")))?;
+    Ok(Some(options.within_ceiling()?))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AttachArgs {
+    tab_id: i64,
+    browser_id: Option<String>,
+    observe: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2874,6 +2938,11 @@ enum RefAction {
     Check(bool),
     /// Focus the target, then press the key.
     Press(String),
+    /// Choose files through the control; paths are canonical regular files.
+    Upload {
+        paths: Vec<String>,
+        drop: bool,
+    },
 }
 
 // Deserialize the complete request before doing any browser work. In particular,
@@ -2945,6 +3014,13 @@ enum RawFlowStep {
     Dialog {
         accept: bool,
         prompt_text: Option<String>,
+    },
+    Upload {
+        #[serde(flatten)]
+        target: RawTarget,
+        paths: Vec<String>,
+        #[serde(default)]
+        drop: bool,
     },
 }
 
@@ -3033,6 +3109,24 @@ impl TryFrom<RawFlowStep> for FlowStep {
                 accept,
                 prompt_text,
             }),
+            RawFlowStep::Upload {
+                target,
+                paths,
+                drop,
+            } => {
+                if target.css.is_some() {
+                    return Err("upload targets a refId or role + name, not css".to_string());
+                }
+                if paths.is_empty() {
+                    return Err("upload requires paths: absolute local file paths".to_string());
+                }
+                // Checked while parsing, so a bad path fails before any step runs.
+                let paths = paths
+                    .iter()
+                    .map(|path| crate::tool_catalog::canonical_upload_path("upload", path))
+                    .collect::<Result<_, _>>()?;
+                Self::from_target(target, RefAction::Upload { paths, drop })
+            }
         }
     }
 }
@@ -3051,8 +3145,8 @@ impl FlowStep {
                 RefAction::Click => Self::Click { css, frame_id },
                 RefAction::Fill(value) => Self::Fill { css, value, frame_id },
                 RefAction::Select(value) => Self::Select { css, value, frame_id },
-                RefAction::Check(_) | RefAction::Press(_) => {
-                    unreachable!("check and press reject css before this point")
+                RefAction::Check(_) | RefAction::Press(_) | RefAction::Upload { .. } => {
+                    unreachable!("check, press and upload reject css before this point")
                 }
             }),
             (None, Some(ref_id), None, None) if !ref_id.trim().is_empty() && frame_id.is_none() => {
@@ -3130,6 +3224,7 @@ impl FlowStep {
                 RefAction::Select(_) => "select",
                 RefAction::Check(_) => "check",
                 RefAction::Press(_) => "press",
+                RefAction::Upload { .. } => "upload",
             },
             Self::Press { .. } => "press",
             Self::Scroll { .. } => "scroll",
@@ -3266,8 +3361,8 @@ impl StepLabel {
             "read_text" => {
                 entry.insert("text".to_string(), value["text"].clone());
             }
-            "click" | "fill" | "select" | "check" | "press" => {
-                for key in ["refId", "changes"] {
+            "click" | "fill" | "select" | "check" | "press" | "upload" => {
+                for key in ["refId", "files", "changes"] {
                     if let Some(field) = value.get(key) {
                         entry.insert(key.to_string(), field.clone());
                     }
@@ -3344,6 +3439,13 @@ pub fn render_act(value: &Value) -> String {
                 format!("unchecked {element}{changed}")
             }
             "check" => format!("checked {element}{changed}"),
+            "upload" => {
+                let files = entry["files"]
+                    .as_array()
+                    .map(|files| files.iter().map(plain).collect::<Vec<_>>().join(", "))
+                    .unwrap_or_default();
+                format!("uploaded {files} to {element}{changed}")
+            }
             "press" if element.is_empty() => {
                 format!("pressed {}{changed}", plain(&entry["key"]))
             }
@@ -3473,6 +3575,11 @@ pub fn render_observe(value: &Value) -> String {
 fn closed_line(value: &Value) -> String {
     if value["closed"] == json!(true) {
         format!("\nclosed {}", plain(&value["targetId"]))
+    } else if value["released"] == json!(true) {
+        format!(
+            "\nreleased {}; its tab stays open",
+            plain(&value["targetId"])
+        )
     } else if let Some(error) = value["closeError"].as_str() {
         format!("\nclose failed: {error}; retry with browser.close")
     } else {
@@ -4061,10 +4168,10 @@ mod tests {
 
     use super::{
         click_script, enforce_extract_limits, extract_tab_id, fill_script, has_page_text,
-        new_flow_session_id, parse_args, parse_dom_snapshot, reject_condition_waits, select_script,
-        single_result, BatchFlowArgs, BatchRunArgs, CurrentExtractArgs, ExtractArgs, ExtractLink,
-        ExtractOptions, FlowActArgs, FlowStep, NetworkCaptureArgs, ObserveMode, OpenArgs,
-        RefAction, StepLabel, TargetActArgs,
+        new_flow_session_id, observe_options, parse_args, parse_dom_snapshot,
+        reject_condition_waits, select_script, single_result, BatchFlowArgs, BatchRunArgs,
+        CurrentExtractArgs, ExtractArgs, ExtractLink, ExtractOptions, FlowActArgs, FlowStep,
+        NetworkCaptureArgs, ObserveMode, OpenArgs, RefAction, StepLabel, TargetActArgs,
     };
 
     #[test]
@@ -4235,6 +4342,84 @@ mod tests {
         )
         .is_ok());
         assert!(BatchFlowArgs::parse(json!({"urls":["https://example.test"],"steps":[{"type":"click","refId":"ref_snapshot_1"}]}).as_object().unwrap().clone()).is_err());
+    }
+
+    #[test]
+    fn upload_steps_check_paths_and_targets_before_any_step_runs() {
+        let file = std::env::temp_dir().join(format!("bro-upload-{}.txt", std::process::id()));
+        std::fs::write(&file, "x").unwrap();
+        let path = file.to_str().unwrap();
+        let canonical = std::fs::canonicalize(&file).unwrap();
+        let act = |step: Value| {
+            serde_json::from_value::<TargetActArgs>(json!({"targetId":"t","steps":[step]}))
+        };
+        let parsed =
+            act(json!({"type":"upload","role":"button","name":"Choose File","paths":[path]}))
+                .unwrap();
+        assert!(matches!(
+            &parsed.steps[0],
+            FlowStep::Named { action: RefAction::Upload { paths, drop: false }, .. }
+                if paths == &[canonical.to_str().unwrap().to_string()]
+        ));
+        assert!(matches!(
+            &act(json!({"type":"upload","refId":"kqx1","paths":[path],"drop":true}))
+                .unwrap()
+                .steps[0],
+            FlowStep::Ref {
+                action: RefAction::Upload { drop: true, .. },
+                ..
+            }
+        ));
+        for (step, message) in [
+            (
+                json!({"type":"upload","refId":"kqx1","paths":["relative.txt"]}),
+                "must be absolute",
+            ),
+            (
+                json!({"type":"upload","refId":"kqx1","paths":["/nonexistent/bro-upload.txt"]}),
+                "cannot open",
+            ),
+            (
+                json!({"type":"upload","refId":"kqx1","paths":[std::env::temp_dir()]}),
+                "not a regular file",
+            ),
+            (
+                json!({"type":"upload","refId":"kqx1","paths":[]}),
+                "requires paths",
+            ),
+            (
+                json!({"type":"upload","css":"input","paths":[path]}),
+                "not css",
+            ),
+            (
+                json!({"type":"upload","paths":[path]}),
+                "exactly one target",
+            ),
+        ] {
+            let error = act(step).unwrap_err().to_string();
+            assert!(error.contains(message), "{error}");
+        }
+        // batch.flow opens fresh tabs, so a role/name upload cannot target them.
+        assert!(BatchFlowArgs::parse(json!({"urls":["https://example.test"],"steps":[{"type":"upload","role":"button","name":"Choose File","paths":[path]}]}).as_object().unwrap().clone()).is_err());
+        std::fs::remove_file(&file).unwrap();
+    }
+
+    #[test]
+    fn upload_and_release_render_for_the_model() {
+        let rendered = super::render_act(&json!({
+            "targetId": "flow-1",
+            "status": "ok",
+            "released": true,
+            "results": [{
+                "type": "upload", "refId": "kqx1", "target": "button \"Choose File\"",
+                "files": ["a.png", "b.png"],
+                "changes": {"navigated": "https://example.test/done", "settledMs": 40}
+            }]
+        }));
+        assert_eq!(
+            rendered,
+            "targetId: flow-1\nuploaded a.png, b.png to kqx1 (button \"Choose File\") → navigated to https://example.test/done (settled 40ms)\nreleased flow-1; its tab stays open"
+        );
     }
 
     #[test]
@@ -4436,9 +4621,8 @@ mod tests {
             args.as_object_mut()
                 .unwrap()
                 .extend(extra.as_object().unwrap().clone());
-            parse_args::<OpenArgs>(args.as_object().unwrap().clone())
-                .unwrap()
-                .observe_options()
+            let args = parse_args::<OpenArgs>(args.as_object().unwrap().clone()).unwrap();
+            observe_options(args.observe.as_ref())
         };
         assert!(matches!(
             open(json!({})).unwrap().unwrap().mode,

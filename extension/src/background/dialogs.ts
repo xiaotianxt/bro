@@ -86,7 +86,7 @@ export function installDialogAnswers(): void {
       waiter({ sessionId, backendNodeId, mode })
       return
     }
-    record(tabId, `file chooser cancelled (bro never opens the OS picker); to choose files, call file_upload on the control you clicked (refId or coordinate)`)
+    record(tabId, `file chooser cancelled (bro never opens the OS picker); to choose files, use a browser.act upload step or file_upload on the control you clicked`)
   })
 }
 

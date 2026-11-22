@@ -43,6 +43,7 @@ pub enum ToolRoute {
     ConsoleCapture,
     NetworkCapture,
     Open,
+    Attach,
     Observe,
     Act,
     Close,
@@ -118,23 +119,27 @@ pub fn resolve_upload_paths(args: &mut JsonObject) -> Result<(), String> {
         let Some(raw) = entry.as_str() else {
             return Err("file_upload.paths must contain strings".to_string());
         };
-        let path = std::path::Path::new(raw);
-        if !path.is_absolute() {
-            return Err(format!("file_upload path must be absolute: {raw}"));
-        }
-        let canonical = std::fs::canonicalize(path)
-            .map_err(|error| format!("file_upload cannot open {raw}: {error}"))?;
-        if !canonical.is_file() {
-            return Err(format!("file_upload path is not a regular file: {raw}"));
-        }
-        let Some(canonical) = canonical.to_str() else {
-            return Err(format!(
-                "file_upload path is not valid UTF-8 after resolving: {raw}"
-            ));
-        };
-        *entry = Value::String(canonical.to_string());
+        *entry = Value::String(canonical_upload_path("file_upload", raw)?);
     }
     Ok(())
+}
+
+/// One upload path, checked as `resolve_upload_paths` describes; `tool` names
+/// the caller in the error (file_upload, or an act upload step).
+pub fn canonical_upload_path(tool: &str, raw: &str) -> Result<String, String> {
+    let path = std::path::Path::new(raw);
+    if !path.is_absolute() {
+        return Err(format!("{tool} path must be absolute: {raw}"));
+    }
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|error| format!("{tool} cannot open {raw}: {error}"))?;
+    if !canonical.is_file() {
+        return Err(format!("{tool} path is not a regular file: {raw}"));
+    }
+    canonical
+        .to_str()
+        .map(str::to_string)
+        .ok_or_else(|| format!("{tool} path is not valid UTF-8 after resolving: {raw}"))
 }
 
 pub fn take_agent_done_args(mut args: JsonObject) -> Result<(Vec<i64>, Option<String>), String> {
@@ -167,6 +172,7 @@ impl ToolSpec {
             json!(matches!(
                 self.name,
                 "browser.open"
+                    | "browser.attach"
                     | "browser.observe"
                     | "browser.click"
                     | "browser.fill"
@@ -234,8 +240,8 @@ fn capability_for(name: &str) -> Option<&'static str> {
         | "browser.flow.observe"
         | "browser.flow.act"
         | "browser.flow.finish" => Some("compatibility"),
-        "browser.open" | "browser.observe" | "browser.click" | "browser.fill" | "browser.press"
-        | "browser.act" | "browser.close" => Some("interaction"),
+        "browser.open" | "browser.attach" | "browser.observe" | "browser.click"
+        | "browser.fill" | "browser.press" | "browser.act" | "browser.close" => Some("interaction"),
         "navigate" | "resize_window" | "javascript_tool" => Some("advanced"),
         "agent_done"
         | "browser.batch.run"
@@ -314,6 +320,12 @@ static SPECS: &[ToolSpec] = &[
         schema: "browser_open",
     },
     ToolSpec {
+        name: "browser.attach",
+        description: "Make a tab that is already open (the user's, or one a page opened) a target, by tabId from tabs_context, and return its targetId with the first observation, like browser.open. Then observe/act/click/fill/press work on it. bro never closes an attached tab: close:true or browser.close releases the target and leaves the tab open.",
+        route: ToolRoute::Attach,
+        schema: "browser_attach",
+    },
+    ToolSpec {
         name: "browser.observe",
         description: "Read a target. Read content with mode text; use a11y (default) only to find short refs (e.g. kqx12) to act on, across frames and Shadow DOM. Scope with refId; bound with filter/depth/maxChars; continue truncated output with cursor. Refs survive rereads, not navigation.",
         route: ToolRoute::Observe,
@@ -339,13 +351,13 @@ static SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "browser.act",
-        description: "Run 1–32 ordered steps on a target: navigate, evaluate, wait, observe, and click/fill/select/check/scroll. Target elements by refId, or by role + name (e.g. {type:click, role:menuitem, name:\"Read and write\"}), which resolves when the step runs and survives re-renders. Each click/fill/select/check waits for the page to settle and reports what visibly changed (opened/closed dialogs and menus, alerts, new text, navigation, including a form post it started); a click that opens a menu or dialog lists refs for its controls, so act on them without observing. \"no visible change\" means it likely missed. So chain the next steps directly: no delays and no evaluate to read the page back. Use wait only for content that arrives later. All steps validate before any effect; the first failure stops the rest. Prefer these trusted actions over evaluate, whose synthetic events frameworks like React can ignore. Covered clicks fail and name the covering element; check sets a native radio/checkbox without a pointer click. scroll moves the ref's nearest scrollable container, else the page. Native dialogs are answered as they open and reported: alerts accepted, confirm/prompt cancelled unless a dialog step before the action says accept.",
+        description: "Run 1–32 ordered steps on a target: navigate, evaluate, wait, observe, and click/fill/select/check/press/scroll/upload. Target elements by refId, or by role + name (e.g. {type:click, role:menuitem, name:\"Read and write\"}), which resolves when the step runs and survives re-renders. Each click/fill/select/check waits for the page to settle and reports what visibly changed (opened/closed dialogs and menus, alerts, new text, navigation, including a form post it started); a click that opens a menu or dialog lists refs for its controls, so act on them without observing. \"no visible change\" means it likely missed. So chain the next steps directly: no delays and no evaluate to read the page back. Use wait only for content that arrives later. All steps validate before any effect; the first failure stops the rest. Prefer these trusted actions over evaluate, whose synthetic events frameworks like React can ignore. Covered clicks fail and name the covering element; check sets a native radio/checkbox without a pointer click. scroll moves the ref's nearest scrollable container, else the page. Native dialogs are answered as they open and reported: alerts accepted, confirm/prompt cancelled unless a dialog step before the action says accept. upload gives absolute local paths to the control a user clicks to pick files (or its file input), so a page that takes one file per form post is one call of upload/fill/click steps per file.",
         route: ToolRoute::Act,
         schema: "browser_act",
     },
     ToolSpec {
         name: "browser.close",
-        description: "Close an owned target's tab and release its server state; close:true on the target's last call does this without a separate turn. Does not close unrelated tabs. Failed cleanup remains available for an explicit retry.",
+        description: "Close an owned target's tab and release its server state; an attached target is released and its tab stays open. close:true on the target's last call does this without a separate turn. Does not close unrelated tabs. Failed cleanup remains available for an explicit retry.",
         route: ToolRoute::Close,
         schema: "browser_close",
     },
@@ -815,6 +827,11 @@ fn schema(kind: &str) -> JsonObject {
             ("label", json!({"type":"string","minLength":1,"description":"Tab-group label; Pi supplies it."})),
             ("observe", json!({"anyOf":[{"type":"boolean"},{"type":"object","properties":observation_properties()}],"default":true})),
         ]),
+        "browser_attach" => props(&[
+            ("tabId", tab_id_schema("Tab to attach, from tabs_context.")),
+            ("browserId", browser_id_schema()),
+            ("observe", json!({"anyOf":[{"type":"boolean"},{"type":"object","properties":observation_properties()}],"default":true})),
+        ]),
         "browser_observe" => with_target(observation_properties()),
         "browser_act" => props(&[
             ("targetId", target_id_schema()),
@@ -1241,6 +1258,7 @@ fn required_fields(kind: &str) -> Option<&'static [&'static str]> {
         "browser_console_capture" | "browser_network_capture" => Some(&["url", "code"]),
         "browser_batch_flow" => Some(&["steps"]),
         "browser_open" | "browser_flow_start" => Some(&["url"]),
+        "browser_attach" => Some(&["tabId"]),
         "browser_close" => Some(&["targetId"]),
         "browser_act" => Some(&["steps"]),
         "browser_fill" => Some(&["value"]),
@@ -1345,6 +1363,15 @@ fn interaction_steps_schema() -> Value {
         json!({"type":"boolean","default":true,"description":"Native radio/checkbox; no pointer click, so overlays do not block it."}),
     );
     let press = press_properties();
+    let mut upload = element();
+    upload.insert(
+        "paths".to_string(),
+        json!({"type":"array","minItems":1,"items":{"type":"string","minLength":1},"description":"Absolute paths of local files; checked before any step runs."}),
+    );
+    upload.insert(
+        "drop".to_string(),
+        json!({"type":"boolean","default":false,"description":"Drag the files onto the target instead of clicking it, for drop-only zones."}),
+    );
     let mut scroll = ref_target();
     scroll.insert(
         "direction".to_string(),
@@ -1363,6 +1390,7 @@ fn interaction_steps_schema() -> Value {
         step("check", &[], check),
         step("press", &["key"], press),
         step("scroll", &["refId"], scroll),
+        step("upload", &["paths"], upload),
         step("dialog", &["accept"], props(&[
             ("accept", json!({"type":"boolean","description":"Answer native dialogs (alert/confirm/prompt) opened by the following steps of this call with OK (true) or Cancel (false). Without this step confirm and prompt are cancelled."})),
             ("promptText", json!({"type":"string","description":"Text entered into a prompt dialog that is accepted."})),
@@ -1611,6 +1639,7 @@ mod tests {
     fn target_catalog_is_server_owned_and_observations_share_one_schema() {
         for name in [
             "browser.open",
+            "browser.attach",
             "browser.observe",
             "browser.click",
             "browser.fill",
@@ -1655,7 +1684,7 @@ mod tests {
         let steps = act["properties"]["steps"]["items"]["oneOf"]
             .as_array()
             .unwrap();
-        assert_eq!(steps.len(), 11);
+        assert_eq!(steps.len(), 12);
         let wait = steps
             .iter()
             .find(|step| step["properties"]["type"]["const"] == "wait")

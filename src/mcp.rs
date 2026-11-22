@@ -66,10 +66,10 @@ impl BrowserMcpServer {
             .as_ref()
             .and_then(|value| value.get("targetId"))
             .and_then(serde_json::Value::as_str);
-        let closed = result
-            .structured_content
-            .as_ref()
-            .is_some_and(|value| value.get("closed") == Some(&json!(true)));
+        // A closed or released target can no longer be the default.
+        let closed = result.structured_content.as_ref().is_some_and(|value| {
+            value.get("closed") == Some(&json!(true)) || value.get("released") == Some(&json!(true))
+        });
         if let Some(target) = target {
             let mut last = self.last_target.lock().expect("last target lock");
             if !closed {
@@ -186,6 +186,10 @@ impl ServerHandler for BrowserMcpServer {
             ToolRoute::NetworkCapture => Ok(facade_result(facade.network_capture(args).await)),
             ToolRoute::Open => Ok(self.targeted(rendered_result(
                 facade.open(args).await,
+                crate::facade::render_open,
+            ))),
+            ToolRoute::Attach => Ok(self.targeted(rendered_result(
+                facade.attach(args).await,
                 crate::facade::render_open,
             ))),
             ToolRoute::Observe => Ok(self.targeted(rendered_result(

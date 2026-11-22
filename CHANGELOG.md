@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- `browser.attach` makes an existing tab a target: one the user opened, or a
+  popup a page opened. Pass its `tabId` from `tabs_context`. Before this,
+  `browser.act` and its change reports only worked on tabs bro opened, so
+  work on the user's logged-in pages fell back to one raw tool call per
+  action. bro never closes an attached tab: `close: true` or `browser.close`
+  releases the target and reports `released: true`.
+- `browser.act` has an `upload` step (`paths`, optional `drop`, by `refId` or
+  `role` + `name`), so uploads chain with other steps. A form that takes one
+  file per post used to cost three calls per file (find the new ref,
+  `file_upload`, then submit). It is now one act call, because role + name
+  targets survive the post's navigation.
+
 ## 1.7.0
 
 - `browser.open` returns the first observation with the `targetId`, so the

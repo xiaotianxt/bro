@@ -11,8 +11,16 @@ prompt stays small.
 connection and tab even if the default browser later changes. Reconnection
 invalidates that authority: an old target cannot act on or close a replacement
 connection's reused tab ID. `ownerSessionId`/`label` are ownership identity
-(Pi supplies them), never the target handle. Borrowing existing user tabs is
-not part of this API.
+(Pi supplies them), never the target handle.
+
+`browser.attach` registers an existing tab as a target with `owned: false`.
+The same connection pinning applies. A `location.href` probe must succeed
+first, so a missing or unscriptable tab is never registered. Ownership, not
+the caller's `cleanup` argument, decides whether a finish closes the tab: an
+attached target is only removed from server state, and results say
+`released: true` instead of `closed: true`. Adapters drop the session's
+default target on either. Pi does not track attached targets, because there
+is no tab to clean up.
 
 ## Readiness
 
@@ -48,6 +56,12 @@ The whole input is validated before effects. A runtime failure or request
 cancellation stops subsequent steps; cancellation does not undo dispatched
 effects. There is no branch/loop/rollback language or implicit action replay.
 Empty evaluation code is invalid; empty evaluation values are valid results.
+An `upload` step's paths are canonicalized while the request is parsed, by
+the same check as `file_upload`, so a bad path fails the whole call before
+any effect. The extension runs it through `file_upload` inside the same
+change watch as a click, and reports the file names with the changes. css
+targets are rejected, and so is batch.flow (role + name cannot target its
+fresh tabs).
 
 Results are split by audience:
 
