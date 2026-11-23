@@ -25,7 +25,7 @@ import (
 
 // version is the release version; scripts/check-version.mjs keeps it in step
 // with the extension and the Homebrew formula.
-const version = "2.0.0"
+const version = "2.1.0"
 
 const defaultPort = 3500
 
