@@ -397,7 +397,8 @@ func (f *Facade) waitDocumentReady(ctx context.Context, tabID int64, browser bri
 		if err != nil {
 			return err
 		}
-		if _, failed := toolErrorMessage(r); !failed || !time.Now().Before(deadline) {
+		msg, failed := toolErrorMessage(r)
+		if !failed || !time.Now().Before(deadline) || isTerminalTabError(msg) {
 			return nil
 		}
 		t := time.NewTimer(textReadyPoll)
@@ -408,4 +409,13 @@ func (f *Facade) waitDocumentReady(ctx context.Context, tabID int64, browser bri
 		case <-t.C:
 		}
 	}
+}
+
+// A tab Chrome discarded or closed cannot become ready by polling; end the
+// readiness wait so the caller's tool reports the error immediately.
+func isTerminalTabError(msg string) bool {
+	low := strings.ToLower(msg)
+	return strings.Contains(low, "is discarded") ||
+		strings.Contains(low, "no tab with id") ||
+		strings.Contains(low, "no tab with given id")
 }

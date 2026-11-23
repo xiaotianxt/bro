@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const cdp = vi.hoisted(() => ({ send: vi.fn(), resetInputFocus: vi.fn(), onDetach: vi.fn(), removeForeignFramesBeforeInput: vi.fn() }))
-vi.mock('../cdp.js', () => ({ cdpSession: cdp }))
+vi.mock('../cdp.js', () => ({ CDP_COMMAND_TIMEOUT_MS: 5000, cdpSession: cdp }))
 const render = vi.hoisted(() => ({ state: vi.fn() }))
 vi.mock('../render-state.js', async (actual) => ({
   ...(await actual<typeof import('../render-state.js')>()),
@@ -105,7 +105,7 @@ describe('input by render state', () => {
     render.state.mockResolvedValueOnce('hidden')
     await withInput(8, (input) => input.composited())
     expect(captures()).toHaveLength(1)
-    // A busy renderer delays the frame; that is not a dead session to detach.
-    expect(captures()[0]![3]).toBe('caller')
+    // No artificial command timeout on compositing a hidden tab's frame.
+    expect(captures()[0]![3]).toBeUndefined()
   })
 })

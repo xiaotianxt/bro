@@ -149,7 +149,7 @@ export const INTERACTIVE = new Set([
 // Native inputs whose browser-internal parts (month/day/year spinbuttons, the
 // picker button) the AX tree exposes. Those parts are not form controls; the
 // input itself is filled with an ISO value, so its subtree is not rendered.
-const NATIVE_COMPOSITES = new Set(['Date', 'DateTime', 'InputTime'])
+export const NATIVE_COMPOSITES = new Set(['Date', 'DateTime', 'InputTime'])
 const STATES = new Set([
   'checked',
   'selected',
@@ -161,7 +161,83 @@ const STATES = new Set([
 ])
 const quoted = (value: unknown): string => JSON.stringify(String(value ?? ''))
 // Sections a truncated read can be scoped to instead of re-read with a bigger budget.
-const LANDMARKS = new Set(['main', 'navigation', 'banner', 'contentinfo', 'complementary', 'search', 'article', 'region', 'form'])
+export const LANDMARKS = new Set(['main', 'navigation', 'banner', 'contentinfo', 'complementary', 'search', 'article', 'region', 'form'])
+const STRUCTURAL_ROLES = new Set(['generic', 'none', 'LabelText', 'MenuListPopup'])
+const UNREF_ROLES = new Set(['RootWebArea', 'StaticText', 'LineBreak'])
+
+export function axProp(node: AXNode, name: string): unknown {
+  const props = node.properties
+  if (!props) return undefined
+  for (let i = 0; i < props.length; i++) {
+    if (props[i]!.name === name) return props[i]!.value.value
+  }
+  return undefined
+}
+
+export function isLandmarkNode(role: string, name: string): boolean {
+  return LANDMARKS.has(role) && (name !== '' || (role !== 'region' && role !== 'form'))
+}
+
+export function isOutlineHeading(node: AXNode, role: string): boolean {
+  return role === 'heading' && Number(axProp(node, 'level') ?? 1) <= 3
+}
+
+export function outlineBudgetFor(options: Pick<SnapshotOptions, 'maxChars' | 'match'>): { outlineBudget: number; reserve: number } {
+  const outlineBudget = options.match ? 0 : Math.min(600, Math.floor(options.maxChars / 10))
+  const reserve =
+    `\n[Truncated at ${options.maxChars} chars; continue with cursor=0000000000, or scope with refId to an unread section:]`.length +
+    outlineBudget
+  return { outlineBudget, reserve }
+}
+
+export function shouldShowNode(
+  node: AXNode,
+  role: string,
+  rawName: string,
+  name: string,
+  echo: string,
+  options: Pick<SnapshotOptions, 'filter' | 'compact' | 'match' | 'maxMatches'>,
+  refsCount: number,
+): boolean {
+  if (node.ignored || role === 'InlineTextBox') return false
+  if (role === 'StaticText' && name !== '' && name === echo) return false
+  const interactive =
+    INTERACTIVE.has(role) || Boolean(axProp(node, 'editable')) || axProp(node, 'focusable') === true
+  if (options.compact !== false && STRUCTURAL_ROLES.has(role) && !name && !interactive) return false
+  if (options.filter !== 'all' && !interactive && role !== 'RootWebArea' && role !== 'Iframe') return false
+  if (options.match && (!node.backendDOMNodeId || !options.match(role, rawName))) return false
+  if (options.maxMatches !== undefined && refsCount >= options.maxMatches) return false
+  return true
+}
+
+export function formatAXLine(
+  node: AXNode,
+  prefix: string,
+  depth: number,
+  ref: string | undefined,
+  role: string,
+  name: string,
+): string {
+  let line = `${prefix}${'  '.repeat(depth + 1)}${ref ? `[${ref}] ` : ''}${role} ${quoted(name)}`
+  if (node.value?.value !== undefined && !axProp(node, 'protected')) {
+    const value = String(node.value.value)
+    line += ` value=${quoted(value.length > 500 ? value.slice(0, 500) + '…' : value)}`
+    if (value.length > 500) line += ' valueTruncated=true'
+  }
+  const props = node.properties
+  if (props) {
+    for (let i = 0; i < props.length; i++) {
+      const key = props[i]!.name
+      const value = props[i]!.value.value
+      if (
+        STATES.has(key) &&
+        !(value === false && (key === 'readonly' || key === 'required' || key === 'disabled'))
+      )
+        line += ` ${key}=${quoted(value)}`
+    }
+  }
+  return line
+}
 
 export function renderSnapshot(
   store: SnapshotStore,
@@ -173,10 +249,7 @@ export function renderSnapshot(
   const rendered = new Map<string, string>()
   // The footer lists unread landmarks/headings as scope refs within its own
   // budget, reserved from maxChars; its cursor is at most 10 digits.
-  const outlineBudget = options.match ? 0 : Math.min(600, Math.floor(options.maxChars / 10))
-  const reserve =
-    `\n[Truncated at ${options.maxChars} chars; continue with cursor=0000000000, or scope with refId to an unread section:]`.length +
-    outlineBudget
+  const { outlineBudget, reserve } = outlineBudgetFor(options)
   const outline: string[] = []
   let outlineChars = 0
   let outlineFull = outlineBudget === 0
@@ -216,7 +289,15 @@ export function renderSnapshot(
       append(
         `${prefix}Frame ${quoted(frame.id)} ${quoted(frame.url)}${frame.error ? ` [unavailable: ${frame.error}]` : ''}\n`,
       )
-    const nodes = new Map(frame.nodes.map((node) => [node.nodeId, node]))
+    const nodes = new Map<string, AXNode>()
+    const childIds = new Set<string>()
+    for (let i = 0; i < frame.nodes.length; i++) {
+      const node = frame.nodes[i]!
+      nodes.set(node.nodeId, node)
+      if (node.childIds) {
+        for (let j = 0; j < node.childIds.length; j++) childIds.add(node.childIds[j]!)
+      }
+    }
     const seenNodes = new Set<string>()
     // `echo` is the name of the nearest shown ancestor: a StaticText repeating
     // it (a button's own label) adds nothing.
@@ -224,58 +305,65 @@ export function renderSnapshot(
       if (seenNodes.has(node.nodeId) || (truncated && outlineFull) || depth > options.depth) return
       seenNodes.add(node.nodeId)
       const role = String(node.role?.value ?? '')
-      const properties = new Map(node.properties?.map((p) => [p.name, p.value.value]))
+      if (node.ignored) {
+        if (axProp(node, 'protected') || NATIVE_COMPOSITES.has(role)) return
+        const kids = node.childIds
+        if (kids) {
+          for (let i = 0; i < kids.length; i++) {
+            const next = nodes.get(kids[i]!)
+            if (next) walk(next, depth, inLandmark, echo)
+          }
+        }
+        return
+      }
+      if (truncated) {
+        let landmark = false
+        if (LANDMARKS.has(role) || role === 'heading') {
+          const rawName = String(node.name?.value ?? '').trim()
+          const name = rawName.length > 300 ? rawName.slice(0, 300) + '…' : rawName
+          landmark = isLandmarkNode(role, name)
+          if (
+            node.backendDOMNodeId &&
+            !UNREF_ROLES.has(role) &&
+            ((landmark && !inLandmark) || isOutlineHeading(node, role))
+          ) {
+            const target: RefTarget = { frameId: frame.id, loaderId: frame.loaderId, backendNodeId: node.backendDOMNodeId }
+            const identity = `${frame.id}\0${frame.loaderId}\0${node.backendDOMNodeId}`
+            const ref = rendered.get(identity) ?? store.handle(tabId, target)
+            const entry = `  [${ref}] ${role} ${quoted(name.length > 60 ? name.slice(0, 60) + '…' : name)}`
+            if (outlineChars + entry.length + 1 > outlineBudget) {
+              outlineFull = true
+              return
+            }
+            outline.push(entry)
+            outlineChars += entry.length + 1
+            refs.set(ref, target)
+            rendered.set(identity, ref)
+          }
+        }
+        if (axProp(node, 'protected') || NATIVE_COMPOSITES.has(role)) return
+        const kids = node.childIds
+        if (kids) {
+          const nextInLandmark = inLandmark || landmark
+          for (let i = 0; i < kids.length; i++) {
+            const next = nodes.get(kids[i]!)
+            if (next) walk(next, depth, nextInLandmark, echo)
+          }
+        }
+        return
+      }
       const rawName = String(node.name?.value ?? '').trim()
       const name = rawName.length > 300 ? rawName.slice(0, 300) + '…' : rawName
-      const interactive =
-        INTERACTIVE.has(role) || properties.get('editable') || properties.get('focusable') === true
-      const structural =
-        ['generic', 'none', 'LabelText', 'MenuListPopup'].includes(role) && !name && !interactive
-      const show =
-        !node.ignored &&
-        role !== 'InlineTextBox' &&
-        !(role === 'StaticText' && name !== '' && name === echo) &&
-        !(options.compact !== false && structural) &&
-        (options.filter === 'all' || interactive || role === 'RootWebArea' || role === 'Iframe') &&
-        (!options.match || (node.backendDOMNodeId && options.match(role, rawName))) &&
-        (options.maxMatches === undefined || refs.size < options.maxMatches)
-      const landmark = LANDMARKS.has(role) && (name !== '' || !['region', 'form'].includes(role))
-      const target = node.backendDOMNodeId && !['RootWebArea', 'StaticText', 'LineBreak'].includes(role)
-        ? { frameId: frame.id, loaderId: frame.loaderId, backendNodeId: node.backendDOMNodeId }
-        : undefined
-      const identity = JSON.stringify(target)
-      if (
-        truncated &&
-        !node.ignored &&
-        target &&
-        ((landmark && !inLandmark) || (role === 'heading' && Number(properties.get('level') ?? 1) <= 3))
-      ) {
-        const ref = rendered.get(identity) ?? store.handle(tabId, target)
-        const entry = `  [${ref}] ${role} ${quoted(name.length > 60 ? name.slice(0, 60) + '…' : name)}`
-        if (outlineChars + entry.length + 1 > outlineBudget) {
-          outlineFull = true
-          return
-        }
-        outline.push(entry)
-        outlineChars += entry.length + 1
-        refs.set(ref, target)
-        rendered.set(identity, ref)
-      }
-      if (show && !truncated) {
+      const show = shouldShowNode(node, role, rawName, name, echo, options, refs.size)
+      const landmark = isLandmarkNode(role, name)
+      if (show) {
+        const hasTarget = Boolean(node.backendDOMNodeId && !UNREF_ROLES.has(role))
+        const target = hasTarget
+          ? { frameId: frame.id, loaderId: frame.loaderId, backendNodeId: node.backendDOMNodeId! }
+          : undefined
+        const identity = hasTarget ? `${frame.id}\0${frame.loaderId}\0${node.backendDOMNodeId}` : ''
         const ref = target ? rendered.get(identity) ?? store.handle(tabId, target) : undefined
-        let line = `${prefix}${'  '.repeat(depth + 1)}${ref ? `[${ref}] ` : ''}${role} ${quoted(name)}`
-        if (node.value?.value !== undefined && !properties.get('protected')) {
-          const value = String(node.value.value)
-          line += ` value=${quoted(value.length > 500 ? value.slice(0, 500) + '…' : value)}`
-          if (value.length > 500) line += ' valueTruncated=true'
-        }
-        for (const [key, value] of properties) {
-          if (
-            STATES.has(key) &&
-            !(value === false && ['readonly', 'required', 'disabled'].includes(key))
-          )
-            line += ` ${key}=${quoted(value)}`
-        }
+        const line = formatAXLine(node, prefix, depth, ref, role, name)
         const placed = appendNode(line + '\n')
         // The node that did not fit is the first unread one: offer it as a section.
         if (placed === 'full') {
@@ -287,15 +375,23 @@ export function renderSnapshot(
           rendered.set(identity, ref)
         }
       }
-      if (properties.get('protected') || NATIVE_COMPOSITES.has(role)) return
-      for (const child of node.childIds ?? []) {
-        const next = nodes.get(child)
-        if (next) walk(next, depth + (show ? 1 : 0), inLandmark || landmark, show ? name : echo)
+      if (axProp(node, 'protected') || NATIVE_COMPOSITES.has(role)) return
+      const kids = node.childIds
+      if (kids) {
+        const nextDepth = depth + (show ? 1 : 0)
+        const nextInLandmark = inLandmark || landmark
+        const nextEcho = show ? name : echo
+        for (let i = 0; i < kids.length; i++) {
+          const next = nodes.get(kids[i]!)
+          if (next) walk(next, nextDepth, nextInLandmark, nextEcho)
+        }
       }
     }
     // AX node IDs are local to a document/target, not globally unique.
-    const childIds = new Set(frame.nodes.flatMap((n) => n.childIds ?? []))
-    for (const node of frame.nodes) if (!childIds.has(node.nodeId)) walk(node, 0, false)
+    for (let i = 0; i < frame.nodes.length; i++) {
+      const node = frame.nodes[i]!
+      if (!childIds.has(node.nodeId)) walk(node, 0, false)
+    }
     for (const child of frames) if (child.parentId === frame.id) renderFrame(child, frameDepth + 1)
   }
   for (const frame of frames)

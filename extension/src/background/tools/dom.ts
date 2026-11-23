@@ -189,8 +189,8 @@ async function evaluateInPage(
   const world = frame === undefined ? undefined : await sendToFrame<{ executionContextId: number }>(tabId, frame, 'Page.createIsolatedWorld', { frameId, worldName: 'bro', grantUniveralAccess: false })
   const contextId = world?.executionContextId
   const send = <T>(method: string, params: object): Promise<T> => (frame === undefined
-    ? cdpSession.send<T>(tabId, method, params)
-    : sendToFrame<T>(tabId, frame, method, params)
+    ? cdpSession.send<T>(tabId, method, params, CDP_COMMAND_TIMEOUT_MS)
+    : sendToFrame<T>(tabId, frame, method, params, CDP_COMMAND_TIMEOUT_MS)
   ).catch(async (error: unknown) => {
     if (!(error instanceof CdpCommandTimeout)) throw error
     const stalled = await stalledState(tabId)

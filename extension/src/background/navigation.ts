@@ -86,9 +86,8 @@ async function navigateWithDebugger(tabId: number, url: string): Promise<string>
     const { frameTree } = await cdpSession.send<{ frameTree: { frame: MainFrame } }>(tabId, 'Page.getFrameTree')
     if (settled) return
     const initial = frameTree.frame
-    // Answered at commit, after the network: the readiness timer below bounds
-    // it, and a slow commit must not detach the session.
-    const result = await cdpSession.send<NavigationResult>(tabId, 'Page.navigate', { url }, 'caller')
+    // Answered at commit, after the network: the readiness timer below bounds it.
+    const result = await cdpSession.send<NavigationResult>(tabId, 'Page.navigate', { url })
     if (settled) return
     if (result.errorText || result.isDownload) throw new Error(result.errorText ?? 'Navigation started a download, not a ready document')
     // A loader-less response preserves the *existing* document, not whichever

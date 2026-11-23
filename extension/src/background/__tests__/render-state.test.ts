@@ -29,45 +29,43 @@ beforeEach(() => {
 describe('render state', () => {
   it('judges a live tab by what its document was rendered for, not by tab.active', async () => {
     const { renderState } = await import('../render-state.js')
-    expect(await renderState(5, 'session')).toBe('painting')
+    expect(await renderState(5)).toBe('painting')
     // An active tab in an occluded window: Chrome hides it and draws nothing.
     visibility = 'hidden'
-    expect(await renderState(5, 'session')).toBe('hidden')
+    expect(await renderState(5)).toBe('hidden')
     tab = { ...tab, active: false }
-    expect(await renderState(5, 'session')).toBe('hidden')
+    expect(await renderState(5)).toBe('hidden')
     visibility = 'visible'
-    expect(await renderState(5, 'session')).toBe('painting')
+    expect(await renderState(5)).toBe('painting')
   })
 
   it('names frozen and discarded tabs without asking the page', async () => {
     const { renderState } = await import('../render-state.js')
     tab = { ...tab, frozen: true }
-    expect(await renderState(5, 'session')).toBe('frozen')
+    expect(await renderState(5)).toBe('frozen')
     tab = { ...tab, frozen: false, discarded: true }
-    expect(await renderState(5, 'session')).toBe('discarded')
+    expect(await renderState(5)).toBe('discarded')
     expect(cdp.send).not.toHaveBeenCalled()
   })
 
-  // Regression: the pump asks every tick; a session-bound read timed out behind
-  // a multi-second AX tree read and detached the tab under the observe.
-  it('bounds every page read as its caller asks', async () => {
+  it('forwards optional timeoutMs to every page read as its caller asks', async () => {
     const { renderState } = await import('../render-state.js')
-    await renderState(5, 'caller')
-    expect(cdp.send.mock.calls.map((call) => call[3])).toEqual(['caller', 'caller', 'caller'])
+    await renderState(5)
+    expect(cdp.send.mock.calls.map((call) => call[3])).toEqual([undefined, undefined, undefined])
     cdp.send.mockClear()
     liveContext = -1
-    await renderState(5, 'session')
-    expect(cdp.send.mock.calls.map((call) => call[3])).toEqual(['session', 'session', 'session', 'session'])
+    await renderState(5, 5000)
+    expect(cdp.send.mock.calls.map((call) => call[3])).toEqual([5000, 5000, 5000, 5000])
   })
 
   it('reads in an isolated world it replaces when navigation destroys it', async () => {
     const { renderState } = await import('../render-state.js')
-    expect(await renderState(5, 'session')).toBe('painting')
-    expect(await renderState(5, 'session')).toBe('painting')
+    expect(await renderState(5)).toBe('painting')
+    expect(await renderState(5)).toBe('painting')
     expect(cdp.send.mock.calls.filter(([, method]) => method === 'Page.createIsolatedWorld')).toHaveLength(1)
     liveContext = -1 // the document navigated
     visibility = 'hidden'
-    expect(await renderState(5, 'session')).toBe('hidden')
+    expect(await renderState(5)).toBe('hidden')
     expect(cdp.send.mock.calls.filter(([, method]) => method === 'Page.createIsolatedWorld')).toHaveLength(2)
   })
 })

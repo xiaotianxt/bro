@@ -1,6 +1,23 @@
 # Changelog
 
-## Unreleased
+## 2.2.0
+
+- Reading a large page's accessibility tree (such as a 20,000-row list) no
+  longer freezes the extension service worker for several seconds or stalls
+  concurrent calls on other tabs. Frames above 3,000 DOM elements are read
+  incrementally in small chunks until `maxChars` is filled, while still scanning
+  trailing landmarks and headings for the truncation outline and supporting
+  scoped `refId` reads and `cursor` pagination without losing sections.
+  `renderSnapshot` also avoids per-node `Map` and `JSON.stringify` allocations.
+- Removed the 5 s session-killing default timeout from CDP commands: a slow
+  command no longer detaches the tab's debugger session. Callers that need a
+  command bound (`Runtime.evaluate`, input dispatch, and input render-state
+  checks) pass an explicit `timeoutMs` without detaching a healthy session.
+- Deferred readiness (`browser.open` with `observe: false`) now stops polling
+  immediately when the tab is discarded or closed instead of waiting out the
+  full 4 s settle window before failing.
+
+## 2.1.0
 
 - `browser.watch` watches a page for a change and reports it without the agent
   polling: text appears or is gone, a pattern matches, an element becomes

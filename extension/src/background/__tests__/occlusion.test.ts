@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({ frames: vi.fn(), send: vi.fn(), input: vi.fn()
 vi.mock('../frames.js', () => ({ getBrowserFrames: mocks.frames, sendToFrame: mocks.send }))
 // render-state.ts owns resuming frozen tabs (tested there); here the page always runs.
 vi.mock('../render-state.js', () => ({ inLivePage: (injection: chrome.scripting.ScriptInjection<unknown[], unknown>) => chrome.scripting.executeScript(injection), sinceResumed: () => Infinity }))
-vi.mock('../cdp.js', () => ({ cdpSession: { send: mocks.input }, CdpSessionClosed: mocks.SessionClosed }))
+vi.mock('../cdp.js', () => ({ CDP_COMMAND_TIMEOUT_MS: 5000, cdpSession: { send: mocks.input }, CdpSessionClosed: mocks.SessionClosed }))
 const order = vi.hoisted(() => [] as string[])
 vi.mock('../input.js', () => ({
   withInput: async (_tab: number, run: (input: unknown) => unknown) =>

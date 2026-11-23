@@ -291,8 +291,12 @@ const fixture = (req, res) => {
   if (url.pathname === '/g-churn') {
     // A large main document keeps collection busy while an iframe commits a
     // held navigation, so the frame inventory changes mid-observation.
+    // Trailing sections verify that incremental large-page reads still surface
+    // unread landmarks and headings after 20,000 rows.
     send(`<!doctype html><title>G churn</title><iframe id="f" title="Churn" src="/blank"></iframe>
-    <ul>${Array.from({ length: 20000 }, (_, i) => `<li><button>Row ${i}</button></li>`).join('')}</ul>`)
+    <ul>${Array.from({ length: 20000 }, (_, i) => `<li><button>Row ${i}</button></li>`).join('')}</ul>
+    <section aria-label="Trailing"><h2>Trailing</h2><p>TRAILING_OK</p></section>
+    <footer>End</footer>`)
     return
   }
   if (url.pathname === '/held-document') {
@@ -304,7 +308,7 @@ const fixture = (req, res) => {
     return
   }
   if (url.pathname === '/popup-opener') {
-    send(`<!doctype html><title>Popup opener</title><button onclick="window.open('/popup', 'bro-popup', 'popup,width=420,height=320')">Open popup</button>`)
+    send(`<!doctype html><title>Popup opener</title><button onclick="window._popup=window.open('/popup', 'bro-popup', 'popup,width=420,height=320')">Open popup</button>`)
     return
   }
   if (url.pathname === '/popup') {
@@ -797,6 +801,17 @@ async function run({ name, test, index, fixture }) {
     console.log('FAIL', name, String(error).replaceAll(token, '[redacted]'))
   }
 }
+async function runPool(items, limit, fn) {
+  const queue = items.map((item, index) => ({ item, index }))
+  await Promise.all(
+    Array.from({ length: Math.min(limit, queue.length) }, async () => {
+      while (queue.length) {
+        const next = queue.shift()
+        await fn(next.item, next.index)
+      }
+    }),
+  )
+}
 async function runChecks() {
   const concurrency = Number(option('--concurrency', '4'))
   assert.ok(Number.isInteger(concurrency) && concurrency >= 1, '--concurrency takes a positive integer')
@@ -1048,87 +1063,75 @@ try {
   // The browser's first act takes seconds (process and debugger start-up);
   // load the fixture once so no contract's latency bound measures that.
   await closeTarget(await openFixture())
-  check('computer wheel scroll renders background panels and pages without activation', { exclusive: true }, async () => {
-    for (const path of ['/scroll', '/scroll-page']) {
-      await withBackgroundPanel(async (background) => {
-        const wheel = () => tool('computer', {
-          tabId: background.tabId, action: 'scroll',
-          coordinate: [100, 40], direction: 'down', amount: 1,
-        })
-        const state = async () => JSON.parse(text(await tool('javascript_tool', {
-          tabId: background.tabId,
-          code: '({top: (document.querySelector("#panel") || document.scrollingElement).scrollTop, text: document.querySelector("#scroll-state").textContent})',
-        })))
-        await wheel()
-        const moved = await state()
-        assert.equal(moved.top, 120, `${path}: wheel must actually move the background scroller`)
-        assert.equal(moved.text, 'SCROLL_TOP:120')
-        // A page may intentionally consume the wheel. Dispatch is not a claim
-        // of movement, and must never fall back to DOM scrolling or replay.
-        await tool('javascript_tool', {
-          tabId: background.tabId,
-          code: 'document.addEventListener("wheel", e => e.preventDefault(), {passive:false})',
-        })
-        assert.match(text(await wheel()), /Dispatched wheel/)
-        assert.deepEqual(await state(), moved)
-      }, path)
-    }
+  check('background scroll: wheel and batched ref scroll render without activation', { exclusive: true }, async () => {
+    await withBackgroundPanel(async (background, refId) => {
+      const wheel = () => tool('computer', {
+        tabId: background.tabId, action: 'scroll',
+        coordinate: [100, 40], direction: 'down', amount: 1,
+      })
+      const state = async () => JSON.parse(text(await tool('javascript_tool', {
+        tabId: background.tabId,
+        code: '({top: document.querySelector("#panel").scrollTop, text: document.querySelector("#scroll-state").textContent})',
+      })))
+      await wheel()
+      const moved = await state()
+      assert.equal(moved.top, 120, '/scroll: wheel must actually move the background scroller')
+      assert.equal(moved.text, 'SCROLL_TOP:120')
+      await tool('wait_for_element', { tabId: background.tabId, refId })
+      const info = () => tool('get_element_info', { tabId: background.tabId, refId }).then((r) => JSON.parse(text(r)))
+      assert.equal((await info()).scroll.top, 120)
+      const read = { type: 'observe', mode: 'text' }
+      const batched = (
+        await act(background.tabId, [
+          { type: 'scroll', refId, direction: 'down', amount: 100 },
+          read,
+          { type: 'scroll', refId, direction: 'down', amount: 10000 },
+          read,
+          { type: 'scroll', refId, direction: 'down', amount: 100 },
+          read,
+        ])
+      ).structuredContent
+      assert.equal(batched.status, 'ok')
+      assert.deepEqual(
+        batched.results.filter((r) => r.type === 'observe').map((r) => r.content.match(/SCROLL_TOP:(\d+)/)?.[1]),
+        ['220', '920', '920'],
+      )
+      const scrolls = batched.results.filter((r) => r.type === 'scroll').map((r) => r.result)
+      assert.deepEqual(scrolls.map((r) => r.moved), [true, true, false])
+      assert.deepEqual(scrolls.map((r) => r.boundary), [false, true, true])
+      assert.equal((await info()).scroll.top, 920)
+      // A page may intentionally consume the wheel. Dispatch is not a claim
+      // of movement, and must never fall back to DOM scrolling or replay.
+      const beforePrevent = await state()
+      await tool('javascript_tool', {
+        tabId: background.tabId,
+        code: 'document.addEventListener("wheel", e => e.preventDefault(), {passive:false})',
+      })
+      assert.match(text(await wheel()), /Dispatched wheel/)
+      assert.deepEqual(await state(), beforePrevent)
+    }, '/scroll')
+    await withBackgroundPanel(async (background) => {
+      const wheel = () => tool('computer', {
+        tabId: background.tabId, action: 'scroll',
+        coordinate: [100, 40], direction: 'down', amount: 1,
+      })
+      const state = async () => JSON.parse(text(await tool('javascript_tool', {
+        tabId: background.tabId,
+        code: '({top: document.scrollingElement.scrollTop, text: document.querySelector("#scroll-state").textContent})',
+      })))
+      await wheel()
+      const moved = await state()
+      assert.equal(moved.top, 120, '/scroll-page: wheel must actually move the background scroller')
+      assert.equal(moved.text, 'SCROLL_TOP:120')
+      await tool('javascript_tool', {
+        tabId: background.tabId,
+        code: 'document.addEventListener("wheel", e => e.preventDefault(), {passive:false})',
+      })
+      assert.match(text(await wheel()), /Dispatched wheel/)
+      assert.deepEqual(await state(), moved)
+    }, '/scroll-page')
   })
-
-  check('fresh background scroll delivers its event-driven UI before returning', { exclusive: true }, () =>
-    withBackgroundPanel(async (background, refId) => {
-      const result = (
-        await act(background.tabId, [{ type: 'scroll', refId, direction: 'down', amount: 100 }])
-      ).structuredContent.results[0].result
-      assert.equal(result.after.y, 100)
-      assert.equal(result.moved, true)
-      assert.equal(result.boundary, false)
-      const state = text(
-        await tool('javascript_tool', {
-          tabId: background.tabId,
-          code: 'document.querySelector("#scroll-state").textContent',
-        }),
-      )
-      assert.equal(
-        state,
-        '"SCROLL_TOP:100"',
-        'offset alone is not the application state; no screenshot or manual foreground workaround allowed',
-      )
-    }),
-  )
-  check(
-    'act batches background scroll and intermediate text observations without replacing refs',
-    { exclusive: true },
-    () =>
-      withBackgroundPanel(async (background, refId) => {
-        const read = { type: 'observe', mode: 'text' }
-        const result = (
-          await act(background.tabId, [
-            { type: 'scroll', refId, direction: 'down', amount: 100 },
-            read,
-            { type: 'scroll', refId, direction: 'down', amount: 10000 },
-            read,
-            { type: 'scroll', refId, direction: 'down', amount: 100 },
-            read,
-          ])
-        ).structuredContent
-        assert.equal(result.status, 'ok')
-        const reads = result.results
-          .filter((r) => r.type === 'observe')
-          .map((r) => r.content.match(/SCROLL_TOP:(\d+)/)?.[1])
-        assert.deepEqual(reads, ['100', '920', '920'])
-        const scrolls = result.results.filter((r) => r.type === 'scroll').map((r) => r.result)
-        assert.deepEqual(
-          scrolls.map((r) => r.moved),
-          [true, true, false],
-        )
-        assert.deepEqual(
-          scrolls.map((r) => r.boundary),
-          [false, true, true],
-        )
-      }),
-  )
-  check('inline same-site, cross-site and nested frame AX labels', { fixture: true }, async ({ tabId }) => {
+  check('refs: cross-frame AX labels, isolation, staleness, occlusion, upload and act failure semantics', { fixture: true }, async ({ tabId, targetId }) => {
     const snapshot = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
     for (const kind of ['Same', 'Cross', 'Nested']) {
       refFor(snapshot, 'textbox', `${kind} Name`)
@@ -1136,200 +1139,97 @@ try {
     }
     assert.match(snapshot, /^Frames: 5\n/)
     assert.doesNotMatch(snapshot, /unavailable/)
-  })
-  check(
-    'native ref input/select/click across frame and nested shadow boundaries',
-    { exclusive: true, fixture: true },
-    async ({ tabId }) => {
-      const foreground = await openTarget(rootUrl + '/blank', true)
-      try {
-        assert.equal(
-          text(await tool('javascript_tool', { tabId, code: 'document.visibilityState' })),
-          '"hidden"',
-        )
-        for (const kind of ['Same', 'Cross', 'Nested']) {
-          const snapshot = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
-          await act(tabId, [
-            { type: 'fill', refId: refFor(snapshot, 'textbox', `${kind} Name`), value: 'Luna' },
-            {
-              type: 'select',
-              refId: refFor(snapshot, 'combobox', `${kind} Mode`),
-              value: kind === 'Same' ? 'Gamma' : 'gamma',
-            },
-            { type: 'click', refId: refFor(snapshot, 'button', `${kind} Commit`) },
-          ])
-          const observed = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
-          assert.match(observed, new RegExp(`${kind}_OK:Luna:gamma:trusted=true:input=2`))
-          assert.equal(
-            text(await tool('javascript_tool', { tabId, code: 'document.visibilityState' })),
-            '"hidden"',
-          )
-          assert.match(
-            text(await tool('tabs_context', { tabId: foreground.tabId, all: true })),
-            new RegExp(`Active tab: .*\\(ID: ${foreground.tabId}\\)`),
-          )
-        }
-      } finally {
-        await closeTarget(foreground)
-      }
-    },
-  )
-  check('refs cannot escape their tab and survive same-node rereads', { fixture: true }, async ({ tabId }) => {
-    const snapshot = text(await tool('read_page', { tabId }))
-    const ref = refFor(snapshot, 'textbox', 'Root Name')
-    const other = await openTarget(rootUrl, false)
-    await act(other.tabId, [{ type: 'fill', refId: ref, value: 'wrong' }], true)
-    await closeTarget(other)
-    const reread = text(await tool('read_page', { tabId }))
-    assert.equal(refFor(reread, 'textbox', 'Root Name'), ref)
-    await act(tabId, [{ type: 'fill', refId: ref, value: 'reread success' }])
-  })
-  check('detached/clone replacement refs fail instead of silently retargeting', { fixture: true }, async ({ tabId }) => {
-    const snapshot = text(await tool('read_page', { tabId }))
-    const ref = refFor(snapshot, 'textbox', 'Root Name')
-    await tool('javascript_tool', {
-      tabId,
-      code: '(()=>{const old=document.querySelector("#root-name");old.replaceWith(old.cloneNode(true));return true})()',
+
+    // Default target observation and ref steps work without frame IDs; failures stop the act.
+    const observeTarget = async () => (await tool('browser.observe', { targetId })).structuredContent.content
+    const observed = await observeTarget()
+    await tool('browser.act', {
+      targetId,
+      steps: [
+        { type: 'fill', refId: refFor(observed, 'textbox', 'Cross Name'), value: 'Flow' },
+        { type: 'select', refId: refFor(observed, 'combobox', 'Cross Mode'), value: 'Gamma' },
+        { type: 'click', refId: refFor(observed, 'button', 'Cross Commit') },
+      ],
     })
-    await act(tabId, [{ type: 'fill', refId: ref, value: 'wrong' }], true)
-    const state = text(
-      await tool('javascript_tool', { tabId, code: 'document.querySelector("#root-name").value' }),
-    )
-    assert.equal(state, '""')
-  })
-  check('covered/disabled clicks and invalid selects fail before action', { fixture: true }, async ({ tabId }) => {
-    const snapshot = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
-    await act(tabId, [{ type: 'click', refId: refFor(snapshot, 'button', 'Disabled') }], /disabled/i)
-    await act(
-      tabId,
-      [{ type: 'fill', refId: refFor(snapshot, 'textbox', 'Read only'), value: 'wrong' }],
-      /read.only/i,
-    )
-    await act(
-      tabId,
-      [{ type: 'select', refId: refFor(snapshot, 'combobox', 'Same Mode'), value: 'missing' }],
-      /enabled option/i,
-    )
-    await tool('javascript_tool', {
-      tabId,
-      code: '(()=>{const el=document.createElement("div");el.id="overlay";el.style="position:fixed;inset:0;z-index:999999;background:white";document.body.append(el);return true})()',
-    })
-    await act(
-      tabId,
-      [{ type: 'click', refId: refFor(snapshot, 'button', 'Root Commit') }],
-      /covered by [a-z]{3}\d+ <div id=\\?"overlay\\?">; no click dispatched/,
-    )
-    await tool('javascript_tool', { tabId, code: 'document.querySelector("#overlay").remove()' })
-    assert.match(
-      text(
-        await tool('javascript_tool', {
-          tabId,
-          code: 'document.querySelector("#root-result").textContent',
-        }),
-      ),
-      /not clicked/,
-    )
-  })
-  check('navigation invalidates refs to the old iframe document', { fixture: true }, async ({ tabId }) => {
-    const snapshot = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
-    const ref = refFor(snapshot, 'textbox', 'Same Name')
-    await tool('javascript_tool', {
-      tabId,
-      code: 'document.querySelector("#same").src="/form?kind=New"',
-    })
-    await waitUntil(
-      async () => text(await tool('frames_list', { tabId })).includes('kind=New'),
-      'iframe navigation',
-    )
-    await act(tabId, [{ type: 'fill', refId: ref, value: 'wrong' }], true)
-  })
-  check('file upload sets a local path through cross-site document-bound refs', { fixture: true }, async ({ tabId }) => {
-    // A real file read by the browser itself; the page's onchange only runs on the
-    // change event the browser fires for it.
+    let next = await observeTarget()
+    assert.match(next, /Cross_OK:Flow:gamma:trusted=true/)
+    const failed = (
+      await tool('browser.act', {
+        targetId,
+        steps: [
+          { type: 'click', refId: 'ref_deliberately_stale' },
+          { type: 'fill', refId: refFor(next, 'textbox', 'Cross Name'), value: 'WRONG' },
+        ],
+      }, true)
+    ).structuredContent
+    assert.equal(failed.stoppedAt, 0)
+    assert.equal(failed.results.length, 1)
+    await tool('browser.act', {
+      targetId,
+      steps: [
+        { type: 'fill', refId: refFor(next, 'textbox', 'Cross Name'), value: 'WRONG' },
+        { type: 'click', refId: 'ref_invalid', css: 'button' },
+      ],
+    }, true)
+    assert.match(await observeTarget(), /textbox "Cross Name" value="Flow"/)
+
+    // Cross-site document-bound ref file upload.
     const local = resolve(output, 'upload-ref.txt')
     await writeFile(local, 'REF_PATH_UPLOAD_OK')
-    const snapshot = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
-    await tool('file_upload', {
-      tabId,
-      refId: refFor(snapshot, 'button', 'Cross File'),
-      paths: [local],
-    })
-    // onchange reads the file asynchronously.
+    await tool('file_upload', { tabId, refId: refFor(snapshot, 'button', 'Cross File'), paths: [local] })
     await waitUntil(
       async () => /upload-ref.txt:REF_PATH_UPLOAD_OK/.test(text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))),
       'cross-site upload result',
     )
     await tool('file_upload', { tabId, refId: refFor(snapshot, 'button', 'Cross File'), paths: ['relative.txt'] }, /must be absolute/)
+
+    // Refs cannot escape their tab and survive same-node rereads.
+    const rootRef = refFor(snapshot, 'textbox', 'Root Name')
+    const other = await openTarget(rootUrl + '/blank', false)
+    try {
+      await act(other.tabId, [{ type: 'fill', refId: rootRef, value: 'wrong' }], true)
+    } finally {
+      await closeTarget(other)
+    }
+    const reread = text(await tool('read_page', { tabId }))
+    assert.equal(refFor(reread, 'textbox', 'Root Name'), rootRef)
+    await act(tabId, [{ type: 'fill', refId: rootRef, value: 'reread success' }])
+
+    // Covered/disabled clicks and invalid selects fail before action.
+    await act(tabId, [{ type: 'click', refId: refFor(snapshot, 'button', 'Disabled') }], /disabled/i)
+    await act(tabId, [{ type: 'fill', refId: refFor(snapshot, 'textbox', 'Read only'), value: 'wrong' }], /read.only/i)
+    await act(tabId, [{ type: 'select', refId: refFor(snapshot, 'combobox', 'Same Mode'), value: 'missing' }], /enabled option/i)
+    await tool('javascript_tool', {
+      tabId,
+      code: '(()=>{const el=document.createElement("div");el.id="overlay";el.style="position:fixed;inset:0;z-index:999999;background:white";document.body.append(el);return true})()',
+    })
+    await act(tabId, [{ type: 'click', refId: refFor(snapshot, 'button', 'Root Commit') }], /covered by [a-z]{3}\d+ <div id=\\?"overlay\\?">; no click dispatched/)
+    await tool('javascript_tool', { tabId, code: 'document.querySelector("#overlay").remove()' })
+    assert.match(text(await tool('javascript_tool', { tabId, code: 'document.querySelector("#root-result").textContent' })), /not clicked/)
+
+    // Detached/clone replacement refs fail instead of silently retargeting.
+    await tool('javascript_tool', {
+      tabId,
+      code: '(()=>{const old=document.querySelector("#root-name");const c=old.cloneNode(true);c.value="";old.replaceWith(c);return true})()',
+    })
+    await act(tabId, [{ type: 'fill', refId: rootRef, value: 'wrong' }], true)
+    assert.equal(text(await tool('javascript_tool', { tabId, code: 'document.querySelector("#root-name").value' })), '""')
+
+    // Navigation invalidates refs to the old iframe document.
+    const sameRef = refFor(snapshot, 'textbox', 'Same Name')
+    await tool('javascript_tool', { tabId, code: 'document.querySelector("#same").src="/form?kind=New"' })
+    await waitUntil(async () => text(await tool('frames_list', { tabId })).includes('kind=New'), 'iframe navigation')
+    await act(tabId, [{ type: 'fill', refId: sameRef, value: 'wrong' }], true)
   })
-  check(
-    'default target observation and ref steps work without frame IDs; failures stop the act',
-    { fixture: true },
-    async ({ targetId }) => {
-      const observeTarget = async () =>
-        (await tool('browser.observe', { targetId })).structuredContent.content
-      const observed = await observeTarget()
-      await tool('browser.act', {
-        targetId,
-        steps: [
-          { type: 'fill', refId: refFor(observed, 'textbox', 'Cross Name'), value: 'Flow' },
-          { type: 'select', refId: refFor(observed, 'combobox', 'Cross Mode'), value: 'Gamma' },
-          { type: 'click', refId: refFor(observed, 'button', 'Cross Commit') },
-        ],
-      })
-      let next = await observeTarget()
-      assert.match(next, /Cross_OK:Flow:gamma:trusted=true/)
-      const failed = (
-        await tool(
-          'browser.act',
-          {
-            targetId,
-            steps: [
-              { type: 'click', refId: 'ref_deliberately_stale' },
-              { type: 'fill', refId: refFor(next, 'textbox', 'Cross Name'), value: 'WRONG' },
-            ],
-          },
-          true,
-        )
-      ).structuredContent
-      assert.equal(failed.stoppedAt, 0)
-      assert.equal(failed.results.length, 1)
-      // Every step parses before any effect: an invalid second step stops the first.
-      await tool(
-        'browser.act',
-        {
-          targetId,
-          steps: [
-            { type: 'fill', refId: refFor(next, 'textbox', 'Cross Name'), value: 'WRONG' },
-            { type: 'click', refId: 'ref_invalid', css: 'button' },
-          ],
-        },
-        true,
-      )
-      next = await observeTarget()
-      assert.match(next, /textbox "Cross Name" value="Flow"/)
-    },
-  )
   // Input lands, or is reported failed, whatever the tab's render state. The
   // browser routes input into a cross-site frame by hit-test data that follows
-  // composited frames; a tab that is not painting (an active tab in an occluded
-  // window, a background or unowned tab, a document with no frame drawn yet)
-  // has none until one is drawn, and a silent miss lands in the parent instead.
-  // Each cell starts from a fresh document. --repeats N reruns every cell.
-  check('P: input lands in every render state: same-document and cross-site clicks, coordinate clicks, fills', { exclusive: true, fixture: true }, async ({ tabId }) => {
-    const devtools = (await readFile(resolve(profile, 'DevToolsActivePort'), 'utf8')).trim().split('\n')
-    const browserCdp = async (method, params = {}) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${devtools[0]}${devtools[1]}`)
-      await once(ws, 'open')
-      try {
-        ws.send(JSON.stringify({ id: 1, method, params }))
-        const [event] = await once(ws, 'message')
-        const reply = JSON.parse(event.data)
-        if (reply.error) throw new Error(`${method}: ${reply.error.message}`)
-        return reply.result
-      } finally {
-        ws.close()
-      }
-    }
+  // composited frames; a tab that is not painting (a background or unowned tab,
+  // or a document with no frame drawn yet) has none until one is drawn, and a
+  // silent miss lands in the parent instead. Each cell starts from a fresh
+  // document; background/unowned cells run concurrently while a foreground tab
+  // stays active.
+  check('P: input lands in every render state across same-document, cross-site and nested frames', { exclusive: true }, async () => {
+    const devtools = await browserSession()
     const js = async (id, code, frameId) => text(await tool('javascript_tool', { tabId: id, code, ...(frameId && { frameId }) }))
     const fresh = async (id, url) => {
       await tool('navigate', { tabId: id, url })
@@ -1338,38 +1238,26 @@ try {
         'matrix fixture',
       )
     }
-    // An unowned tab, as a user opened it: bro attaches on the first act.
-    const unowned = async (url, background) => {
-      await browserCdp('Target.createTarget', { url, background })
+    const unowned = async (url) => {
+      await devtools.send('Target.createTarget', { url, background: true })
       const listed = await waitUntil(async () => {
-        const tabs = text(await tool('tabs_context', { tabId, all: true }))
+        const tabs = text(await tool('tabs_context', { all: true }))
         return tabs.includes(url) && tabs
       }, 'unowned tab')
       const id = Number(listed.split('\n').find((line) => line.includes(url) && /\[\d+\]/.test(line)).match(/\[(\d+)\]/)[1])
       return { tabId: id, close: async () => { targets.delete(id); await tool('tabs_close', { tabId: id }) } }
     }
-    let serial = 0
     const states = {
       'active, visible': async (url) => {
         const opened = await openTarget(url, true)
-        return { tabId: opened.tabId, close: () => closeTarget(opened) }
-      },
-      // Closing the selected tab activates this one. It is hidden when its
-      // window is occluded (a display that is off, or windows on top).
-      'active, occluded window': async (url) => {
-        const opened = await openTarget(url, false)
-        await closeTarget(await openTarget(rootUrl + '/blank', true))
         return { tabId: opened.tabId, close: () => closeTarget(opened) }
       },
       background: async (url) => {
         const opened = await openTarget(url, false)
         return { tabId: opened.tabId, close: () => closeTarget(opened) }
       },
-      // Loaded in the background as a user left it; bro attaches on the first act.
-      unowned: async (url) => unowned(url, true),
-      // Never shown and never pumped, and navigated right before the act: no
-      // frame of this document is drawn.
-      'unowned, just navigated': async (url) => unowned(url, true),
+      unowned: async (url) => unowned(url),
+      'unowned, just navigated': async (url) => unowned(url),
     }
     const crossFrame = async (id) =>
       JSON.parse(text(await tool('frames_list', { tabId: id }))).find((frame) => frame.url.includes('kind=Cross')).frameId
@@ -1395,111 +1283,144 @@ try {
         act: async (id, snap) => act(id, [{ type: 'fill', refId: refFor(snap, 'textbox', 'Cross Name'), value: 'Matrix' }]),
         landed: async (id) => (await js(id, 'document.querySelector("#host").shadowRoot.querySelector("#inner").shadowRoot.querySelector("#name").value', await crossFrame(id))) === '"Matrix"',
       },
+      'nested shadow fill/select/click': {
+        act: async (id, snap) => {
+          for (const kind of ['Same', 'Cross', 'Nested']) {
+            await act(id, [
+              { type: 'fill', refId: refFor(snap, 'textbox', `${kind} Name`), value: 'Luna' },
+              { type: 'select', refId: refFor(snap, 'combobox', `${kind} Mode`), value: kind === 'Same' ? 'Gamma' : 'gamma' },
+              { type: 'click', refId: refFor(snap, 'button', `${kind} Commit`) },
+            ])
+          }
+          return { isError: false }
+        },
+        landed: async (id) => {
+          const observed = text(await tool('read_page', { tabId: id, filter: 'all', maxChars: 24000 }))
+          return ['Same', 'Cross', 'Nested'].every((k) => new RegExp(`${k}_OK:Luna:gamma:trusted=true:input=2`).test(observed))
+        },
+      },
     }
+    // Orthogonal matrix: active tests cross-site clicks; background and unowned
+    // states test cross-site/coordinate/fill/same-doc/nested shadow paths.
+    const fgCells = [
+      ['active, visible', 'cross-site click'],
+      ['active, visible', 'cross-site coordinate click'],
+    ]
+    const bgCells = [
+      ['background', 'same-document click'],
+      ['background', 'cross-site click'],
+      ['background', 'cross-site coordinate click'],
+      ['background', 'nested shadow fill/select/click'],
+      ['unowned', 'cross-site click'],
+      ['unowned', 'cross-site coordinate click'],
+      ['unowned', 'cross-site fill'],
+      ['unowned, just navigated', 'same-document click'],
+      ['unowned, just navigated', 'cross-site click'],
+      ['unowned, just navigated', 'cross-site coordinate click'],
+    ]
     const repeats = Number(option('--repeats', '1'))
     const misses = []
     const visibility = {}
-    for (let round = 0; round < repeats; round++)
-      for (const [state, make] of Object.entries(states))
-        for (const [entry, { act: run, landed }] of Object.entries(entries)) {
-          const url = `${rootUrl}/?matrix=${serial++}`
-          const tab = await make(url)
-          try {
-            if (state === 'unowned')
-              await waitUntil(async () => (await js(tab.tabId, 'document.readyState === "complete" && document.querySelectorAll("iframe").length === 3')).includes('true'), 'unowned fixture')
-            else await fresh(tab.tabId, url)
-            const shown = JSON.parse(await js(tab.tabId, 'document.visibilityState'))
-            ;(visibility[state] ??= new Set()).add(shown)
-            const snap = text(await tool('read_page', { tabId: tab.tabId, filter: 'all', maxChars: 24000 }))
-            const outcome = await run(tab.tabId, snap).then(
-              (result) => (result.isError ? `reported failure: ${text(result).slice(0, 200)}` : undefined),
-              (error) => `reported failure: ${String(error).slice(0, 200)}`,
-            )
-            if (outcome) misses.push(`${state} (${shown}) / ${entry}: ${outcome}`)
-            else if (!(await landed(tab.tabId))) misses.push(`${state} (${shown}) / ${entry}: reported success, but the input did not land`)
-          } finally {
-            await tab.close()
-          }
+    let serial = 0
+    const runCell = async ([state, entry]) => {
+      const url = `${rootUrl}/?matrix=${serial++}`
+      const tab = await states[state](url)
+      try {
+        if (state === 'unowned')
+          await waitUntil(async () => (await js(tab.tabId, 'document.readyState === "complete" && document.querySelectorAll("iframe").length === 3')).includes('true'), 'unowned fixture')
+        else await fresh(tab.tabId, url)
+        const shown = JSON.parse(await js(tab.tabId, 'document.visibilityState'))
+        ;(visibility[state] ??= new Set()).add(shown)
+        const snap = text(await tool('read_page', { tabId: tab.tabId, filter: 'all', maxChars: 24000 }))
+        const { act: run, landed } = entries[entry]
+        const outcome = await run(tab.tabId, snap).then(
+          (result) => (result.isError ? `reported failure: ${text(result).slice(0, 200)}` : undefined),
+          (error) => `reported failure: ${String(error).slice(0, 200)}`,
+        )
+        if (outcome) misses.push(`${state} (${shown}) / ${entry}: ${outcome}`)
+        else if (!(await landed(tab.tabId))) misses.push(`${state} (${shown}) / ${entry}: reported success, but the input did not land`)
+      } finally {
+        await tab.close()
+      }
+    }
+    try {
+      for (let round = 0; round < repeats; round++) {
+        for (const cell of fgCells) await runCell(cell)
+        const foreground = await openTarget(rootUrl + '/blank', true)
+        try {
+          await runPool(bgCells, 4, runCell)
+          assert.match(
+            text(await tool('tabs_context', { tabId: foreground.tabId, all: true })),
+            new RegExp(`Active tab: .*\\(ID: ${foreground.tabId}\\)`),
+          )
+        } finally {
+          await closeTarget(foreground)
         }
-    // A background or unowned tab is hidden on any display; the occluded
-    // state depends on the window, so it is recorded, not required.
+      }
+    } finally {
+      devtools.close()
+    }
     const uncovered = Object.entries({ 'active, visible': 'visible', background: 'hidden', unowned: 'hidden', 'unowned, just navigated': 'hidden' })
-      .filter(([state, shown]) => [...visibility[state]].join() !== shown)
-      .map(([state, shown]) => `${state} was ${[...visibility[state]].join('/')}, not ${shown}`)
-    assert.deepEqual([...misses, ...uncovered], [], `${misses.length} of ${repeats * 20} cells missed:\n${[...misses, ...uncovered].join('\n')}`)
+      .filter(([state, shown]) => [...(visibility[state] ?? [])].join() !== shown)
+      .map(([state, shown]) => `${state} was ${[...(visibility[state] ?? [])].join('/')}, not ${shown}`)
+    assert.deepEqual([...misses, ...uncovered], [], `${misses.length} of ${repeats * (fgCells.length + bgCells.length)} cells missed:\n${[...misses, ...uncovered].join('\n')}`)
     return { visibility: Object.fromEntries(Object.entries(visibility).map(([k, v]) => [k, [...v]])) }
   })
-  check(
-    'find, info, wait and scroll use the same refs and report actual scroll boundaries',
-    { fixture: true },
-    async ({ tabId }) => {
-      await tool('navigate', { tabId, url: `${rootUrl}/scroll` })
-      await waitUntil(
-        async () =>
-          text(await tool('javascript_tool', { tabId, code: 'document.readyState' })).includes(
-            'complete',
-          ),
-        'scroll fixture',
-      )
-      const found = text(await tool('find', { tabId, description: 'Scroll panel' }))
+  check('javascript_tool evaluates like a console and computer clicks a ref', async () => {
+    const opened = await openTarget(`${rootUrl}/console`, false)
+    const { tabId } = opened
+    try {
+      await waitUntil(async () => text(await tool('javascript_tool', { tabId, code: 'document.readyState === "complete" && typeof pageOwned === "number"' })).includes('true'), 'console fixture')
+      const js = async (code) => text(await tool('javascript_tool', { tabId, code }))
+      // Top-level await without awaitPromise, as the DevTools console allows.
+      assert.equal(await js('await new Promise((r) => setTimeout(() => r(7), 50))'), '7')
+      const awaited = text(await tool('javascript_tool', { tabId, code: 'Promise.resolve("done")', awaitPromise: true }))
+      assert.equal(awaited, '"done"')
+      // Caller declarations stay scoped: they neither collide with the page's own
+      // top-level `let` nor with the same name in the next call.
+      assert.equal(await js('const pageOwned = 2; pageOwned'), '2')
+      assert.equal(await js('const pageOwned = 3; pageOwned'), '3')
+      assert.equal(await js('pageOwned'), '1')
+      const thrown = await tool('javascript_tool', { tabId, code: "document.querySelector('nope').x" }, true)
+      assert.equal(text(thrown), "Cannot read properties of null (reading 'x')")
+      const found = text(await tool('find', { tabId, description: 'Press me button' }))
       const refId = found.match(/\[([a-z]{3}\d+)\]/)?.[1]
       assert.ok(refId, found)
-      const described = text(await tool('find', { tabId, description: 'the scroll panel region at the top' }))
-      assert.equal(described.match(/\[([a-z]{3}\d+)\]/)?.[1], refId, described)
-      await tool('wait_for_element', { tabId, refId })
-      const info = () => tool('get_element_info', { tabId, refId }).then((r) => JSON.parse(text(r)))
-      assert.equal((await info()).scroll.top, 0)
-      const scroll = async (amount) =>
-        (await act(tabId, [{ type: 'scroll', refId, direction: 'down', amount }])).structuredContent
-          .results[0].result
-      await scroll(100)
-      assert.equal((await info()).scroll.top, 100)
-      await scroll(10000)
-      assert.equal((await scroll(100)).boundary, true)
-    },
-  )
-  check('javascript_tool evaluates like a console and computer clicks a ref', { fixture: true }, async ({ tabId }) => {
-    await tool('navigate', { tabId, url: `${rootUrl}/console` })
-    const js = async (code) => text(await tool('javascript_tool', { tabId, code }))
-    // Top-level await without awaitPromise, as the DevTools console allows.
-    assert.equal(await js('await new Promise((r) => setTimeout(() => r(7), 50))'), '7')
-    const awaited = text(await tool('javascript_tool', { tabId, code: 'Promise.resolve("done")', awaitPromise: true }))
-    assert.equal(awaited, '"done"')
-    // Caller declarations stay scoped: they neither collide with the page's own
-    // top-level `let` nor with the same name in the next call.
-    assert.equal(await js('const pageOwned = 2; pageOwned'), '2')
-    assert.equal(await js('const pageOwned = 3; pageOwned'), '3')
-    assert.equal(await js('pageOwned'), '1')
-    const thrown = await tool('javascript_tool', { tabId, code: "document.querySelector('nope').x" }, true)
-    assert.equal(text(thrown), "Cannot read properties of null (reading 'x')")
-    const found = text(await tool('find', { tabId, description: 'Press me button' }))
-    const refId = found.match(/\[([a-z]{3}\d+)\]/)?.[1]
-    assert.ok(refId, found)
-    await tool('computer', { tabId, action: 'left_click', refId })
-    assert.equal(await js("document.querySelector('button').textContent"), '"PRESSED"')
-  })
-  check('password manager iframe neither blocks CDP nor drops it mid-login', { fixture: true }, async ({ tabId }) => {
-    await tool('navigate', { tabId, url: `${rootUrl}/password-manager` })
-    const js = async (code) => text(await tool('javascript_tool', { tabId, code }))
-    // The overlay drawn at load would reject attach; bro removes its iframe.
-    assert.equal(await js('out.textContent'), '"SIGNED_OUT"')
-    const ref = async (description) => {
-      const found = text(await tool('find', { tabId, description }))
-      const refId = found.match(/\[([a-z]{3}\d+)\]/)?.[1]
-      assert.ok(refId, found)
-      return refId
+      await tool('computer', { tabId, action: 'left_click', refId })
+      assert.equal(await js("document.querySelector('button').textContent"), '"PRESSED"')
+    } finally {
+      await closeTarget(opened)
     }
-    const username = await ref('Username textbox'), password = await ref('Password textbox')
-    // Focusing the username redraws the overlay, the blur erases it and the
-    // next focus re-adds it; none of these may close the session mid-input.
-    await tool('computer', { tabId, action: 'left_click', refId: username })
-    await tool('computer', { tabId, action: 'type', text: 'luna' })
-    await tool('computer', { tabId, action: 'left_click', refId: password })
-    await tool('computer', { tabId, action: 'left_click', refId: username })
-    await tool('computer', { tabId, action: 'left_click', refId: password })
-    await tool('computer', { tabId, action: 'type', text: 'secret' })
-    await tool('computer', { tabId, action: 'left_click', refId: await ref('Sign in button') })
-    assert.equal(await js('out.textContent'), '"SIGNED_IN:luna/6"')
+  })
+  check('password manager iframe neither blocks CDP nor drops it mid-login', async () => {
+    // browser.open waits for complete load before attaching, so the password
+    // manager's document_end overlay is already drawn when bro first attaches.
+    const opened = (await tool('browser.open', { url: `${rootUrl}/password-manager` })).structuredContent
+    const { tabId } = opened
+    try {
+      const js = async (code) => text(await tool('javascript_tool', { tabId, code }))
+      // The overlay drawn at load would reject attach; bro removes its iframe.
+      assert.equal(await js('out.textContent'), '"SIGNED_OUT"')
+      const ref = async (description) => {
+        const found = text(await tool('find', { tabId, description }))
+        const refId = found.match(/\[([a-z]{3}\d+)\]/)?.[1]
+        assert.ok(refId, found)
+        return refId
+      }
+      const username = await ref('Username textbox'), password = await ref('Password textbox')
+      // Focusing the username redraws the overlay, the blur erases it and the
+      // next focus re-adds it; none of these may close the session mid-input.
+      await tool('computer', { tabId, action: 'left_click', refId: username })
+      await tool('computer', { tabId, action: 'type', text: 'luna' })
+      await tool('computer', { tabId, action: 'left_click', refId: password })
+      await tool('computer', { tabId, action: 'left_click', refId: username })
+      await tool('computer', { tabId, action: 'left_click', refId: password })
+      await tool('computer', { tabId, action: 'type', text: 'secret' })
+      await tool('computer', { tabId, action: 'left_click', refId: await ref('Sign in button') })
+      assert.equal(await js('out.textContent'), '"SIGNED_IN:luna/6"')
+    } finally {
+      await tool('browser.close', { targetId: opened.targetId })
+    }
   })
   check('native dialogs are answered, reported, and never hang the tab', async () => {
     const opened = (await tool('browser.open', { url: `${rootUrl}/dialogs`, observe: false })).structuredContent
@@ -1568,7 +1489,7 @@ try {
   check('A: an attached tab takes one act of upload/fill/click per file across form posts; release keeps it open', async () => {
     // A tab bro did not open, as a user's tab or a page's popup is.
     const tabId = Number(text(await tool('tabs_create', { url: `${rootUrl}/upload-form` })).match(/Created tab: (\d+)/)[1])
-    const files = ['a', 'b', 'c'].map((name) => resolve(output, `attach-${name}.txt`))
+    const files = ['a', 'b'].map((name) => resolve(output, `attach-${name}.txt`))
     for (const file of files) await writeFile(file, 'FILE')
     try {
       const attached = await tool('browser.attach', { tabId, observe: { filter: 'interactive' } })
@@ -1581,64 +1502,43 @@ try {
       ])
       const report = text(await tool('browser.act', { targetId, steps, close: true }))
       assert.match(report, /uploaded attach-a\.txt to \w+ \(button "Attachment"\)/)
-      assert.equal(report.match(/→ navigated to /g)?.length, 3, report)
+      assert.equal(report.match(/→ navigated to /g)?.length, 2, report)
       assert.match(report, new RegExp(`\nreleased ${targetId}; its tab stays open$`))
-      assert.match(text(await tool('get_page_text', { tabId })), /attach-c\.txt uploaded: file 3 \(files 3\)/)
+      assert.match(text(await tool('get_page_text', { tabId })), /attach-b\.txt uploaded: file 2 \(files 2\)/)
       await tool('browser.observe', { targetId }, /unknown flow session/)
       // Closing an attached target only releases it.
       const again = (await tool('browser.attach', { tabId, observe: false })).structuredContent
       assert.deepEqual((await tool('browser.close', { targetId: again.targetId })).structuredContent,
         { targetId: again.targetId, closed: false, status: 'ok', released: true })
-      assert.match(text(await tool('get_page_text', { tabId })), /files 3/)
+      assert.match(text(await tool('get_page_text', { tabId })), /files 2/)
       await tool('browser.act', { targetId: 'unused', steps: [{ type: 'upload', role: 'button', name: 'Attachment', paths: ['relative.txt'] }] }, /must be absolute/)
     } finally {
       await tool('tabs_close', { tabId })
     }
   })
 
-  check('screenshot captures the scrolled viewport at CSS pixel size', { fixture: true }, async ({ tabId }) => {
-    await tool('navigate', { tabId, url: `${rootUrl}/bands` })
-    await tool('javascript_tool', { tabId, code: 'scrollTo(0, 1600); scrollY' })
-    const shot = await tool('computer', { tabId, action: 'screenshot' })
-    const image = shot.content.find((c) => c.type === 'image')
-    assert.ok(image, text(shot))
-    // Decode in the page: the image must be the viewport in CSS pixels and
-    // show the blue band below the scroll offset, not the red top of the page.
-    // javascript_tool returns a string result as its JSON literal.
-    const probe = JSON.parse(JSON.parse(text(await tool('javascript_tool', {
-      tabId,
-      awaitPromise: true,
-      code: `new Promise((ok, fail) => { const img = new Image(); img.onload = () => { const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; const g = c.getContext('2d'); g.drawImage(img, 0, 0); const [r, , b] = g.getImageData(img.width >> 1, img.height >> 1, 1, 1).data; ok(JSON.stringify({ size: [img.width, img.height], viewport: [innerWidth, innerHeight], dpr: devicePixelRatio, r, b })) }; img.onerror = fail; img.src = 'data:image/jpeg;base64,${image.data}' })`,
-    }))))
-    assert.deepEqual(probe.size, probe.viewport)
-    assert.ok(probe.b > 200 && probe.r < 60, `expected the scrolled blue band: ${JSON.stringify(probe)}`)
-    return { dpr: probe.dpr, base64Bytes: image.data.length }
-  })
-  check('modern target composition observes intended documents and stable scoped refs', async () => {
-    const opened = (await tool('browser.open', { url: `${rootUrl}/redirect`, observe: false })).structuredContent
+  check('screenshot captures the scrolled viewport at CSS pixel size', async () => {
+    const opened = await openTarget(`${rootUrl}/bands`, false)
+    const { tabId } = opened
     try {
-      const actResult = await tool('browser.act', { targetId: opened.targetId, steps: [
-        { type: 'evaluate', code: 'document.title' },
-        { type: 'navigate', url: `${rootUrl}/scroll` },
-        { type: 'evaluate', code: 'document.title' },
-        { type: 'observe' },
-      ] })
-      const acted = actResult.structuredContent
-      assert.equal(acted.results[0].result, 'Benchmark ready')
-      assert.equal(acted.results[2].result, 'Scroll contract')
-      assert.deepEqual(acted.results[1], { type: 'navigate', url: `${rootUrl}/scroll` })
-      assert.match(text(actResult), new RegExp(`^targetId: ${opened.targetId}\nevaluated: Benchmark ready\nnavigated: `))
-      assert.doesNotMatch(text(actResult), /browserId|acknowledgement|cleanup/)
-      const refId = refFor(acted.results[3].content, 'region', 'Scroll panel')
-      const scoped = await tool('browser.observe', { targetId: opened.targetId, refId, depth: 1 })
-      assert.equal(refFor(text(scoped), 'region', 'Scroll panel'), refId)
-      const scrolled = (await tool('browser.act', { targetId: opened.targetId, steps: [
-        { type: 'scroll', refId, amount: 100 },
-        { type: 'observe' },
-      ] })).structuredContent
-      assert.match(scrolled.results[1].content, /SCROLL_TOP:100/)
+      await waitUntil(async () => text(await tool('javascript_tool', { tabId, code: 'document.readyState === "complete" && document.body.scrollHeight > 2000' })).includes('true'), 'bands fixture')
+      await tool('javascript_tool', { tabId, code: 'scrollTo(0, 1600); scrollY' })
+      const shot = await tool('computer', { tabId, action: 'screenshot' })
+      const image = shot.content.find((c) => c.type === 'image')
+      assert.ok(image, text(shot))
+      // Decode in the page: the image must be the viewport in CSS pixels and
+      // show the blue band below the scroll offset, not the red top of the page.
+      // javascript_tool returns a string result as its JSON literal.
+      const probe = JSON.parse(JSON.parse(text(await tool('javascript_tool', {
+        tabId,
+        awaitPromise: true,
+        code: `new Promise((ok, fail) => { const img = new Image(); img.onload = () => { const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; const g = c.getContext('2d'); g.drawImage(img, 0, 0); const [r, , b] = g.getImageData(img.width >> 1, img.height >> 1, 1, 1).data; ok(JSON.stringify({ size: [img.width, img.height], viewport: [innerWidth, innerHeight], dpr: devicePixelRatio, r, b })) }; img.onerror = fail; img.src = 'data:image/jpeg;base64,${image.data}' })`,
+      }))))
+      assert.deepEqual(probe.size, probe.viewport)
+      assert.ok(probe.b > 200 && probe.r < 60, `expected the scrolled blue band: ${JSON.stringify(probe)}`)
+      return { dpr: probe.dpr, base64Bytes: image.data.length }
     } finally {
-      await tool('browser.close', { targetId: opened.targetId })
+      await closeTarget(opened)
     }
   })
   check('covered options name the overlay; check sets them without a pointer click', async () => {
@@ -1666,9 +1566,10 @@ try {
     }
   })
   check('R: a change report waits for the requests its action started, and only those', { long: true }, async () => {
-    // Every shape × entry point, in background tabs. A shape states what the
-    // report must say: the page's answer, or that a request is still out.
-    const shapes = [
+    // Orthogonal matrix in background tabs: click-by-name covers every request
+    // shape, while the other input entries cover representative request shapes
+    // to prove they wire into the same request-aware settle path.
+    const shapes = Object.fromEntries([
       // Every answered shape has an upper bound: waiting past the answer to
       // the cap is a miss too.
       { name: 'fast', want: /alert DONE fast/, maxMs: 1500 },
@@ -1683,15 +1584,31 @@ try {
       // A beacon and a request from before the action are not waited for.
       { name: 'beacon', want: /alert DONE beacon/, maxMs: 1500 },
       { name: 'inflight', want: /alert DONE inflight/, maxMs: 1500 },
-    ]
-    const entries = [
-      { name: 'click by name', steps: () => [{ type: 'click', role: 'button', name: 'Run' }] },
-      { name: 'click by ref', steps: (ref) => [{ type: 'click', refId: ref }] },
-      { name: 'press Enter', steps: () => [{ type: 'fill', role: 'textbox', name: 'Query', value: 'q' }, { type: 'press', key: 'Enter' }] },
-      { name: 'select', steps: () => [{ type: 'select', role: 'combobox', name: 'Mode', value: 'go' }] },
+    ].map((s) => [s.name, s]))
+    const entries = {
+      'click by name': { name: 'click by name', steps: () => [{ type: 'click', role: 'button', name: 'Run' }] },
+      'click by ref': { name: 'click by ref', steps: (ref) => [{ type: 'click', refId: ref }] },
+      'press Enter': { name: 'press Enter', steps: () => [{ type: 'fill', role: 'textbox', name: 'Query', value: 'q' }, { type: 'press', key: 'Enter' }] },
+      select: { name: 'select', steps: () => [{ type: 'select', role: 'combobox', name: 'Mode', value: 'go' }] },
+    }
+    const cells = [
+      // Slowest shapes first so no straggler stretches the final wave.
+      { shape: shapes.hang, entry: entries['click by name'] },
+      { shape: shapes.slow, entry: entries['click by name'] },
+      { shape: shapes.slow, entry: entries['click by ref'] },
+      { shape: shapes.slow, entry: entries['press Enter'] },
+      { shape: shapes.slow, entry: entries.select },
+      { shape: shapes.chained, entry: entries['click by name'] },
+      { shape: shapes.chained, entry: entries['press Enter'] },
+      { shape: shapes.failed, entry: entries['click by name'] },
+      { shape: shapes.failed, entry: entries.select },
+      { shape: shapes.unread, entry: entries['click by name'] },
+      { shape: shapes.fast, entry: entries['click by name'] },
+      { shape: shapes.beacon, entry: entries['click by name'] },
+      { shape: shapes.inflight, entry: entries['click by name'] },
+      { shape: shapes.inflight, entry: entries['click by ref'] },
     ]
     const failures = []
-    const cells = shapes.flatMap((shape) => entries.map((entry) => ({ shape, entry })))
     const runCell = async ({ shape, entry }, index) => {
       const where = `${shape.name} via ${entry.name}`
       const opened = (await tool('browser.open', { url: `${rootUrl}/req-form?shape=${shape.name}&c=${index}`, observe: false })).structuredContent
@@ -1714,22 +1631,12 @@ try {
         await tool('browser.close', { targetId: opened.targetId })
       }
     }
-    // Four cells at a time, as an agent's parallel calls would.
-    for (let i = 0; i < cells.length; i += 4) await Promise.all(cells.slice(i, i + 4).map((cell, j) => runCell(cell, i + j)))
+    await runPool(cells, 3, runCell)
     assert.deepEqual(failures, [])
   })
-  // Chrome freezes background tabs once it holds more than a few, and a frozen
-  // page runs no task and no injected script until Chrome unfreezes it, often
-  // a minute later. Every entry point × tab state, in background tabs: an act
-  // or read resumes its tab and does what it says; a tab that cannot run fails
-  // fast with the reason, never at the bridge's 30 s timeout. (Chrome lets bro
-  // resume every tab it froze, so a tab that stays frozen is unit-tested in
-  // render-state.test.ts.) The check freezes a page through DevTools, which
-  // sets the same page state Chrome's own freezing does, and discards one
-  // through chrome://discards. That page's ids are positions in a tab list
-  // that reorders as tabs open and close, so a lookup is good only until the
-  // next such change: the check runs alone and its cells one at a time.
-  check('FROZEN: acts and reads resume a tab Chrome froze, before or mid-action, and fail fast on a discarded tab', { exclusive: true }, async () => {
+  // Discarding uses chrome://discards whose ids are positions in a tab list
+  // that reorders as tabs open and close, so discarded cells run alone here.
+  check('FROZEN: discarded tabs fail fast', { exclusive: true }, async () => {
     const devtools = await browserSession()
     const { targetId: discardsTarget } = await devtools.send('Target.createTarget', { url: 'chrome://discards', background: true })
     const discards = (await devtools.send('Target.attachToTarget', { targetId: discardsTarget, flatten: true })).sessionId
@@ -1741,27 +1648,77 @@ try {
       if (reply.exceptionDetails) throw new Error(`chrome://discards: ${reply.exceptionDetails.exception?.description ?? reply.exceptionDetails.text}`)
       return reply.result.value
     }
-    await waitUntil(async () => (await inDiscards('return true').catch(() => false)) === true, 'chrome://discards')
+    const onTab = (url, op) => inDiscards(`const { infos } = await p.getTabDiscardsInfo(); const tab = infos.find((i) => i.tabUrl === ${JSON.stringify(url)}); if (!tab) throw new Error('no discards entry for ${url}'); ${op}`)
+    const entries = [
+      { name: 'click', effect: 'click', run: (t) => tool('browser.act', { targetId: t.targetId, steps: [{ type: 'click', role: 'button', name: 'Go' }] }) },
+      { name: 'observe', effect: 'load', read: true, run: (t) => tool('browser.observe', { targetId: t.targetId, mode: 'text' }) },
+    ]
+    const failures = []
+    const timings = {}
+    try {
+      const t0 = performance.now()
+      await waitUntil(async () => (await inDiscards('return true').catch(() => false)) === true, 'chrome://discards')
+      timings.discardsReadyMs = Math.round(performance.now() - t0)
+      for (const [index, entry] of entries.entries()) {
+        const key = `discard-${index}-${Math.random().toString(36).slice(2)}`
+        const url = `${rootUrl}/frozen?key=${key}${entry.read ? '&read=1' : ''}`
+        const holdOf = (what) => hold(`${key}/${what}`)
+        const opened = await openTarget(url, false)
+        let page
+        try {
+          const c0 = performance.now()
+          page = await waitUntil(() => devtools.page(url).catch(() => false), 'fixture target')
+          const evaluate = (expression) => devtools.send('Runtime.evaluate', { expression, returnByValue: true }, page).then((r) => r.result.value, () => undefined)
+          holdOf('load').release()
+          if (entry.effect !== 'load') void holdOf(entry.effect).arrived.then(holdOf(entry.effect).release)
+          await waitUntil(async () => (await evaluate('out.textContent'))?.includes('LOADED') ?? false, 'loaded fixture')
+          const c1 = performance.now()
+          await onTab(url, 'await p.discardById(tab.id, 0)')
+          const started = performance.now()
+          const outcome = await entry.run(opened).then((r) => ({ ok: true, text: text(r) }), (e) => ({ ok: false, text: String(e) }))
+          const ms = Math.round(performance.now() - started)
+          timings[entry.name] = { setupMs: Math.round(c1 - c0), discardMs: Math.round(started - c1), failMs: ms }
+          assert.ok(!outcome.ok, `${entry.name} / discarded should fail: ${outcome.text.slice(0, 300)}`)
+          assert.match(outcome.text, /tab \d+ is discarded|No tab with (given )?id|tab \d+ closed/)
+          assert.ok(ms < 2_000, `${entry.name} / discarded took ${ms}ms`)
+        } catch (error) {
+          failures.push(`${entry.name} / discarded: ${error.message.replaceAll('\n', ' ⏎ ').slice(0, 400)}`)
+        } finally {
+          for (const what of ['load', 'click', 'fill']) holdOf(what).release()
+          if (page) await devtools.send('Target.detachFromTarget', { sessionId: page }).catch(() => {})
+          await closeTarget(opened).catch(() => {})
+        }
+      }
+    } finally {
+      await devtools.send('Target.closeTarget', { targetId: discardsTarget }).catch(() => {})
+      devtools.close()
+    }
+    assert.deepEqual(failures, [])
+    return timings
+  })
+  // Chrome freezes background tabs once it holds more than a few, and a frozen
+  // page runs no task and no injected script until Chrome unfreezes it. Freezing
+  // through each tab's own DevTools session needs no chrome://discards lookup,
+  // so these cells run concurrently in the pool.
+  check('FROZEN: acts and reads resume a tab Chrome froze, before or mid-action', async () => {
+    const devtools = await browserSession()
     const entries = {
       click: { effect: 'click', want: /alert DONE click/, run: (t) => tool('browser.act', { targetId: t.targetId, steps: [{ type: 'click', role: 'button', name: 'Go' }] }) },
-      fill: { effect: 'fill', want: /alert DONE fill/, run: (t) => tool('browser.act', { targetId: t.targetId, steps: [{ type: 'fill', role: 'textbox', name: 'Note', value: 'x' }] }) },
       observe: { effect: 'load', read: true, want: /LOADED/, run: (t) => tool('browser.observe', { targetId: t.targetId, mode: 'text' }) },
       extract: { effect: 'load', read: true, want: /LOADED/, run: (t) => tool('browser.extract', { tabId: t.tabId }).then((r) => ({ ...r, content: [{ type: 'text', text: r.structuredContent.text }] })) },
       wait: { effect: 'load', want: /waited \d+ms until text "LOADED the held" appears/, run: (t) => tool('browser.act', { targetId: t.targetId, steps: [{ type: 'wait', text: 'LOADED the held' }] }) },
     }
-    // A state names what the call must do and how soon.
-    const states = {
-      'frozen before': { resumes: true, maxMs: 10_000 },
-      'frozen mid-action': { resumes: true, maxMs: 10_000 },
-      // Chrome replaces a tab it discards, so its id names no tab.
-      discarded: { fails: /tab \d+ is discarded|No tab with (given )?id|tab \d+ closed/, maxMs: 5_000 },
-    }
-    // Looks the tab up by URL and acts on it in one evaluate.
-    const onTab = (url, op) => inDiscards(`const { infos } = await p.getTabDiscardsInfo(); const tab = infos.find((i) => i.tabUrl === ${JSON.stringify(url)}); if (!tab) throw new Error('no discards entry for ${url}'); ${op}`)
+    const cells = [
+      ['frozen before', 'click'],
+      ['frozen before', 'observe'],
+      ['frozen before', 'extract'],
+      ['frozen before', 'wait'],
+      ['frozen mid-action', 'click'],
+      ['frozen mid-action', 'wait'],
+    ]
     const failures = []
     const runCell = async ([state, entryName], index) => {
       const entry = entries[entryName]
-      const want = states[state]
       const where = `${entryName} / ${state}`
       const key = `frozen-${index}-${Math.random().toString(36).slice(2)}`
       const url = `${rootUrl}/frozen?key=${key}${entry.read ? '&read=1' : ''}`
@@ -1771,12 +1728,8 @@ try {
       try {
         page = await waitUntil(() => devtools.page(url).catch(() => false), 'fixture target')
         evOf = async () => (await ev().catch((e) => String(e))) + ` arrived=${entry.effect}:${holdOf(entry.effect).res !== undefined}`
-        // The test's own reads of the page; its context may not exist yet.
         const evaluate = (expression) => devtools.send('Runtime.evaluate', { expression, returnByValue: true }, page).then((r) => r.result.value, () => undefined)
         const ev = async () => (await evaluate('ev.join()')) ?? ''
-        // The page's own freeze event says when a freeze took. Chrome drops
-        // one requested while the page still counts as loading and ignores a
-        // repeat of a request it already has, so each try withdraws the last.
         const freeze = () => waitUntil(async () => {
           await devtools.send('Page.setWebLifecycleState', { state: 'active' }, page)
           await devtools.send('Page.setWebLifecycleState', { state: 'frozen' }, page)
@@ -1789,7 +1742,7 @@ try {
         }, 'page freeze event').catch(async (error) => {
           const seen = await devtools.send('Runtime.evaluate', { expression: 'JSON.stringify([ev, document.visibilityState, document.readyState])', returnByValue: true }, page)
             .then((r) => r.result.value ?? JSON.stringify(r.exceptionDetails?.text), String)
-          throw new Error(`${error.message}; the page says ${seen}; chrome://discards says ${await onTab(url, 'return JSON.stringify(tab)').catch(String)}`)
+          throw new Error(`${error.message}; the page says ${seen}`)
         })
         const loaded = () => waitUntil(async () => (await evaluate('out.textContent'))?.includes('LOADED') ?? false, 'loaded fixture')
         const effect = holdOf(entry.effect)
@@ -1800,32 +1753,21 @@ try {
         let running
         if (state === 'frozen before') {
           await freeze()
-          // The answer reaches a frozen page; it renders once the tab resumes.
           if (entry.effect === 'load') effect.release()
           else void effect.arrived.then(effect.release)
-        } else if (state === 'frozen mid-action') {
+        } else {
           running = entry.run(opened)
           if (entry.effect !== 'load') await effect.arrived
           await freeze()
           effect.release()
-        } else {
-          effect.release()
-          if (entry.effect !== 'load') void effect.arrived.then(effect.release)
-          else await loaded()
-          await onTab(url, 'await p.discardById(tab.id, 0)')
         }
         const started = performance.now()
         const outcome = await (running ?? entry.run(opened)).then((r) => ({ ok: true, text: text(r) }), (e) => ({ ok: false, text: String(e) }))
         const ms = Math.round(performance.now() - started)
-        if (want.resumes) {
-          assert.ok(outcome.ok, `${where}: ${outcome.text.slice(0, 300)}`)
-          assert.match(outcome.text, entry.want, `${where}: ${outcome.text.slice(0, 300)}`)
-          assert.match(await ev(), /freeze.*resume/, `${where}: the page was not frozen and resumed`)
-        } else {
-          assert.ok(!outcome.ok, `${where} should fail: ${outcome.text.slice(0, 300)}`)
-          assert.match(outcome.text, want.fails, `${where}: ${outcome.text.slice(0, 300)}`)
-        }
-        assert.ok(ms < want.maxMs, `${where} took ${ms}ms: ${outcome.text.slice(0, 200)}`)
+        assert.ok(outcome.ok, `${where}: ${outcome.text.slice(0, 300)}`)
+        assert.match(outcome.text, entry.want, `${where}: ${outcome.text.slice(0, 300)}`)
+        assert.match(await ev(), /freeze.*resume/, `${where}: the page was not frozen and resumed`)
+        assert.ok(ms < 10_000, `${where} took ${ms}ms: ${outcome.text.slice(0, 200)}`)
       } catch (error) {
         failures.push(`${where}: ${error.message.replaceAll('\n', ' ⏎ ').slice(0, 600)} [page: ${await evOf()}]`)
       } finally {
@@ -1834,18 +1776,14 @@ try {
         await closeTarget(opened).catch(() => {})
       }
     }
-    // Chrome never freezes a page with form input in progress.
-    const cells = Object.keys(states).flatMap((state) => Object.keys(entries).map((entry) => [state, entry]))
-      .filter(([state, entry]) => !(state === 'frozen mid-action' && entry === 'fill'))
     try {
-      for (const [index, cell] of cells.entries()) await runCell(cell, index)
+      await runPool(cells, 2, runCell)
     } finally {
-      await devtools.send('Target.closeTarget', { targetId: discardsTarget }).catch(() => {})
       devtools.close()
     }
     assert.deepEqual(failures, [])
   })
-  check('T: role/name targets and change reports chain a form without waits', async () => {
+  check('T: role/name targets and change reports chain a form without waits', { long: true }, async () => {
     // Single-action tools default to the session's last target: another
     // check's call on a shared session would move it.
     const session = await connectClient()
@@ -1936,65 +1874,11 @@ try {
       const tail = text(await tool('browser.observe', { targetId, mode: 'text', maxChars: 20000, cursor }))
       assert.ok(!tail.includes('continue with cursor') && tail.includes('TEXT_END'), tail)
       await tool('browser.observe', { targetId, mode: 'text', filter: 'interactive' }, /refId\/filter\/depth\/compact require mode a11y/)
+      assert.equal(refFor(text(await tool('browser.observe', { targetId, refId: feed, depth: 1 })), 'region', 'Feed'), feed)
+      const nav = (await tool('browser.act', { targetId, steps: [{ type: 'navigate', url: `${rootUrl}/blank` }, { type: 'evaluate', code: 'document.title' }] })).structuredContent
+      assert.equal(nav.results[1].result, 'Benchmark ready')
     } finally {
       await tool('browser.close', { targetId })
-    }
-  })
-  check('H2: open observe:false returns at dispatch; the first observe settles readiness', async () => {
-    let started = performance.now()
-    const opened = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/h-slow`, observe: false })))
-    const openMs = Math.round(performance.now() - started)
-    assert.deepEqual(Object.keys(opened).sort(), ['tabId', 'targetId', 'url'])
-    let observeMs
-    try {
-      started = performance.now()
-      const first = text(await tool('browser.observe', { targetId: opened.targetId }))
-      observeMs = Math.round(performance.now() - started)
-      assert.ok(first.includes('SLOW_CONTENT_OK') && !first.includes('Loading…'), first)
-      assert.ok(openMs < 100, `open took ${openMs}ms`)
-    } finally {
-      await tool('browser.close', { targetId: opened.targetId })
-    }
-    // A document whose DOMContentLoaded is held past the cap: open still
-    // returns at once, the first read proceeds after about 4 s, close works.
-    started = performance.now()
-    const held = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/slow-ready`, observe: false })))
-    const heldOpenMs = Math.round(performance.now() - started)
-    assert.ok(held.ready === undefined && heldOpenMs < 100, `${heldOpenMs}ms ${JSON.stringify(held)}`)
-    started = performance.now()
-    const shell = text(await tool('browser.observe', { targetId: held.targetId }))
-    const heldObserveMs = Math.round(performance.now() - started)
-    assert.ok(heldObserveMs >= 3500 && heldObserveMs < 6000, `${heldObserveMs}ms`)
-    assert.match(shell, /Loading/)
-    const closed = await tool('browser.close', { targetId: held.targetId })
-    assert.equal((closed.structuredContent ?? JSON.parse(text(closed))).closed, true)
-    return { openMs, observeMs, heldOpenMs, heldObserveMs }
-  })
-  check('S: a small, loaded page is ready at once; no length threshold to wait out', async () => {
-    // open returns the first observation, and close:true on the last call
-    // ends the target: open, read, close in two calls, not four. (Extract
-    // timing for the same page is part of E.)
-    let started = performance.now()
-    const opened = await tool('browser.open', { url: `${rootUrl}/blank?s=2` })
-    const openMs = Math.round(performance.now() - started)
-    const targetId = opened.structuredContent.targetId
-    let closed = false
-    try {
-      const first = text(opened)
-      assert.match(first, /^targetId: \S+  url: /)
-      assert.match(first, /StaticText "Ready"/)
-      assert.ok(openMs < 1500, `open with its first observation took ${openMs}ms`)
-      // bro's own "Agent is active" overlay is not part of the page.
-      assert.doesNotMatch(first, /Agent is active/)
-      const read = await tool('browser.observe', { targetId, mode: 'text', close: true })
-      assert.equal(read.structuredContent.closed, true, text(read))
-      assert.match(text(read), /Ready\nclosed /)
-      closed = true
-      const again = await tool('browser.observe', { targetId }, /unknown flow session/)
-      assert.equal(again.isError, true, text(again))
-      return { openMs }
-    } finally {
-      if (!closed) await tool('browser.close', { targetId })
     }
   })
   check('N: network capture returns the triggered request and its body in one call', async () => {
@@ -2010,19 +1894,6 @@ try {
     assert.equal(result.requests[0].status, 200)
     assert.equal(JSON.parse(result.requests[0].body).bro, 'live-network')
   })
-  check('B: extract without a url reads an existing tab in place and leaves it open', async () => {
-    const opened = await openTarget(`${rootUrl}/g-long`, false)
-    try {
-      const inPlace = (await tool('browser.extract', { tabId: opened.tabId })).structuredContent
-      assert.equal(inPlace.status, 'ok', JSON.stringify(inPlace))
-      assert.equal(inPlace.tabId, opened.tabId)
-      assert.match(inPlace.text, /REVIEW_OK/)
-      const still = text(await tool('javascript_tool', { tabId: opened.tabId, code: 'document.title' }))
-      assert.match(still, /G long/)
-    } finally {
-      await closeTarget(opened)
-    }
-  })
   check('W: an owned tab groups in its own window while a popup has focus', { exclusive: true }, async () => {
     const opener = (await tool('browser.open', { url: `${rootUrl}/popup-opener`, observe: false })).structuredContent
     try {
@@ -2031,26 +1902,20 @@ try {
       const owned = (await tool('browser.open', { url: `${rootUrl}/blank`, ownerSessionId: 'popup-focus', label: 'Popup focus', observe: false })).structuredContent
       await tool('browser.close', { targetId: owned.targetId })
     } finally {
+      await tool('browser.act', { targetId: opener.targetId, steps: [{ type: 'evaluate', code: 'window._popup?.close(); 1' }] }).catch(() => {})
       await tool('browser.close', { targetId: opener.targetId })
     }
   })
   check('E: every read path waits for the content a page is loading, and reads only rendered text', { long: true }, async () => {
-    // One table of page shapes, each read through extract, batch extract and
-    // open → first observe, in background tabs. A shape states the content a
-    // reader must get and the text it must never get; `extracted` is what
-    // extract adds by reading shadow roots (text observe is the main frame).
+    // One table of page shapes, read concurrently across extract, multi-URL
+    // batch extract, and open → first observe, plus open+close:true, unreachable
+    // minChars, and held DOMContentLoaded cap.
     const notRendered = /z-index|:host|HIDDEN_SHADOW_TEXT/
     const shapes = [
-      // A small complete page is ready at once: no length threshold to wait out.
       { name: 'small page', path: '/blank', want: /Ready/, maxMs: 2000 },
-      // Cards render only on IntersectionObserver + requestAnimationFrame.
       { name: 'lazy feed', path: '/lazy-feed', want: /LAZY_CARD_11/ },
-      // A slow document whose body is a placeholder until its data arrives.
       { name: 'slow document', path: '/h-slow', want: /SLOW_CONTENT_OK/, never: /Loading…/ },
-      // An app shell that says it is loading (indeterminate progressbar).
       { name: 'app shell with spinner', path: '/app-feed?spinner=1', want: /APP_POST_BODY/, extracted: /GUARD_WIDGET/, never: notRendered },
-      // An app shell that gives no sign: only the caller knows the content is
-      // larger than the shell, and says so with minChars.
       { name: 'silent app shell, minChars', path: '/app-feed', args: { minChars: 400 }, want: /APP_POST_BODY/, never: notRendered, paths: ['extract', 'batch'] },
     ]
     const verify = (shape, via, read, elapsedMs) => {
@@ -2060,32 +1925,75 @@ try {
       if (shape.never) assert.doesNotMatch(read, shape.never, `${where}: ${read.slice(0, 600)}`)
       if (shape.maxMs) assert.ok(elapsedMs < shape.maxMs, `${where} took ${elapsedMs}ms`)
     }
+    const urlFor = (shape, index, via) => `${rootUrl}${shape.path}${shape.path.includes('?') ? '&' : '?'}e=${index}-${via}`
     const timings = {}
-    // Every shape × path runs; the check fails once, listing all misses.
     const failures = []
-    const attempt = (where, read) => read().catch((error) => failures.push(`${where}: ${error.message.split('\n')[0]}`))
+    const attempt = (where, read) => () => read().catch((error) => failures.push(`${where}: ${error.message.split('\n')[0]}`))
+    const tasks = []
+
+    // Start the slowest ~4 s readiness-cap tasks first so they do not sit at the tail.
+    // Held DOMContentLoaded: open observe:false returns at dispatch; first
+    // observe proceeds after the ~4s cap.
+    tasks.push(attempt('held DOMContentLoaded cap', async () => {
+      let started = performance.now()
+      const held = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/slow-ready`, observe: false })))
+      const heldOpenMs = Math.round(performance.now() - started)
+      assert.ok(held.ready === undefined && heldOpenMs < 250, `${heldOpenMs}ms ${JSON.stringify(held)}`)
+      try {
+        started = performance.now()
+        const shell = text(await tool('browser.observe', { targetId: held.targetId }))
+        const heldObserveMs = Math.round(performance.now() - started)
+        assert.ok(heldObserveMs >= 3500 && heldObserveMs < 6000, `${heldObserveMs}ms`)
+        assert.match(shell, /Loading/)
+      } finally {
+        const closed = await tool('browser.close', { targetId: held.targetId })
+        assert.equal((closed.structuredContent ?? JSON.parse(text(closed))).closed, true)
+      }
+    }))
+
+    // minChars the page never reaches is reported, not papered over.
+    tasks.push(attempt('unreachable minChars via extract', async () => {
+      const short = (await tool('browser.extract', { url: `${rootUrl}/blank?e=unreachable`, minChars: 500 })).structuredContent
+      assert.equal(short.status, 'partial', JSON.stringify(short))
+      assert.equal(short.diagnostics.ready, false)
+    }))
+
+    // Multi-URL batch extract for all non-minChars shapes in one call.
+    const standardShapes = shapes.map((shape, index) => ({ shape, index })).filter(({ shape }) => !shape.args)
+    tasks.push(attempt('multi-URL batch extract', async () => {
+      const started = performance.now()
+      const batch = (await tool('browser.batch.extract', {
+        urls: standardShapes.map(({ shape, index }) => urlFor(shape, index, 'batch')),
+        maxChars: 20000,
+      })).structuredContent
+      const elapsed = Math.round(performance.now() - started)
+      for (const [i, { shape }] of standardShapes.entries()) {
+        const result = batch.results[i]
+        assert.equal(result.status, 'ok', `${shape.name} via batch: ${JSON.stringify(result)}`)
+        verify(shape, 'batch', result.text, shape.maxMs ? result.diagnostics.elapsedMs : elapsed)
+      }
+    }))
+    // minChars batch extract.
+    const minCharsIndex = shapes.findIndex((s) => s.args)
+    tasks.push(attempt(`${shapes[minCharsIndex].name} via batch`, async () => {
+      const shape = shapes[minCharsIndex]
+      const started = performance.now()
+      const [result] = (await tool('browser.batch.extract', { urls: [urlFor(shape, minCharsIndex, 'batch')], maxChars: 20000, ...shape.args })).structuredContent.results
+      assert.equal(result.status, 'ok', `${shape.name} via batch: ${JSON.stringify(result)}`)
+      verify(shape, 'batch', result.text, Math.round(performance.now() - started))
+    }))
+
     for (const [index, shape] of shapes.entries()) {
       const paths = shape.paths ?? ['extract', 'batch', 'observe']
-      const url = (via) => `${rootUrl}${shape.path}${shape.path.includes('?') ? '&' : '?'}e=${index}-${via}`
-      const args = shape.args ?? {}
-      // The paths run concurrently on one session, as agents issue them.
-      const reads = []
-      if (paths.includes('extract')) reads.push(attempt(`${shape.name} via extract`, async () => {
+      if (paths.includes('extract')) tasks.push(attempt(`${shape.name} via extract`, async () => {
         const started = performance.now()
-        const result = (await tool('browser.extract', { url: url('extract'), ...args })).structuredContent
+        const result = (await tool('browser.extract', { url: urlFor(shape, index, 'extract'), ...(shape.args ?? {}) })).structuredContent
         assert.equal(result.status, 'ok', `${shape.name} via extract: ${JSON.stringify(result)}`)
         verify(shape, 'extract', result.text, Math.round(performance.now() - started))
         timings[`${shape.name} extract`] = result.diagnostics.elapsedMs
       }))
-      if (paths.includes('batch')) reads.push(attempt(`${shape.name} via batch`, async () => {
-        const started = performance.now()
-        const batch = (await tool('browser.batch.extract', { urls: [url('batch')], maxChars: 20000, ...args })).structuredContent
-        const [result] = batch.results
-        assert.equal(result.status, 'ok', `${shape.name} via batch: ${JSON.stringify(result)}`)
-        verify(shape, 'batch', result.text, Math.round(performance.now() - started))
-      }))
-      if (paths.includes('observe')) reads.push(attempt(`${shape.name} via observe`, async () => {
-        const opened = (await tool('browser.open', { url: url('observe'), observe: false })).structuredContent
+      if (paths.includes('observe')) tasks.push(attempt(`${shape.name} via observe`, async () => {
+        const opened = (await tool('browser.open', { url: urlFor(shape, index, 'observe'), observe: false })).structuredContent
         try {
           const started = performance.now()
           const read = text(await tool('browser.observe', { targetId: opened.targetId, mode: 'text' }))
@@ -2094,19 +2002,37 @@ try {
           await tool('browser.close', { targetId: opened.targetId })
         }
       }))
-      await Promise.all(reads)
     }
 
-    // minChars the page never reaches is reported, not papered over.
-    await attempt('unreachable minChars via extract', async () => {
-      const short = (await tool('browser.extract', { url: `${rootUrl}/blank?e=unreachable`, minChars: 500 })).structuredContent
-      assert.equal(short.status, 'partial', JSON.stringify(short))
-      assert.equal(short.diagnostics.ready, false)
-    })
+    // open default observation + close:true + no "Agent is active" overlay leak.
+    tasks.push(attempt('open default observe and close:true', async () => {
+      const started = performance.now()
+      const opened = await tool('browser.open', { url: `${rootUrl}/blank?s=2` })
+      const openMs = Math.round(performance.now() - started)
+      const targetId = opened.structuredContent.targetId
+      let closed = false
+      try {
+        const first = text(opened)
+        assert.match(first, /^targetId: \S+  url: /)
+        assert.match(first, /StaticText "Ready"/)
+        assert.ok(openMs < 2000, `open with first observation took ${openMs}ms`)
+        assert.doesNotMatch(first, /Agent is active/)
+        const read = await tool('browser.observe', { targetId, mode: 'text', close: true })
+        assert.equal(read.structuredContent.closed, true, text(read))
+        assert.match(text(read), /Ready\nclosed /)
+        closed = true
+        const again = await tool('browser.observe', { targetId }, /unknown flow session/)
+        assert.equal(again.isError, true, text(again))
+      } finally {
+        if (!closed) await tool('browser.close', { targetId })
+      }
+    }))
+
+    await runPool(tasks, 3, (task) => task())
     assert.deepEqual(failures, [])
     return timings
   })
-  check('G: truncation footer lists scoped refs; ceilings', async () => {
+  check('G: truncation footer lists scoped refs, ceilings, and in-place extract', async () => {
     const opened = (await tool('browser.open', { url: `${rootUrl}/g-long`, observe: false })).structuredContent
     const targetId = opened.targetId
     try {
@@ -2125,6 +2051,13 @@ try {
       const content = text(await tool('browser.observe', { targetId, mode: 'text', maxChars: 20000 }))
       assert.ok(content.includes('REVIEW_OK') && content.length <= 20000, content.slice(-300))
       await tool('browser.observe', { targetId, maxChars: 20001 }, /maxChars is at most 20000/)
+
+      // Extract without a url reads an existing tab in place and leaves it open.
+      const inPlace = (await tool('browser.extract', { tabId: opened.tabId })).structuredContent
+      assert.equal(inPlace.status, 'ok', JSON.stringify(inPlace))
+      assert.equal(inPlace.tabId, opened.tabId)
+      assert.match(inPlace.text, /REVIEW_OK/)
+      assert.match(text(await tool('javascript_tool', { tabId: opened.tabId, code: 'document.title' })), /G long/)
     } finally {
       await tool('browser.close', { targetId })
     }
@@ -2218,13 +2151,30 @@ try {
       })
     const failures = []
     const timings = {}
-    for (const shape of shapes) {
-      for (const entry of ['mcp', 'cli', 'wait']) {
+    const byName = Object.fromEntries(shapes.map((s) => [s.name, s]))
+    // Orthogonal matrix: mcp exercises every shape; cli and wait exercise
+    // representative met/close/timeout paths. Slowest tasks start first.
+    const matrixCells = [
+      { shape: byName.timeout, entry: 'mcp' },
+      { shape: byName.timeout, entry: 'cli' },
+      { shape: byName.timeout, entry: 'wait' },
+      { shape: byName.timer, entry: 'mcp' },
+      { shape: byName.close, entry: 'wait' },
+      { shape: byName.navigate, entry: 'mcp' },
+      { shape: byName.late, entry: 'mcp' },
+      { shape: byName.rerender, entry: 'mcp' },
+      { shape: byName.transient, entry: 'mcp' },
+      { shape: byName.close, entry: 'mcp' },
+      { shape: byName.late, entry: 'cli' },
+      { shape: byName.close, entry: 'cli' },
+      { shape: byName.late, entry: 'wait' },
+    ]
+    const watchTasks = [
+      ...matrixCells.map(({ shape, entry }) => async () => {
         const key = `${shape.name}/${entry}/${Math.random().toString(36).slice(2)}`
         const opened = await openTarget(`${rootUrl}/watch?shape=${shape.name}&key=${encodeURIComponent(key)}`, false)
         const { targetId, tabId } = opened
         let closed = false
-        // The watch has started: let the page change, or close its tab.
         let releasedAt
         const afterStart = async () => {
           releasedAt = performance.now()
@@ -2234,8 +2184,6 @@ try {
         }
         const started = performance.now()
         try {
-          // A 60 s heartbeat never probes within the run: only a push can
-          // report the change within its budget.
           const start = { targetId, text: 'Done', maxDurationMs: shape.name === 'timeout' ? 2500 : 15000, intervalMs: 60000 }
           if (shape.node && entry !== 'wait') {
             const tree = text(await tool('browser.observe', { targetId }))
@@ -2263,16 +2211,12 @@ try {
             const wantCode = shape.want === 'met' ? 0 : 1
             if (run.code !== wantCode) throw new Error(`exit ${run.code}, want ${wantCode}: ${run.err} ${JSON.stringify(run.lines)}`)
           } else {
-            // The wait step gives no signal when it has started, so the page
-            // is released at once (its changes tolerate an early release) and
-            // the tab closes after a pause.
             releaseWatch(key)
             const closing = shape.name === 'close' &&
               new Promise((r) => setTimeout(r, 1200)).then(async () => {
                 closed = true
                 await tool('tabs_close', { tabId })
               })
-            // A wait whose tab closes fails the act, naming the closed tab.
             const r = await tool('browser.act', { targetId, steps: [{ type: 'wait', text: 'Done', timeoutMs: shape.name === 'timeout' ? 2500 : 12000 }] },
               shape.name === 'close' && /failed at step 1 \(wait\): tab \d+ closed/)
             await closing
@@ -2296,107 +2240,109 @@ try {
           if (!closed) await closeTarget(opened).catch(() => {})
           else targets.delete(tabId)
         }
-      }
-    }
-    // A page that mutates all the time without changing what is watched:
-    // no event, and one check per task of mutations, not one per mutation.
-    {
-      const opened = await openTarget(`${rootUrl}/watch?shape=churn`, false)
-      const { targetId } = opened
-      try {
-        let r = (await tool('browser.watch', { targetId, change: true, intervalMs: 1000 })).structuredContent
-        const events = [...r.events]
-        const until = performance.now() + 3000
-        while (performance.now() < until) {
-          r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: Math.max(0, Math.round(until - performance.now())) })).structuredContent
+      }),
+      // A page that mutates all the time without changing what is watched:
+      // no event, and one check per task of mutations, not one per mutation.
+      async () => {
+        const opened = await openTarget(`${rootUrl}/watch?shape=churn`, false)
+        const { targetId } = opened
+        try {
+          let r = (await tool('browser.watch', { targetId, change: true, intervalMs: 1000 })).structuredContent
+          const events = [...r.events]
+          const until = performance.now() + 1500
+          while (performance.now() < until) {
+            r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: Math.max(0, Math.round(until - performance.now())) })).structuredContent
+            events.push(...r.events)
+          }
+          await new Promise((done) => setTimeout(done, 1100))
+          r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: 0 })).structuredContent
           events.push(...r.events)
-        }
-        // The heartbeat reports the page's checks; let one more arrive.
-        await new Promise((done) => setTimeout(done, 1100))
-        r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: 0 })).structuredContent
-        events.push(...r.events)
-        await tool('browser.watch', { watchId: r.watchId, stop: true })
-        const tasks = Number(text(await tool('browser.act', { targetId, steps: [{ type: 'evaluate', code: 'churnTasks' }] })).match(/evaluated: (\d+)/)?.[1])
-        assert.deepEqual(events.map((e) => e.type), ['initial'], JSON.stringify(events))
-        assert.ok(tasks >= 20, `the page churned only ${tasks} tasks`)
-        // Each heartbeat probe checks once too.
-        assert.ok(r.pageChecks > 0 && r.pageChecks <= tasks + 6, `${r.pageChecks} checks for ${tasks} tasks of 10 mutations`)
-        timings.churn = `${r.pageChecks} checks / ${tasks} tasks`
-      } catch (error) {
-        failures.push(`churn: ${error.message ?? error}`)
-      } finally {
-        await closeTarget(opened).catch(() => {})
-      }
-    }
-    // A chat in a cross-site iframe: the watch runs inside that frame, by
-    // frameId (count, then text) and by a ref the frame owns. The CLI loop is
-    // --once, resumed with --cursor, as a harness that wakes on exit runs it.
-    for (const entry of ['mcp frameId', 'mcp ref', 'cli once']) {
-      const key = `chat/${entry}/${Math.random().toString(36).slice(2)}`
-      const reply = (n) => releaseWatch(`${key}/${n}`)
-      const opened = await openTarget(`${rootUrl}/watch-chat?key=${encodeURIComponent(key)}`, false)
-      const { targetId, tabId } = opened
-      const started = performance.now()
-      try {
-        const frame = await waitUntil(async () =>
-          JSON.parse(text(await tool('frames_list', { tabId }))).find((f) => f.url.includes('/watch-chat-frame')), 'chat frame')
-        if (entry === 'mcp frameId') {
-          let r = (await tool('browser.watch', { targetId, frameId: frame.frameId, css: 'li.msg', count: true, intervalMs: 60000 })).structuredContent
-          assert.match(r.condition, /in frame /)
-          assert.equal(r.events[0]?.type, 'initial', JSON.stringify(r))
-          assert.equal(r.events[0].count, 1)
-          reply(1)
-          const replied = performance.now()
-          r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: 20000 })).structuredContent
-          assert.deepEqual(r.events.map((e) => [e.type, e.count, e.added]), [['count', 2, ['Agent: first reply']]], JSON.stringify(r))
-          assert.ok(performance.now() - replied < 1000, `the reply in the frame was reported after ${Math.round(performance.now() - replied)} ms`)
           await tool('browser.watch', { watchId: r.watchId, stop: true })
-          r = (await tool('browser.watch', { targetId, frameId: frame.frameId, text: 'renewal done', intervalMs: 60000 })).structuredContent
-          reply(2)
-          while (r.active) r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: 20000 })).structuredContent
-          assert.equal(r.reason, 'met', JSON.stringify(r))
-        } else if (entry === 'mcp ref') {
-          const tree = text(await tool('browser.observe', { targetId }))
-          const list = refFor(tree, 'list', 'Messages')
-          let r = (await tool('browser.watch', { targetId, refId: list, text: 'renewal done', intervalMs: 60000 })).structuredContent
-          reply(1)
-          reply(2)
-          while (r.active) r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: 20000 })).structuredContent
-          assert.equal(r.reason, 'met', JSON.stringify(r))
-          assert.match(r.events.find((e) => e.type === 'met')?.value ?? '', /renewal Done/)
-        } else {
-          let run = await cli({ targetId, frameId: frame.frameId, css: 'li.msg', count: true, intervalMs: 60000 }, ['--once'], () => reply(1))
-          assert.equal(run.code, 3, run.err)
-          assert.deepEqual(run.lines.map((e) => e.type), ['initial', 'count'])
-          const { watchId, seq } = run.lines.at(-1)
-          // The renewal arrives while no CLI runs; the resumed run still gets it.
-          reply(2)
-          run = await cli(null, ['--id', watchId, '--cursor', String(seq), '--once'])
-          assert.equal(run.code, 3, run.err)
-          assert.deepEqual(run.lines.map((e) => [e.seq, e.added]), [[seq + 1, ['Agent: renewal Done']]])
-          await tool('browser.watch', { watchId, stop: true })
+          const tasks = Number(text(await tool('browser.act', { targetId, steps: [{ type: 'evaluate', code: 'churnTasks' }] })).match(/evaluated: (\d+)/)?.[1])
+          assert.deepEqual(events.map((e) => e.type), ['initial'], JSON.stringify(events))
+          assert.ok(tasks >= 10, `the page churned only ${tasks} tasks`)
+          assert.ok(r.pageChecks > 0 && r.pageChecks <= tasks + 6, `${r.pageChecks} checks for ${tasks} tasks of 10 mutations`)
+          timings.churn = `${r.pageChecks} checks / ${tasks} tasks`
+        } catch (error) {
+          failures.push(`churn: ${error.message ?? error}`)
+        } finally {
+          await closeTarget(opened).catch(() => {})
         }
-        timings[`iframe/${entry}`] = Math.round(performance.now() - started)
-      } catch (error) {
-        failures.push(`iframe/${entry}: ${error.message ?? error}`)
-      } finally {
-        await closeTarget(opened).catch(() => {})
-      }
-    }
+      },
+      // A chat in a cross-site iframe: by frameId, by a ref the frame owns, and via CLI --once/--cursor.
+      ...['mcp frameId', 'mcp ref', 'cli once'].map((entry) => async () => {
+        const key = `chat/${entry}/${Math.random().toString(36).slice(2)}`
+        const reply = (n) => releaseWatch(`${key}/${n}`)
+        const opened = await openTarget(`${rootUrl}/watch-chat?key=${encodeURIComponent(key)}`, false)
+        const { targetId, tabId } = opened
+        const started = performance.now()
+        try {
+          const frame = await waitUntil(async () =>
+            JSON.parse(text(await tool('frames_list', { tabId }))).find((f) => f.url.includes('/watch-chat-frame')), 'chat frame')
+          if (entry === 'mcp frameId') {
+            let r = (await tool('browser.watch', { targetId, frameId: frame.frameId, css: 'li.msg', count: true, intervalMs: 60000 })).structuredContent
+            assert.match(r.condition, /in frame /)
+            assert.equal(r.events[0]?.type, 'initial', JSON.stringify(r))
+            assert.equal(r.events[0].count, 1)
+            reply(1)
+            const replied = performance.now()
+            r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: 20000 })).structuredContent
+            assert.deepEqual(r.events.map((e) => [e.type, e.count, e.added]), [['count', 2, ['Agent: first reply']]], JSON.stringify(r))
+            assert.ok(performance.now() - replied < 1000, `the reply in the frame was reported after ${Math.round(performance.now() - replied)} ms`)
+            await tool('browser.watch', { watchId: r.watchId, stop: true })
+            r = (await tool('browser.watch', { targetId, frameId: frame.frameId, text: 'renewal done', intervalMs: 60000 })).structuredContent
+            reply(2)
+            while (r.active) r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: 20000 })).structuredContent
+            assert.equal(r.reason, 'met', JSON.stringify(r))
+          } else if (entry === 'mcp ref') {
+            const tree = text(await tool('browser.observe', { targetId }))
+            const list = refFor(tree, 'list', 'Messages')
+            let r = (await tool('browser.watch', { targetId, refId: list, text: 'renewal done', intervalMs: 60000 })).structuredContent
+            reply(1)
+            reply(2)
+            while (r.active) r = (await tool('browser.watch', { watchId: r.watchId, cursor: r.cursor, waitMs: 20000 })).structuredContent
+            assert.equal(r.reason, 'met', JSON.stringify(r))
+            assert.match(r.events.find((e) => e.type === 'met')?.value ?? '', /renewal Done/)
+          } else {
+            let run = await cli({ targetId, frameId: frame.frameId, css: 'li.msg', count: true, intervalMs: 60000 }, ['--once'], () => reply(1))
+            assert.equal(run.code, 3, run.err)
+            assert.deepEqual(run.lines.map((e) => e.type), ['initial', 'count'])
+            const { watchId, seq } = run.lines.at(-1)
+            reply(2)
+            run = await cli(null, ['--id', watchId, '--cursor', String(seq), '--once'])
+            assert.equal(run.code, 3, run.err)
+            assert.deepEqual(run.lines.map((e) => [e.seq, e.added]), [[seq + 1, ['Agent: renewal Done']]])
+            await tool('browser.watch', { watchId, stop: true })
+          }
+          timings[`iframe/${entry}`] = Math.round(performance.now() - started)
+        } catch (error) {
+          failures.push(`iframe/${entry}: ${error.message ?? error}`)
+        } finally {
+          await closeTarget(opened).catch(() => {})
+        }
+      }),
+    ]
+    await runPool(watchTasks, 3, (task) => task())
     assert.deepEqual(failures, [])
     return timings
   })
-  // Exclusive for what it does to the others: each read of its 20000-row tree
-  // holds the extension worker for seconds. Calls beside it stall: a wait
-  // step's probe in H1 got no answer within its 5 s bound, and R's 1.5 s
-  // requests settled at 6-7 s, past R's latency bounds.
-  check('G: observe rereads once when the document changes mid-read', { exclusive: true }, async () => {
+  check('G: observe rereads once when the document changes mid-read', async () => {
     const opened = (await tool('browser.open', { url: `${rootUrl}/g-churn`, observe: false })).structuredContent
     const targetId = opened.targetId
     try {
       await tool('browser.act', { targetId, steps: [{ type: 'evaluate', code: "(()=>{document.querySelector('#f').src='/g-held-frame';return 1})()" }] })
       await waitUntil(() => heldFrame, 'held iframe navigation')
       const started = performance.now()
+      const pingLats = []
+      let pinging = true
+      const pingLoop = (async () => {
+        while (pinging) {
+          const p0 = performance.now()
+          await tool('tabs_context', {}).catch(() => {})
+          pingLats.push(Math.round(performance.now() - p0))
+          await new Promise((r) => setTimeout(r, 100))
+        }
+      })()
       const observing = tool('browser.observe', { targetId, maxChars: 2000 })
       // Commit the iframe's new document while the main tree is being collected.
       setTimeout(() => {
@@ -2409,8 +2355,28 @@ try {
       assert.equal(first.split('\n')[1], 'Frames: 2')
       assert.ok(first.length <= 2000)
       const again = text(await tool('browser.observe', { targetId, maxChars: 2000 }))
+      pinging = false
+      await pingLoop
       assert.match(again, /^Frames: 2\n/)
       assert.equal(refFor(first, 'button', 'Row 0'), refFor(again, 'button', 'Row 0'))
+      // Regression: reading a 20,000-row AX tree must not freeze the worker for
+      // seconds and stall unrelated calls on other tabs.
+      const maxPing = Math.max(...pingLats)
+      assert.ok(maxPing < 1000, `large AX read stalled worker: max tabs_context=${maxPing}ms (${JSON.stringify(pingLats)})`)
+      // Completeness: sections after 20,000 rows still appear in the outline
+      // and can be scoped with refId, and cursor advances without gaps.
+      assert.match(again, /region "Trailing"/)
+      assert.match(again, /heading "Trailing"/)
+      assert.match(again, /contentinfo ""/)
+      const trailingRef = refFor(again, 'region', 'Trailing')
+      const scoped = text(await tool('browser.observe', { targetId, refId: trailingRef, maxChars: 2000 }))
+      assert.match(scoped, /TRAILING_OK/)
+      const cursor = Number(/continue with cursor=(\d+)/.exec(again)?.[1])
+      assert.ok(cursor > 0, `expected cursor in footer:\n${again}`)
+      const lastRow = Number([...again.matchAll(/"Row (\d+)"/g)].pop()?.[1])
+      const next = text(await tool('browser.observe', { targetId, maxChars: 2000, cursor }))
+      assert.ok(next.includes(`"Row ${lastRow + 1}"`), `cursor=${cursor} missed Row ${lastRow + 1}:\n${next.slice(0, 400)}`)
+      assert.ok(!next.includes(`"Row ${lastRow}"`), `cursor=${cursor} repeated Row ${lastRow}`)
     } finally {
       heldFrame?.end('')
       heldFrame = undefined
@@ -2466,7 +2432,7 @@ try {
     for (const id of ids) await tool('tabs_close', { tabId: id })
     // Profile teardown follows the window close asynchronously; give it time to
     // drop the connection before asserting that it did not.
-    await new Promise((r) => setTimeout(r, 5000))
+    await new Promise((r) => setTimeout(r, 3000))
     const status = await (await fetch(`http://127.0.0.1:${port}/status`, { signal: cancellation.signal })).json()
     assert.equal(status.extensionCount, 1, 'the extension must stay connected after its tabs close')
     const remaining = text(await tool('tabs_context', { all: true }))

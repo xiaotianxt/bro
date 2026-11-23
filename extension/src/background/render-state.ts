@@ -9,7 +9,7 @@
 // it, read in bro's isolated world, where page scripts that fake visibility
 // cannot reach.
 
-import { cdpSession, type ReplyBound } from './cdp.js'
+import { cdpSession } from './cdp.js'
 
 /**
  * - painting: visible; the tab composites frames by itself.
@@ -24,16 +24,14 @@ const worlds = new Map<number, number>()
 cdpSession.onDetach((tabId) => worlds.delete(tabId))
 
 /**
- * `bound` is the caller's choice for the page reads (see ReplyBound). The pump
- * asks every tick and must not detach a tab whose renderer is busy for seconds
- * (a large AX tree read), so it passes 'caller'. Input holds the tab's input
- * queue while it asks, so it keeps the session bound: a renderer that never
- * answers fails the input instead of blocking every later one.
+ * `timeoutMs`, when provided, bounds each CDP visibility read without detaching
+ * the session. Input holds the tab's input queue while it asks, so it passes a
+ * timeout; the render pump runs in the background and passes none.
  */
-export async function renderState(tabId: number, bound: ReplyBound): Promise<RenderState> {
+export async function renderState(tabId: number, timeoutMs?: number): Promise<RenderState> {
   return (
     (await stalledState(tabId)) ??
-    ((await documentVisibility(tabId, bound)) === 'visible' ? 'painting' : 'hidden')
+    ((await documentVisibility(tabId, timeoutMs)) === 'visible' ? 'painting' : 'hidden')
   )
 }
 
@@ -173,11 +171,11 @@ export async function inLivePage<Args extends unknown[], Result>(
   }
 }
 
-async function documentVisibility(tabId: number, bound: ReplyBound): Promise<string> {
+async function documentVisibility(tabId: number, timeoutMs?: number): Promise<string> {
   const known = worlds.get(tabId)
   if (known !== undefined) {
     try {
-      return await visibilityIn(tabId, known, bound)
+      return await visibilityIn(tabId, known, timeoutMs)
     } catch (error) {
       if (!/Cannot find context/.test(String(error))) throw error
       // The document navigated and took its isolated world with it.
@@ -188,19 +186,19 @@ async function documentVisibility(tabId: number, bound: ReplyBound): Promise<str
     tabId,
     'Page.getFrameTree',
     undefined,
-    bound,
+    timeoutMs,
   )
   const world = await cdpSession.send<{ executionContextId: number }>(
     tabId,
     'Page.createIsolatedWorld',
     { frameId: frameTree.frame.id, worldName: 'bro-render-state', grantUniveralAccess: false },
-    bound,
+    timeoutMs,
   )
   worlds.set(tabId, world.executionContextId)
-  return visibilityIn(tabId, world.executionContextId, bound)
+  return visibilityIn(tabId, world.executionContextId, timeoutMs)
 }
 
-async function visibilityIn(tabId: number, contextId: number, bound: ReplyBound): Promise<string> {
+async function visibilityIn(tabId: number, contextId: number, timeoutMs?: number): Promise<string> {
   const reply = await cdpSession.send<{
     result: { value?: unknown }
     exceptionDetails?: { text: string }
@@ -208,7 +206,7 @@ async function visibilityIn(tabId: number, contextId: number, bound: ReplyBound)
     tabId,
     'Runtime.evaluate',
     { expression: 'document.visibilityState', contextId, returnByValue: true },
-    bound,
+    timeoutMs,
   )
   if (reply.exceptionDetails) throw new Error(`visibility read failed: ${reply.exceptionDetails.text}`)
   if (typeof reply.result.value !== 'string')

@@ -1,4 +1,4 @@
-import { cdpSession } from './cdp.js'
+import { CDP_COMMAND_TIMEOUT_MS, cdpSession } from './cdp.js'
 import { renderState, unresponsive } from './render-state.js'
 
 /** What an action running inside withInput may wait on. */
@@ -34,7 +34,7 @@ export async function withInput<T>(tabId: number, action: (input: Input) => Prom
   let failure: unknown
   try {
     if (state.interrupted) throw new Error('Queued input cancelled: debugger detached')
-    const render = await renderState(tabId, 'session')
+    const render = await renderState(tabId, CDP_COMMAND_TIMEOUT_MS)
     if (render === 'frozen' || render === 'discarded') throw new Error(unresponsive(tabId, render))
     await cdpSession.removeForeignFramesBeforeInput(tabId)
     // Allows hidden-page rendering without selecting a tab or focusing a window.
@@ -46,13 +46,11 @@ export async function withInput<T>(tabId: number, action: (input: Input) => Prom
         render === 'painting'
           ? async () => {}
           : async () => {
-              // The reply follows a composited frame. Caller-bound: a busy
-              // renderer delays the frame, which is not a dead session.
+              // The reply follows a composited frame; a busy renderer delays it.
               await cdpSession.send(
                 tabId,
                 'Page.captureScreenshot',
                 { format: 'jpeg', quality: 1, optimizeForSpeed: true },
-                'caller',
               )
             },
     }

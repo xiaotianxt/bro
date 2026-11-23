@@ -1,7 +1,7 @@
 // Computer tool — handles mouse, keyboard, and screenshot actions via CDP.
 
 import type { ToolResult } from '@bro/shared'
-import { cdpSession } from '../cdp.js'
+import { CDP_COMMAND_TIMEOUT_MS, cdpSession } from '../cdp.js'
 import { withInput, type Input } from '../input.js'
 import { registerTool } from '../tool-registry.js'
 import { prepareRefInput } from './accessibility.js'
@@ -222,7 +222,7 @@ async function dispatchMouseEvent(
     deltaY,
     ...(resolvedButtons === undefined ? {} : { buttons: resolvedButtons }),
     modifiers: 0,
-  })
+  }, CDP_COMMAND_TIMEOUT_MS)
 }
 
 function mouseButtonMask(button: 'none' | 'left' | 'middle' | 'right'): number {
@@ -684,11 +684,11 @@ async function dispatchKeyEvent(
   await cdpSession.send(tabId, 'Input.dispatchKeyEvent', {
     type: 'keyDown',
     ...commonParams,
-  })
+  }, CDP_COMMAND_TIMEOUT_MS)
   await cdpSession.send(tabId, 'Input.dispatchKeyEvent', {
     type: 'keyUp',
     ...commonParams,
-  })
+  }, CDP_COMMAND_TIMEOUT_MS)
 }
 
 async function actionKey(tabId: number, combo: string): Promise<ToolResult> {

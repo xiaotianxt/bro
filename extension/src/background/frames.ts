@@ -116,6 +116,7 @@ export function sendToFrame<T>(
   frame: BrowserFrame,
   method: string,
   params?: object,
+  timeoutMs?: number,
 ): Promise<T> {
-  return cdpSession.sendToSession<T>(tabId, frame.sessionId, method, params)
+  return cdpSession.sendToSession<T>(tabId, frame.sessionId, method, params, timeoutMs)
 }

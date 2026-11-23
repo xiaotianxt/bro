@@ -9,7 +9,8 @@ import {
   type RefTarget,
   type SnapshotOptions,
 } from '../accessibility.js'
-import { CdpSessionClosed, cdpSession } from '../cdp.js'
+import { CDP_COMMAND_TIMEOUT_MS, CdpSessionClosed, cdpSession } from '../cdp.js'
+import { collectLargeFrameAX } from '../ax-collect.js'
 import { getBrowserFrames, sendToFrame, type BrowserFrame } from '../frames.js'
 import { withInput, type Input } from '../input.js'
 import { scrollAndObserve, scrollerFor } from '../scroll.js'
@@ -188,13 +189,13 @@ export async function readAXPage(
   let collected: FrameSnapshot[]
   let note = ''
   try {
-    collected = await readFrames(tabId, scope, scopeRef, options.depth)
+    collected = await readFrames(tabId, scope, scopeRef, options)
   } catch (error) {
     if (!(error instanceof DocumentChanged)) throw error
     // Observation is read-only and publishes no refs before this point, so one
     // reread of the new document is safe; a second change is reported.
     note = 'document changed during observe; reread\n'
-    collected = await readFrames(tabId, scope, scopeRef, options.depth).catch((again: unknown) => {
+    collected = await readFrames(tabId, scope, scopeRef, options).catch((again: unknown) => {
       throw again instanceof DocumentChanged
         ? new Error('Document changed during observation and again during its reread; wait, then observe again.')
         : again
@@ -213,7 +214,7 @@ async function readFrames(
   tabId: number,
   scope: RefTarget | undefined,
   scopeRef: string | undefined,
-  depth: number,
+  options: SnapshotOptions,
 ): Promise<FrameSnapshot[]> {
   const frames = await getBrowserFrames(tabId)
   snapshots.reconcile(tabId, frames)
@@ -228,29 +229,35 @@ async function readFrames(
           'Frame has no committed document yet; observe again after navigation completes',
         )
       await sendToFrame(tabId, frame, 'Accessibility.enable', {})
-      const result = await sendToFrame<{ nodes: AXNode[] }>(
-        tabId,
-        frame,
-        'Accessibility.getFullAXTree',
-        { frameId: frame.id, ...(scope ? {} : { depth }) },
-      )
-      let nodes = result.nodes
-      if (scope) {
-        const root = nodes.find((n) => n.backendDOMNodeId === scope.backendNodeId)
-        if (!root)
-          throw new Error(`Scoped ref ${scopeRef} no longer has an accessibility node; read a fresh snapshot`)
-        const descendants = new Set<string>()
-        const byId = new Map(nodes.map((n) => [n.nodeId, n]))
-        const visit = (n: AXNode): void => {
-          if (descendants.has(n.nodeId)) return
-          descendants.add(n.nodeId)
-          for (const id of n.childIds ?? []) {
-            const child = byId.get(id)
-            if (child) visit(child)
+      const incremental = await collectLargeFrameAX(tabId, frame, scope, scopeRef, options)
+      let nodes: AXNode[]
+      if (incremental) {
+        nodes = incremental
+      } else {
+        const result = await sendToFrame<{ nodes: AXNode[] }>(
+          tabId,
+          frame,
+          'Accessibility.getFullAXTree',
+          { frameId: frame.id, ...(scope ? {} : { depth: options.depth }) },
+        )
+        nodes = result.nodes
+        if (scope) {
+          const root = nodes.find((n) => n.backendDOMNodeId === scope.backendNodeId)
+          if (!root)
+            throw new Error(`Scoped ref ${scopeRef} no longer has an accessibility node; read a fresh snapshot`)
+          const descendants = new Set<string>()
+          const byId = new Map(nodes.map((n) => [n.nodeId, n]))
+          const visit = (n: AXNode): void => {
+            if (descendants.has(n.nodeId)) return
+            descendants.add(n.nodeId)
+            for (const id of n.childIds ?? []) {
+              const child = byId.get(id)
+              if (child) visit(child)
+            }
           }
+          visit(root)
+          nodes = nodes.filter((n) => descendants.has(n.nodeId))
         }
-        visit(root)
-        nodes = nodes.filter((n) => descendants.has(n.nodeId))
       }
       collected.push({ ...frame, nodes })
     } catch (error) {
@@ -608,7 +615,7 @@ async function dispatchRefClick(tabId: number, ref: string, input: Input): Promi
   const point = await prepareRefInput(tabId, ref, input)
   const { frame, backendNodeId } = await refNode(tabId, ref)
   const mouse = (event: object) =>
-    cdpSession.send(tabId, 'Input.dispatchMouseEvent', { ...event, ...point })
+    cdpSession.send(tabId, 'Input.dispatchMouseEvent', { ...event, ...point }, CDP_COMMAND_TIMEOUT_MS)
   const received = await withNodeObject(tabId, frame, backendNodeId, async (objectId) => {
     const watch = await sendToFrame<RemoteResult<unknown>>(tabId, frame, 'Runtime.callFunctionOn', {
       objectId,

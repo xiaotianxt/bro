@@ -10,24 +10,17 @@ type DetachCallback = (tabId: number, reason: string) => void
 /** sessionId names the child (cross-site frame) session that sent the event; undefined for the tab itself. */
 type EveryTabCallback = (tabId: number, params: unknown, sessionId: string | undefined) => void
 
-// Shared by every CDP command; a timeout also detaches the debugger, so a
-// longer bound would hold up recovery for all commands, not just evaluations.
+// Default caller timeout for bounded page evaluations (dom.ts, input.ts).
+// CDP commands themselves have no session-killing timeout: a slow reply (a
+// large AX tree, a slow navigation commit, a busy renderer) does not mean the
+// debugger session is dead. Chrome reports real session closures via onDetach.
 export const CDP_COMMAND_TIMEOUT_MS = 5_000
 
-/** A CDP command got no reply within CDP_COMMAND_TIMEOUT_MS. */
+/** A caller-bounded CDP command got no reply within its timeoutMs. */
 export class CdpCommandTimeout extends Error {}
 
 /** Chrome closed the debugger session while a command was in flight. */
 export class CdpSessionClosed extends Error {}
-
-/**
- * How a command's missing reply is bounded. 'session': no reply within
- * CDP_COMMAND_TIMEOUT_MS means the session is dead, so it is detached.
- * 'caller': the reply waits on page work (Page.navigate answers at commit,
- * after the network), so a slow reply is not a dead session; the caller owns
- * the deadline and never detaches for it.
- */
-export type ReplyBound = 'session' | 'caller'
 
 /**
  * CDPSession manages chrome.debugger attachments and routes CDP events
@@ -208,16 +201,18 @@ export class CDPSession {
 
   /**
    * Sends a CDP command to the given tab. Automatically attaches if needed.
+   * When timeoutMs is given, rejects with CdpCommandTimeout after that many ms
+   * without detaching the debugger session.
    */
-  async send<T>(tabId: number, method: string, params?: object, bound: ReplyBound = 'session'): Promise<T> {
+  async send<T>(tabId: number, method: string, params?: object, timeoutMs?: number): Promise<T> {
     await this.ensure(tabId)
-    return this.sendAttached<T>(tabId, method, params, undefined, bound)
+    return this.sendAttached<T>(tabId, method, params, undefined, timeoutMs)
   }
 
-  async sendToSession<T>(tabId: number, sessionId: string | undefined, method: string, params?: object): Promise<T> {
-    if (sessionId === undefined) return this.send<T>(tabId, method, params)
+  async sendToSession<T>(tabId: number, sessionId: string | undefined, method: string, params?: object, timeoutMs?: number): Promise<T> {
+    if (sessionId === undefined) return this.send<T>(tabId, method, params, timeoutMs)
     await this.ensure(tabId)
-    return this.sendAttached<T>(tabId, method, params, sessionId)
+    return this.sendAttached<T>(tabId, method, params, sessionId, timeoutMs)
   }
 
   /**
@@ -235,7 +230,7 @@ export class CDPSession {
   async resetInputFocus(tabId: number): Promise<void> {
     if (!this.attached.get(tabId)) return // Detachment clears emulation itself.
     try {
-      await this.sendAttached(tabId, 'Emulation.setFocusEmulationEnabled', { enabled: false })
+      await this.sendAttached(tabId, 'Emulation.setFocusEmulationEnabled', { enabled: false }, undefined, CDP_COMMAND_TIMEOUT_MS)
     } catch (error) {
       // A closed session took its emulation with it, as a detach would: the
       // input that preceded this cleanup stands. Typical when the click woke a
@@ -256,20 +251,19 @@ export class CDPSession {
     method: string,
     params?: object,
     sessionId?: string,
-    bound: ReplyBound = 'session',
+    timeoutMs?: number,
   ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       let settled = false
-      const timeout = bound === 'caller' ? undefined : setTimeout(() => {
+      const timeout = timeoutMs === undefined ? undefined : setTimeout(() => {
         if (settled) return
         settled = true
-        this.forceDetach(tabId, `bro detached the debugger after CDP command "${method}" timed out`)
         reject(
           new CdpCommandTimeout(
-            `CDP command "${method}" timed out for tab ${tabId} after ${CDP_COMMAND_TIMEOUT_MS}ms`,
+            `CDP command "${method}" timed out for tab ${tabId} after ${timeoutMs}ms`,
           ),
         )
-      }, CDP_COMMAND_TIMEOUT_MS)
+      }, timeoutMs)
 
       void chrome.debugger
         .sendCommand(

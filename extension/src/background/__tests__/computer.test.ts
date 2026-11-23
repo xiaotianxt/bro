@@ -175,7 +175,7 @@ describe('computer input', () => {
     })
   })
 
-  it('times out a stuck CDP input and detaches the debugger', async () => {
+  it('times out a stuck CDP input and clears emulated focus without detaching a live session', async () => {
     vi.useFakeTimers()
     hangOnMouseInput = true
     await import('../tools/computer.js')
@@ -192,10 +192,12 @@ describe('computer input', () => {
     await vi.advanceTimersByTimeAsync(6_000)
 
     expect(await outcome).toBe('rejected')
-    expect(detach).toHaveBeenCalled()
+    expect(detach).not.toHaveBeenCalled()
     expect(chrome.debugger.attach).toHaveBeenCalledTimes(1)
-    expect(commands.filter((c) => c.method === 'Emulation.setFocusEmulationEnabled'))
-      .toEqual([{ method: 'Emulation.setFocusEmulationEnabled', params: { enabled: true } }])
+    expect(commands.filter((c) => c.method === 'Emulation.setFocusEmulationEnabled')).toEqual([
+      { method: 'Emulation.setFocusEmulationEnabled', params: { enabled: true } },
+      { method: 'Emulation.setFocusEmulationEnabled', params: { enabled: false } },
+    ])
   })
 
   it('detaches and reports failure if emulated focus cannot be cleared', async () => {

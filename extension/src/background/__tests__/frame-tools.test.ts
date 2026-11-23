@@ -62,14 +62,14 @@ describe('frame-aware DOM tools', () => {
     ])
   })
 
-  it('explains an evaluation timeout and points to a wait step, leaving other timeouts generic', async () => {
+  it('explains an evaluation timeout and points to a wait step, without detaching the tab', async () => {
     vi.useFakeTimers()
     try {
       type Send = (target: chrome.debugger.Debuggee, method: string, params: Record<string, unknown>) => Promise<unknown>
       const send = chrome.debugger.sendCommand as unknown as ReturnType<typeof vi.fn<Send>>
       const original = send.getMockImplementation()!
       send.mockImplementation((target: chrome.debugger.Debuggee, method: string, params: Record<string, unknown>) =>
-        method === 'Runtime.evaluate' || method === 'Page.getFrameTree' ? new Promise(() => {}) : original(target, method, params))
+        method === 'Runtime.evaluate' ? new Promise(() => {}) : original(target, method, params))
       await import('../tools/dom.js')
       const { dispatchTool } = await import('../tool-registry.js')
       const evaluating = dispatchTool('javascript_tool', 42, { code: 'new Promise(r => setTimeout(r, 10000))', awaitPromise: true })
@@ -78,9 +78,7 @@ describe('frame-aware DOM tools', () => {
       )
       await vi.advanceTimersByTimeAsync(5000)
       await outcome
-      const listing = expect(dispatchTool('frames_list', 42, {})).rejects.toThrow(/CDP command "Page.getFrameTree" timed out for tab 42 after 5000ms/)
-      await vi.advanceTimersByTimeAsync(5000)
-      await listing
+      expect(chrome.debugger.detach).not.toHaveBeenCalled()
     } finally {
       vi.useRealTimers()
     }

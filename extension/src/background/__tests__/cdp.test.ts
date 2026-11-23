@@ -105,7 +105,7 @@ describe('CDP attachment lifecycle', () => {
     await cdpSession.detach(42)
     Object.assign(chrome.tabs, { get: vi.fn(async () => ({ url: 'https://example.test', frozen: true })) })
     Object.assign(chrome, { scripting: { executeScript: vi.fn(() => new Promise(() => {})) } })
-    await cdpSession.send(42, 'Page.navigate', { url: 'https://example.test/next' }, 'caller')
+    await cdpSession.send(42, 'Page.navigate', { url: 'https://example.test/next' })
     expect(chrome.scripting.executeScript).not.toHaveBeenCalled()
     expect(chrome.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 42 }, 'Page.navigate', { url: 'https://example.test/next' })
 
@@ -145,21 +145,23 @@ describe('CDP attachment lifecycle', () => {
     expect(invalidate).toHaveBeenCalledTimes(1)
   })
 
-  it('detaches a silent session, but never for a caller-bounded reply', async () => {
+  it('never detaches on a slow command, and bounds only commands that pass timeoutMs', async () => {
     vi.useFakeTimers()
     try {
-      const { cdpSession } = await import('../cdp.js')
+      const { cdpSession, CDP_COMMAND_TIMEOUT_MS } = await import('../cdp.js')
       const detached = vi.fn()
       cdpSession.onDetach(detached)
       vi.mocked(chrome.debugger.sendCommand).mockImplementation(async (_target, method) =>
         method === 'Page.navigate' || method === 'Runtime.evaluate' ? new Promise(() => {}) : {})
-      const navigate = cdpSession.send(3, 'Page.navigate', { url: 'https://slow.test' }, 'caller')
+      const navigate = cdpSession.send(3, 'Page.navigate', { url: 'https://slow.test' })
       await vi.advanceTimersByTimeAsync(60_000)
       expect(detached).not.toHaveBeenCalled()
-      const evaluate = expect(cdpSession.send(3, 'Runtime.evaluate')).rejects.toThrow(/timed out/)
-      await vi.advanceTimersByTimeAsync(5_000)
+      expect(chrome.debugger.detach).not.toHaveBeenCalled()
+      const evaluate = expect(cdpSession.send(3, 'Runtime.evaluate', undefined, CDP_COMMAND_TIMEOUT_MS)).rejects.toThrow(/timed out/)
+      await vi.advanceTimersByTimeAsync(CDP_COMMAND_TIMEOUT_MS)
       await evaluate
-      expect(detached).toHaveBeenCalledWith(3, expect.stringContaining('"Runtime.evaluate" timed out'))
+      expect(detached).not.toHaveBeenCalled()
+      expect(chrome.debugger.detach).not.toHaveBeenCalled()
       void navigate
     } finally {
       vi.useRealTimers()

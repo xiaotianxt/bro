@@ -82,20 +82,14 @@ async function pump(tabId: number): Promise<void> {
     // Only a hidden live tab needs a forced frame: a painting tab renders by
     // itself, and a frozen or discarded one draws nothing for a capture.
     // Active is not painting: an active tab in an occluded window is hidden.
-    // Caller-bound, as the capture below and for the same reason.
-    if ((await renderState(tabId, 'caller')) !== 'hidden') return
+    if ((await renderState(tabId)) !== 'hidden') return
     // No clip: a clipped capture resizes the viewport while it runs, which
-    // races hit tests of concurrent clicks.
-    // The reply waits for the renderer to draw a frame, which a busy renderer
-    // delays past the session timeout (a large AX tree read takes seconds).
-    // A session-bound timeout would detach the tab under that read, so this
-    // is caller-bound. inFlight leaves at most one waiting capture per tab,
-    // and a detach rejects it.
+    // races hit tests of concurrent clicks. inFlight leaves at most one
+    // waiting capture per tab, and a detach rejects it.
     await cdpSession.send(
       tabId,
       'Page.captureScreenshot',
       { format: 'jpeg', quality: 1, optimizeForSpeed: true },
-      'caller',
     )
   } catch (error) {
     // Navigation and closing race the pump; the next tick retries.
