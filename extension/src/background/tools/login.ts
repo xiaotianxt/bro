@@ -1,5 +1,6 @@
 // Private, server-owned credential transport. Never register these names in the
 // public MCP catalog. No credentials in page source, returned values or errors.
+import { inLivePage } from '../render-state.js'
 import { registerTool } from '../tool-registry.js'
 
 interface LoginInput {
@@ -153,7 +154,7 @@ function result(value: unknown) {
 registerTool('__bro_login_inspect', async (tabId) => {
   const started = generation
   try {
-    const results = await chrome.scripting.executeScript({ target: { tabId, frameIds: [0] }, world: 'ISOLATED', func: inspectLoginForm })
+    const results = await inLivePage({ target: { tabId, frameIds: [0] }, world: 'ISOLATED', func: inspectLoginForm })
     const first = results[0]
     if (!first?.documentId || first.frameId !== 0 || !first.result?.formToken) return result({ status: 'inspect_failed' })
     if (started !== generation) return result({ status: 'cancelled' })
@@ -172,7 +173,7 @@ registerTool('__bro_login_fill', async (tabId, raw) => {
       form.nonce = crypto.randomUUID()
       args.nonce = form.nonce
     }
-    const results = await chrome.scripting.executeScript({
+    const results = await inLivePage({
       target: { tabId, documentIds: [args.documentId] }, world: 'ISOLATED', func: fillLoginForm, args: [args],
     })
     return result(results[0]?.result ?? { status: 'fill_failed' })

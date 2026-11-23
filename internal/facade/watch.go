@@ -1003,6 +1003,9 @@ func (f *Facade) waitText(ctx context.Context, s session, cond waitCondition, ti
 	c := watchCond{kind: cond.kind, text: cond.text}
 	tabID := s.TabID
 	w := f.newWatch(s.ID, tabID, s.Browser.BrowserID, watchTarget{}, c, waitPoll, time.Duration(timeoutMs)*time.Millisecond, func(ctx context.Context, args map[string]any) (bridge.Result, error) {
+		// An act step: the extension resumes a tab Chrome froze, as for every
+		// other step, where a watch would report it.
+		args["live"] = true
 		return f.dispatch(ctx, "watch_probe", args, tabID, s.Browser)
 	})
 	w.hidden = true

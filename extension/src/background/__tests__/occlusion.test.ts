@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 // hit-acceptance rules are tested as shipped, not as mocked results.
 const mocks = vi.hoisted(() => ({ frames: vi.fn(), send: vi.fn(), input: vi.fn(), SessionClosed: class extends Error {} }))
 vi.mock('../frames.js', () => ({ getBrowserFrames: mocks.frames, sendToFrame: mocks.send }))
+// render-state.ts owns resuming frozen tabs (tested there); here the page always runs.
+vi.mock('../render-state.js', () => ({ inLivePage: (injection: chrome.scripting.ScriptInjection<unknown[], unknown>) => chrome.scripting.executeScript(injection), sinceResumed: () => Infinity }))
 vi.mock('../cdp.js', () => ({ cdpSession: { send: mocks.input }, CdpSessionClosed: mocks.SessionClosed }))
 const order = vi.hoisted(() => [] as string[])
 vi.mock('../input.js', () => ({

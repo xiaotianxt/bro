@@ -12,6 +12,7 @@
 
 import { cdpSession } from './cdp.js'
 import { takeDialogs } from './dialogs.js'
+import { inLivePage, sinceResumed } from './render-state.js'
 
 export const QUIET_MS = 400
 export const CAP_MS = 3000
@@ -243,7 +244,7 @@ export async function watchChanges<T>(
 ): Promise<{ result: T; changes: ChangeReport }> {
   const started = Date.now()
   takeDialogs(tabId)
-  await chrome.scripting.executeScript({
+  await inLivePage({
     target: { tabId, frameIds: [0] },
     world: 'ISOLATED',
     func: startWatch,
@@ -263,8 +264,7 @@ async function settle<T>(
   requests: Awaited<ReturnType<typeof trackRequests>>,
 ): Promise<{ result: T; changes: ChangeReport }> {
   const inPage = <A extends unknown[], R>(func: (...args: A) => R, args: A) =>
-    chrome.scripting
-      .executeScript({ target: { tabId, frameIds: [0] }, world: 'ISOLATED', func, args })
+    inLivePage({ target: { tabId, frameIds: [0] }, world: 'ISOLATED', func, args })
       .then(([frame]) => frame?.result as Awaited<R> | undefined)
   try {
     // Page time at which the action returned. Quiet and the cap count from
@@ -276,8 +276,9 @@ async function settle<T>(
       const ages = await inPage(watchAges, [])
       if (!ages) break
       acted ??= ages.total
-      // An answer renders in a task after it arrives: quiet restarts there.
-      const quiet = Math.min(ages.quiet, ages.total - acted, requests.sinceAnswered())
+      // An answer renders in a task after it arrives: quiet restarts there,
+      // and again when bro resumes a page Chrome froze, which renders then.
+      const quiet = Math.min(ages.quiet, ages.total - acted, requests.sinceAnswered(), sinceResumed(tabId))
       const idle = quiet >= QUIET_MS && !ages.navigating && requests.pending() === 0
       if (idle || ages.total - acted >= CAP_MS) break
       await new Promise((resolve) => setTimeout(resolve, Math.min(50, Math.max(10, QUIET_MS - quiet))))

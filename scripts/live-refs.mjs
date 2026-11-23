@@ -62,7 +62,7 @@ document.addEventListener('focusout', (event) => { if (event.target.id === 'user
 let token = ''
 const log = await open(resolve(output, 'processes.log'), 'a')
 const processes = []
-let rootUrl, crossUrl, socket, client, resetFixture, heldScript, heldFrame
+let rootUrl, crossUrl, socket, client, heldScript, heldFrame
 // Watch fixtures change only once the test releases their key, after it has
 // seen the watch start; a change before the start would race the watch.
 // A key holds the pending /watch-release response or, once released, true.
@@ -86,6 +86,22 @@ const stopped = new Promise((resolve) => {
 })
 // /h-data answers held until their page's /h-go, by page key.
 const heldResults = new Map()
+// /frozen-hold answers, by key: `arrived` resolves when the page asks, and
+// release() answers it, whichever comes first.
+const holds = new Map()
+const hold = (key) => {
+  let entry = holds.get(key)
+  if (!entry) {
+    let arrive
+    entry = { arrived: new Promise((resolve) => (arrive = resolve)), arrive, res: undefined, released: false }
+    entry.release = () => {
+      entry.released = true
+      entry.res?.end('ok')
+    }
+    holds.set(key, entry)
+  }
+  return entry
+}
 const fixture = (req, res) => {
   const url = new URL(req.url, rootUrl ?? 'http://127.0.0.1')
   const run = url.searchParams.get('run') ?? ''
@@ -153,6 +169,10 @@ const fixture = (req, res) => {
     <p id="toast"></p></main>
     <script>
     const shape=${JSON.stringify(shape)};
+    // Chrome freezes no page that holds a Web Lock. A watch reports a tab
+    // Chrome froze instead of its changes, so these pages hold one: what is
+    // tested here is what a watch sees on a page that runs.
+    navigator.locks.request('bro-watch-fixture-'+Math.random(),()=>new Promise(()=>{}));
     const data=(ms)=>fetch('/watch-data?ms='+ms).then(r=>r.text());
     const released=fetch('/watch-release?key='+${JSON.stringify(encodeURIComponent(key))}).then(()=>'Status Done');
     const state=()=>document.querySelector('.state');
@@ -205,6 +225,29 @@ const fixture = (req, res) => {
   if (url.pathname === '/watch-data') {
     const ms = Math.min(5000, Number(url.searchParams.get('ms')) || 0)
     setTimeout(() => res.end('Status Done'), ms).unref()
+    return
+  }
+  if (url.pathname === '/frozen') {
+    // Records the page's own freeze and resume events, so a cell can show the
+    // tab was frozen. Each entry point's effect waits on a held request.
+    const key = JSON.stringify(url.searchParams.get('key') ?? '')
+    const controls = url.searchParams.has('read') ? '' : '<button id="go">Go</button><label>Note <input id="note"></label><div id="status"></div>'
+    send(`<!doctype html><title>Frozen</title><main><p id="out">Loading…</p>${controls}</main>
+    <script>
+    window.ev=[];document.addEventListener('freeze',()=>ev.push('freeze'));document.addEventListener('resume',()=>ev.push('resume'));
+    const held=(what)=>fetch('/frozen-hold?key='+encodeURIComponent(${key}+'/'+what)).then(r=>r.text());
+    held('load').then(()=>{out.textContent='LOADED '+'the held content arrived and is long enough to read. '.repeat(3)});
+    const status=()=>document.querySelector('#status');
+    if(window.go)go.onclick=()=>held('click').then(()=>{status().innerHTML='<p role="alert">DONE click</p>'});
+    if(window.note)note.oninput=()=>held('fill').then(()=>{status().innerHTML='<p role="alert">DONE fill</p>'});
+    </script>`)
+    return
+  }
+  if (url.pathname === '/frozen-hold') {
+    const entry = hold(url.searchParams.get('key') ?? '')
+    entry.res = res
+    entry.arrive()
+    if (entry.released) res.end('ok')
     return
   }
   if (url.pathname === '/h-delayed') {
@@ -425,7 +468,9 @@ const fixture = (req, res) => {
       if(shape==='slow')fetch(req('ms=1500')).then(r=>r.text()).then(done);
       if(shape==='chained')fetch(req('ms=700')).then(r=>r.text()).then(()=>fetch(req('ms=700'))).then(r=>r.text()).then(done);
       if(shape==='unread')fetch(req('ms=600')).then(done);
-      if(shape==='failed')fetch(req('fail=1&ms=900')).catch(done);
+      // Its own host: Chrome retries a GET dropped on a reused connection,
+      // and every connection to this host is dropped, so none is reused.
+      if(shape==='failed')fetch('//localhost:'+location.port+req('fail=1&ms=900')).catch(done);
       if(shape==='hang')fetch(req('hang=1'));
       if(shape==='beacon'){navigator.sendBeacon(req('beacon=1'),'x');done()}
       if(shape==='inflight')done();
@@ -564,9 +609,20 @@ const text = (result) =>
     ?.filter((c) => c.type === 'text')
     .map((c) => c.text)
     .join('\n') ?? ''
-async function tool(name, args = {}, errorExpected = false) {
+const connectClient = async () => {
+  const connected = new Client({ name: 'bro-live-refs', version: '1.0.0' })
+  await connected.connect(
+    new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
+      requestInit: { headers: { Authorization: `Bearer ${token}` } },
+    }),
+  )
+  return connected
+}
+// Checks share one MCP session, as an agent's parallel calls do. A check that
+// relies on session state (the last target) calls on a session of its own.
+const toolOn = (session) => async (name, args = {}, errorExpected = false) => {
   cancellation.signal.throwIfAborted()
-  const result = await client.callTool({ name, arguments: args }, undefined, {
+  const result = await session.callTool({ name, arguments: args }, undefined, {
     signal: cancellation.signal,
   })
   if (!errorExpected && result.isError) throw new Error(`${name}: ${text(result)}`)
@@ -576,6 +632,7 @@ async function tool(name, args = {}, errorExpected = false) {
   }
   return result
 }
+const tool = (...call) => toolOn(client)(...call)
 // Targets on the published surface: an opened tab, or an attached one for a
 // tab the fixture navigates itself. Element actions on raw read_page refs go
 // through browser.act on the tab's target.
@@ -596,6 +653,39 @@ async function act(tabId, steps, errorExpected = false) {
   }
   return tool('browser.act', { targetId: targets.get(tabId), steps }, errorExpected)
 }
+// The test's own DevTools connection to the browser, beside bro's: it changes
+// a page's state (freezes it) the way Chrome would, without going through bro.
+async function browserSession() {
+  const [port, path] = (await readFile(resolve(profile, 'DevToolsActivePort'), 'utf8')).trim().split('\n')
+  const ws = new WebSocket(`ws://127.0.0.1:${port}${path}`)
+  await once(ws, 'open')
+  let nextId = 0
+  const pending = new Map()
+  ws.addEventListener('message', (event) => {
+    const msg = JSON.parse(event.data)
+    const p = pending.get(msg.id)
+    if (!p) return
+    pending.delete(msg.id)
+    msg.error ? p.reject(new Error(`${p.method}: ${msg.error.message}`)) : p.resolve(msg.result)
+  })
+  const send = (method, params = {}, sessionId) =>
+    new Promise((resolve, reject) => {
+      const id = ++nextId
+      pending.set(id, { resolve, reject, method })
+      ws.send(JSON.stringify({ id, method, params, ...(sessionId && { sessionId }) }))
+    })
+  return {
+    send,
+    // A session on the page target showing this URL.
+    async page(url) {
+      const { targetInfos } = await send('Target.getTargets')
+      const target = targetInfos.find((t) => t.type === 'page' && t.url === url)
+      assert.ok(target, `no page target at ${url}`)
+      return (await send('Target.attachToTarget', { targetId: target.targetId, flatten: true })).sessionId
+    },
+    close: () => ws.close(),
+  }
+}
 const refFor = (snapshot, role, name) => {
   const line = snapshot
     .split('\n')
@@ -607,11 +697,16 @@ async function withBackgroundPanel(test, path = '/scroll') {
   const foreground = await openTarget(rootUrl + '/blank', true)
   const background = await openTarget(rootUrl + path, false)
   try {
+    // open returns at dispatch, and the tab's first document is a complete
+    // about:blank: readiness is the fixture's own document loaded.
     await waitUntil(
       async () =>
         text(
-          await tool('javascript_tool', { tabId: background.tabId, code: 'document.readyState' }),
-        ).includes('complete'),
+          await tool('javascript_tool', {
+            tabId: background.tabId,
+            code: `location.pathname === ${JSON.stringify(path)} && document.readyState === "complete"`,
+          }),
+        ).includes('true'),
       'background fixture',
     )
     assert.equal(
@@ -645,23 +740,89 @@ async function withBackgroundPanel(test, path = '/scroll') {
   }
 }
 
-async function check(name, test) {
+// Checks register here and run after setup: those that need the whole browser
+// one at a time, then the rest concurrently on the shared MCP session, then
+// the last. A check is exclusive when it activates or closes a tab, takes
+// window focus, or asserts which tab is active or visible: any of these
+// changes what concurrent checks' background tabs are.
+const registered = []
+function check(name, options, test) {
+  if (!test) [options, test] = [{}, options]
+  // A substring of the name, or several separated by |.
   const selected = option('--checks', '')
-  if (selected && !name.includes(selected)) return
+  if (selected && !selected.split('|').some((part) => name.includes(part))) return
+  registered.push({ name, test, index: registered.length, ...options })
+}
+// A fresh fixture document of its own for each check that reads it: failures
+// cannot poison another contract's field values, event counters, or overlay
+// state, and concurrent checks cannot navigate each other's tab.
+async function openFixture() {
+  const opened = await openTarget(rootUrl, false)
+  // Navigation/load readiness belongs to fixture setup, not a hidden action retry.
+  await waitUntil(
+    () =>
+      tool('javascript_tool', {
+        tabId: opened.tabId,
+        code: 'document.readyState === "complete" && document.querySelectorAll("iframe").length === 3',
+      }).then(
+        (probed) => text(probed).includes('true'),
+        (error) => {
+          // A document that has only just committed has no script context yet.
+          if (/Cannot find default execution context/.test(error.message)) return false
+          throw error
+        },
+      ),
+    'fresh fixture document',
+  )
+  return opened
+}
+const suiteStart = performance.now()
+async function run({ name, test, index, fixture }) {
   const start = performance.now()
+  const startedAt = Math.round((start - suiteStart) / 100) / 10
   try {
-    // Each contract starts from a fresh document; failures cannot poison the
-    // next contract's field values, event counters, or overlay state.
-    await resetFixture?.()
-    // A contract may return measurements worth keeping with its result.
-    const measured = await test()
-    checks.push({ name, pass: true, seconds: (performance.now() - start) / 1000, ...(measured && { measured }) })
+    const opened = fixture && (await openFixture())
+    let measured
+    try {
+      // A contract may return measurements worth keeping with its result.
+      measured = await test(opened)
+    } finally {
+      if (opened) await closeTarget(opened)
+    }
+    checks.push({ name, index, startedAt, pass: true, seconds: (performance.now() - start) / 1000, ...(measured && { measured }) })
     console.log('PASS', name)
   } catch (error) {
     if (cancellation.signal.aborted) throw error
-    checks.push({ name, pass: false, error: String(error).replaceAll(token, '[redacted]') })
+    checks.push({ name, index, startedAt, pass: false, seconds: (performance.now() - start) / 1000, error: String(error).replaceAll(token, '[redacted]') })
     console.log('FAIL', name, String(error).replaceAll(token, '[redacted]'))
   }
+}
+async function runChecks() {
+  const concurrency = Number(option('--concurrency', '4'))
+  assert.ok(Number.isInteger(concurrency) && concurrency >= 1, '--concurrency takes a positive integer')
+  const phases = {}
+  const timed = async (phase, work) => {
+    const start = performance.now()
+    await work()
+    phases[phase] = Math.round((performance.now() - start) / 100) / 10
+  }
+  await timed('exclusive', async () => {
+    for (const c of registered.filter((c) => c.exclusive && !c.last)) await run(c)
+  })
+  // The pool takes at least as long as its longest check, so long ones start first.
+  const queue = registered.filter((c) => !c.exclusive).sort((a, b) => Number(!!b.long) - Number(!!a.long))
+  await timed('pool', () =>
+    Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+      while (queue.length) await run(queue.shift())
+    })),
+  )
+  await timed('last', async () => {
+    for (const c of registered.filter((c) => c.last)) await run(c)
+  })
+  checks.sort((a, b) => a.index - b.index)
+  for (const c of checks) delete c.index
+  console.log(`Phases (s, pool of ${concurrency}):`, JSON.stringify(phases))
+  return { concurrency, phases }
 }
 
 try {
@@ -688,6 +849,10 @@ try {
   token = JSON.parse(await readFile(settingsPath, 'utf8')).token
   assert.equal(typeof token, 'string', 'isolated bro settings must contain a token')
   assert.ok(token.length > 0, 'isolated token must not be empty')
+  // chrome://discards discards a tab on demand, as Chrome's own policy does;
+  // Chromium builds that hide debug pages show them with this preference.
+  await mkdir(profile, { recursive: true, mode: 0o700 })
+  await writeFile(resolve(profile, 'Local State'), JSON.stringify({ internal_only_uis_enabled: true }))
   // This disposable profile has no user login state. On macOS it must not
   // block on or access the user's real Safe Storage Keychain item.
   launch(chromeBinary, [
@@ -849,7 +1014,7 @@ try {
     return s.extensionCount === 1 ? s : false
   }, 'isolated extension connection')
   let internalTabId
-  if (correctionCheck.includes(option('--checks', ''))) {
+  if (option('--checks', '').split('|').some((part) => correctionCheck.includes(part))) {
     const created = await cdp('Runtime.evaluate', {
       expression: 'chrome.tabs.create({url:"chrome://newtab/",active:false}).then(tab=>tab.id)',
       awaitPromise: true, returnByValue: true,
@@ -865,12 +1030,7 @@ try {
   await cdp('Target.detachFromTarget', { sessionId: attached.sessionId })
   socket.close()
   socket = undefined
-  client = new Client({ name: 'bro-live-refs', version: '1.0.0' })
-  await client.connect(
-    new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
-      requestInit: { headers: { Authorization: `Bearer ${token}` } },
-    }),
-  )
+  client = await connectClient()
   await writeFile(
     resolve(output, 'control.json'),
     JSON.stringify(
@@ -885,34 +1045,10 @@ try {
       2,
     ),
   )
-  const flow = await openTarget(rootUrl, false)
-  const tabId = flow.tabId
-  resetFixture = async () => {
-    await tool('navigate', { tabId, url: rootUrl })
-    await waitUntil(
-      async () =>
-        text(
-          await tool('javascript_tool', {
-            tabId,
-            code: 'document.readyState === "complete" && document.querySelectorAll("iframe").length === 3',
-          }),
-        ).includes('true'),
-      'fresh fixture document',
-    )
-  }
-  // Navigation/load readiness belongs to fixture setup, not a hidden action retry.
-  await waitUntil(
-    async () =>
-      text(
-        await tool('javascript_tool', {
-          tabId,
-          code: 'document.readyState === "complete" && document.querySelectorAll("iframe").length === 3',
-        }),
-      ).includes('true'),
-    'fixture frames',
-  )
-  let snapshot
-  await check('computer wheel scroll renders background panels and pages without activation', async () => {
+  // The browser's first act takes seconds (process and debugger start-up);
+  // load the fixture once so no contract's latency bound measures that.
+  await closeTarget(await openFixture())
+  check('computer wheel scroll renders background panels and pages without activation', { exclusive: true }, async () => {
     for (const path of ['/scroll', '/scroll-page']) {
       await withBackgroundPanel(async (background) => {
         const wheel = () => tool('computer', {
@@ -939,7 +1075,7 @@ try {
     }
   })
 
-  await check('fresh background scroll delivers its event-driven UI before returning', () =>
+  check('fresh background scroll delivers its event-driven UI before returning', { exclusive: true }, () =>
     withBackgroundPanel(async (background, refId) => {
       const result = (
         await act(background.tabId, [{ type: 'scroll', refId, direction: 'down', amount: 100 }])
@@ -960,8 +1096,9 @@ try {
       )
     }),
   )
-  await check(
+  check(
     'act batches background scroll and intermediate text observations without replacing refs',
+    { exclusive: true },
     () =>
       withBackgroundPanel(async (background, refId) => {
         const read = { type: 'observe', mode: 'text' }
@@ -991,8 +1128,8 @@ try {
         )
       }),
   )
-  await check('inline same-site, cross-site and nested frame AX labels', async () => {
-    snapshot = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
+  check('inline same-site, cross-site and nested frame AX labels', { fixture: true }, async ({ tabId }) => {
+    const snapshot = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
     for (const kind of ['Same', 'Cross', 'Nested']) {
       refFor(snapshot, 'textbox', `${kind} Name`)
       refFor(snapshot, 'button', `${kind} Commit`)
@@ -1000,9 +1137,10 @@ try {
     assert.match(snapshot, /^Frames: 5\n/)
     assert.doesNotMatch(snapshot, /unavailable/)
   })
-  await check(
+  check(
     'native ref input/select/click across frame and nested shadow boundaries',
-    async () => {
+    { exclusive: true, fixture: true },
+    async ({ tabId }) => {
       const foreground = await openTarget(rootUrl + '/blank', true)
       try {
         assert.equal(
@@ -1010,7 +1148,7 @@ try {
           '"hidden"',
         )
         for (const kind of ['Same', 'Cross', 'Nested']) {
-          snapshot = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
+          const snapshot = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
           await act(tabId, [
             { type: 'fill', refId: refFor(snapshot, 'textbox', `${kind} Name`), value: 'Luna' },
             {
@@ -1036,8 +1174,8 @@ try {
       }
     },
   )
-  await check('refs cannot escape their tab and survive same-node rereads', async () => {
-    snapshot = text(await tool('read_page', { tabId }))
+  check('refs cannot escape their tab and survive same-node rereads', { fixture: true }, async ({ tabId }) => {
+    const snapshot = text(await tool('read_page', { tabId }))
     const ref = refFor(snapshot, 'textbox', 'Root Name')
     const other = await openTarget(rootUrl, false)
     await act(other.tabId, [{ type: 'fill', refId: ref, value: 'wrong' }], true)
@@ -1046,8 +1184,8 @@ try {
     assert.equal(refFor(reread, 'textbox', 'Root Name'), ref)
     await act(tabId, [{ type: 'fill', refId: ref, value: 'reread success' }])
   })
-  await check('detached/clone replacement refs fail instead of silently retargeting', async () => {
-    snapshot = text(await tool('read_page', { tabId }))
+  check('detached/clone replacement refs fail instead of silently retargeting', { fixture: true }, async ({ tabId }) => {
+    const snapshot = text(await tool('read_page', { tabId }))
     const ref = refFor(snapshot, 'textbox', 'Root Name')
     await tool('javascript_tool', {
       tabId,
@@ -1059,8 +1197,8 @@ try {
     )
     assert.equal(state, '""')
   })
-  await check('covered/disabled clicks and invalid selects fail before action', async () => {
-    snapshot = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
+  check('covered/disabled clicks and invalid selects fail before action', { fixture: true }, async ({ tabId }) => {
+    const snapshot = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
     await act(tabId, [{ type: 'click', refId: refFor(snapshot, 'button', 'Disabled') }], /disabled/i)
     await act(
       tabId,
@@ -1092,8 +1230,8 @@ try {
       /not clicked/,
     )
   })
-  await check('navigation invalidates refs to the old iframe document', async () => {
-    snapshot = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
+  check('navigation invalidates refs to the old iframe document', { fixture: true }, async ({ tabId }) => {
+    const snapshot = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
     const ref = refFor(snapshot, 'textbox', 'Same Name')
     await tool('javascript_tool', {
       tabId,
@@ -1105,12 +1243,12 @@ try {
     )
     await act(tabId, [{ type: 'fill', refId: ref, value: 'wrong' }], true)
   })
-  await check('file upload sets a local path through cross-site document-bound refs', async () => {
+  check('file upload sets a local path through cross-site document-bound refs', { fixture: true }, async ({ tabId }) => {
     // A real file read by the browser itself; the page's onchange only runs on the
     // change event the browser fires for it.
     const local = resolve(output, 'upload-ref.txt')
     await writeFile(local, 'REF_PATH_UPLOAD_OK')
-    snapshot = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
+    const snapshot = text(await tool('read_page', { tabId, filter: 'all', maxChars: 24000 }))
     await tool('file_upload', {
       tabId,
       refId: refFor(snapshot, 'button', 'Cross File'),
@@ -1123,14 +1261,15 @@ try {
     )
     await tool('file_upload', { tabId, refId: refFor(snapshot, 'button', 'Cross File'), paths: ['relative.txt'] }, /must be absolute/)
   })
-  await check(
+  check(
     'default target observation and ref steps work without frame IDs; failures stop the act',
-    async () => {
+    { fixture: true },
+    async ({ targetId }) => {
       const observeTarget = async () =>
-        (await tool('browser.observe', { targetId: flow.targetId })).structuredContent.content
+        (await tool('browser.observe', { targetId })).structuredContent.content
       const observed = await observeTarget()
       await tool('browser.act', {
-        targetId: flow.targetId,
+        targetId,
         steps: [
           { type: 'fill', refId: refFor(observed, 'textbox', 'Cross Name'), value: 'Flow' },
           { type: 'select', refId: refFor(observed, 'combobox', 'Cross Mode'), value: 'Gamma' },
@@ -1143,7 +1282,7 @@ try {
         await tool(
           'browser.act',
           {
-            targetId: flow.targetId,
+            targetId,
             steps: [
               { type: 'click', refId: 'ref_deliberately_stale' },
               { type: 'fill', refId: refFor(next, 'textbox', 'Cross Name'), value: 'WRONG' },
@@ -1158,7 +1297,7 @@ try {
       await tool(
         'browser.act',
         {
-          targetId: flow.targetId,
+          targetId,
           steps: [
             { type: 'fill', refId: refFor(next, 'textbox', 'Cross Name'), value: 'WRONG' },
             { type: 'click', refId: 'ref_invalid', css: 'button' },
@@ -1176,7 +1315,7 @@ try {
   // window, a background or unowned tab, a document with no frame drawn yet)
   // has none until one is drawn, and a silent miss lands in the parent instead.
   // Each cell starts from a fresh document. --repeats N reruns every cell.
-  await check('P: input lands in every render state: same-document and cross-site clicks, coordinate clicks, fills', async () => {
+  check('P: input lands in every render state: same-document and cross-site clicks, coordinate clicks, fills', { exclusive: true, fixture: true }, async ({ tabId }) => {
     const devtools = (await readFile(resolve(profile, 'DevToolsActivePort'), 'utf8')).trim().split('\n')
     const browserCdp = async (method, params = {}) => {
       const ws = new WebSocket(`ws://127.0.0.1:${devtools[0]}${devtools[1]}`)
@@ -1290,9 +1429,10 @@ try {
     assert.deepEqual([...misses, ...uncovered], [], `${misses.length} of ${repeats * 20} cells missed:\n${[...misses, ...uncovered].join('\n')}`)
     return { visibility: Object.fromEntries(Object.entries(visibility).map(([k, v]) => [k, [...v]])) }
   })
-  await check(
+  check(
     'find, info, wait and scroll use the same refs and report actual scroll boundaries',
-    async () => {
+    { fixture: true },
+    async ({ tabId }) => {
       await tool('navigate', { tabId, url: `${rootUrl}/scroll` })
       await waitUntil(
         async () =>
@@ -1318,7 +1458,7 @@ try {
       assert.equal((await scroll(100)).boundary, true)
     },
   )
-  await check('javascript_tool evaluates like a console and computer clicks a ref', async () => {
+  check('javascript_tool evaluates like a console and computer clicks a ref', { fixture: true }, async ({ tabId }) => {
     await tool('navigate', { tabId, url: `${rootUrl}/console` })
     const js = async (code) => text(await tool('javascript_tool', { tabId, code }))
     // Top-level await without awaitPromise, as the DevTools console allows.
@@ -1338,7 +1478,7 @@ try {
     await tool('computer', { tabId, action: 'left_click', refId })
     assert.equal(await js("document.querySelector('button').textContent"), '"PRESSED"')
   })
-  await check('password manager iframe neither blocks CDP nor drops it mid-login', async () => {
+  check('password manager iframe neither blocks CDP nor drops it mid-login', { fixture: true }, async ({ tabId }) => {
     await tool('navigate', { tabId, url: `${rootUrl}/password-manager` })
     const js = async (code) => text(await tool('javascript_tool', { tabId, code }))
     // The overlay drawn at load would reject attach; bro removes its iframe.
@@ -1361,7 +1501,7 @@ try {
     await tool('computer', { tabId, action: 'left_click', refId: await ref('Sign in button') })
     assert.equal(await js('out.textContent'), '"SIGNED_IN:luna/6"')
   })
-  await check('native dialogs are answered, reported, and never hang the tab', async () => {
+  check('native dialogs are answered, reported, and never hang the tab', async () => {
     const opened = (await tool('browser.open', { url: `${rootUrl}/dialogs`, observe: false })).structuredContent
     const act = async (steps) => text(await tool('browser.act', { targetId: opened.targetId, steps }))
     const output = async () => (await act([{ type: 'evaluate', code: 'out.textContent' }])).match(/evaluated: (.*)/)?.[1]
@@ -1387,7 +1527,7 @@ try {
       await tool('browser.close', { targetId: opened.targetId })
     }
   })
-  await check('U: file_upload clicks the visible control; stray choosers are cancelled', async () => {
+  check('U: file_upload clicks the visible control; stray choosers are cancelled', async () => {
     const opened = (await tool('browser.open', { url: `${rootUrl}/uploads`, observe: false })).structuredContent
     const tabId = opened.tabId
     const one = resolve(output, 'upload-one.txt'), two = resolve(output, 'upload-two.txt')
@@ -1425,7 +1565,7 @@ try {
       await tool('browser.close', { targetId: opened.targetId })
     }
   })
-  await check('A: an attached tab takes one act of upload/fill/click per file across form posts; release keeps it open', async () => {
+  check('A: an attached tab takes one act of upload/fill/click per file across form posts; release keeps it open', async () => {
     // A tab bro did not open, as a user's tab or a page's popup is.
     const tabId = Number(text(await tool('tabs_create', { url: `${rootUrl}/upload-form` })).match(/Created tab: (\d+)/)[1])
     const files = ['a', 'b', 'c'].map((name) => resolve(output, `attach-${name}.txt`))
@@ -1456,7 +1596,7 @@ try {
     }
   })
 
-  await check('screenshot captures the scrolled viewport at CSS pixel size', async () => {
+  check('screenshot captures the scrolled viewport at CSS pixel size', { fixture: true }, async ({ tabId }) => {
     await tool('navigate', { tabId, url: `${rootUrl}/bands` })
     await tool('javascript_tool', { tabId, code: 'scrollTo(0, 1600); scrollY' })
     const shot = await tool('computer', { tabId, action: 'screenshot' })
@@ -1474,7 +1614,7 @@ try {
     assert.ok(probe.b > 200 && probe.r < 60, `expected the scrolled blue band: ${JSON.stringify(probe)}`)
     return { dpr: probe.dpr, base64Bytes: image.data.length }
   })
-  await check('modern target composition observes intended documents and stable scoped refs', async () => {
+  check('modern target composition observes intended documents and stable scoped refs', async () => {
     const opened = (await tool('browser.open', { url: `${rootUrl}/redirect`, observe: false })).structuredContent
     try {
       const actResult = await tool('browser.act', { targetId: opened.targetId, steps: [
@@ -1501,7 +1641,7 @@ try {
       await tool('browser.close', { targetId: opened.targetId })
     }
   })
-  await check('covered options name the overlay; check sets them without a pointer click', async () => {
+  check('covered options name the overlay; check sets them without a pointer click', async () => {
     const opened = (await tool('browser.open', { url: `${rootUrl}/overlay`, observe: false })).structuredContent
     try {
       const page = text(await tool('browser.observe', { targetId: opened.targetId }))
@@ -1525,7 +1665,7 @@ try {
       await tool('browser.close', { targetId: opened.targetId })
     }
   })
-  await check('R: a change report waits for the requests its action started, and only those', async () => {
+  check('R: a change report waits for the requests its action started, and only those', { long: true }, async () => {
     // Every shape × entry point, in background tabs. A shape states what the
     // report must say: the page's answer, or that a request is still out.
     const shapes = [
@@ -1578,7 +1718,138 @@ try {
     for (let i = 0; i < cells.length; i += 4) await Promise.all(cells.slice(i, i + 4).map((cell, j) => runCell(cell, i + j)))
     assert.deepEqual(failures, [])
   })
-  await check('T: role/name targets and change reports chain a form without waits', async () => {
+  // Chrome freezes background tabs once it holds more than a few, and a frozen
+  // page runs no task and no injected script until Chrome unfreezes it, often
+  // a minute later. Every entry point × tab state, in background tabs: an act
+  // or read resumes its tab and does what it says; a tab that cannot run fails
+  // fast with the reason, never at the bridge's 30 s timeout. (Chrome lets bro
+  // resume every tab it froze, so a tab that stays frozen is unit-tested in
+  // render-state.test.ts.) The check freezes a page through DevTools, which
+  // sets the same page state Chrome's own freezing does, and discards one
+  // through chrome://discards. That page's ids are positions in a tab list
+  // that reorders as tabs open and close, so a lookup is good only until the
+  // next such change: the check runs alone and its cells one at a time.
+  check('FROZEN: acts and reads resume a tab Chrome froze, before or mid-action, and fail fast on a discarded tab', { exclusive: true }, async () => {
+    const devtools = await browserSession()
+    const { targetId: discardsTarget } = await devtools.send('Target.createTarget', { url: 'chrome://discards', background: true })
+    const discards = (await devtools.send('Target.attachToTarget', { targetId: discardsTarget, flatten: true })).sessionId
+    const inDiscards = async (body) => {
+      const reply = await devtools.send('Runtime.evaluate', {
+        expression: `import('chrome://discards/discards.js').then(async (m) => { const p = m.getOrCreateDetailsProvider(); ${body} })`,
+        awaitPromise: true, returnByValue: true,
+      }, discards)
+      if (reply.exceptionDetails) throw new Error(`chrome://discards: ${reply.exceptionDetails.exception?.description ?? reply.exceptionDetails.text}`)
+      return reply.result.value
+    }
+    await waitUntil(async () => (await inDiscards('return true').catch(() => false)) === true, 'chrome://discards')
+    const entries = {
+      click: { effect: 'click', want: /alert DONE click/, run: (t) => tool('browser.act', { targetId: t.targetId, steps: [{ type: 'click', role: 'button', name: 'Go' }] }) },
+      fill: { effect: 'fill', want: /alert DONE fill/, run: (t) => tool('browser.act', { targetId: t.targetId, steps: [{ type: 'fill', role: 'textbox', name: 'Note', value: 'x' }] }) },
+      observe: { effect: 'load', read: true, want: /LOADED/, run: (t) => tool('browser.observe', { targetId: t.targetId, mode: 'text' }) },
+      extract: { effect: 'load', read: true, want: /LOADED/, run: (t) => tool('browser.extract', { tabId: t.tabId }).then((r) => ({ ...r, content: [{ type: 'text', text: r.structuredContent.text }] })) },
+      wait: { effect: 'load', want: /waited \d+ms until text "LOADED the held" appears/, run: (t) => tool('browser.act', { targetId: t.targetId, steps: [{ type: 'wait', text: 'LOADED the held' }] }) },
+    }
+    // A state names what the call must do and how soon.
+    const states = {
+      'frozen before': { resumes: true, maxMs: 10_000 },
+      'frozen mid-action': { resumes: true, maxMs: 10_000 },
+      // Chrome replaces a tab it discards, so its id names no tab.
+      discarded: { fails: /tab \d+ is discarded|No tab with (given )?id|tab \d+ closed/, maxMs: 5_000 },
+    }
+    // Looks the tab up by URL and acts on it in one evaluate.
+    const onTab = (url, op) => inDiscards(`const { infos } = await p.getTabDiscardsInfo(); const tab = infos.find((i) => i.tabUrl === ${JSON.stringify(url)}); if (!tab) throw new Error('no discards entry for ${url}'); ${op}`)
+    const failures = []
+    const runCell = async ([state, entryName], index) => {
+      const entry = entries[entryName]
+      const want = states[state]
+      const where = `${entryName} / ${state}`
+      const key = `frozen-${index}-${Math.random().toString(36).slice(2)}`
+      const url = `${rootUrl}/frozen?key=${key}${entry.read ? '&read=1' : ''}`
+      const holdOf = (what) => hold(`${key}/${what}`)
+      const opened = await openTarget(url, false)
+      let page, evOf = async () => ''
+      try {
+        page = await waitUntil(() => devtools.page(url).catch(() => false), 'fixture target')
+        evOf = async () => (await ev().catch((e) => String(e))) + ` arrived=${entry.effect}:${holdOf(entry.effect).res !== undefined}`
+        // The test's own reads of the page; its context may not exist yet.
+        const evaluate = (expression) => devtools.send('Runtime.evaluate', { expression, returnByValue: true }, page).then((r) => r.result.value, () => undefined)
+        const ev = async () => (await evaluate('ev.join()')) ?? ''
+        // The page's own freeze event says when a freeze took. Chrome drops
+        // one requested while the page still counts as loading and ignores a
+        // repeat of a request it already has, so each try withdraws the last.
+        const freeze = () => waitUntil(async () => {
+          await devtools.send('Page.setWebLifecycleState', { state: 'active' }, page)
+          await devtools.send('Page.setWebLifecycleState', { state: 'frozen' }, page)
+          const deadline = performance.now() + 250
+          while (performance.now() < deadline) {
+            if ((await ev()).includes('freeze')) return true
+            await new Promise((r) => setTimeout(r, 50))
+          }
+          return false
+        }, 'page freeze event').catch(async (error) => {
+          const seen = await devtools.send('Runtime.evaluate', { expression: 'JSON.stringify([ev, document.visibilityState, document.readyState])', returnByValue: true }, page)
+            .then((r) => r.result.value ?? JSON.stringify(r.exceptionDetails?.text), String)
+          throw new Error(`${error.message}; the page says ${seen}; chrome://discards says ${await onTab(url, 'return JSON.stringify(tab)').catch(String)}`)
+        })
+        const loaded = () => waitUntil(async () => (await evaluate('out.textContent'))?.includes('LOADED') ?? false, 'loaded fixture')
+        const effect = holdOf(entry.effect)
+        if (entry.effect !== 'load') {
+          holdOf('load').release()
+          await loaded()
+        } else await holdOf('load').arrived
+        let running
+        if (state === 'frozen before') {
+          await freeze()
+          // The answer reaches a frozen page; it renders once the tab resumes.
+          if (entry.effect === 'load') effect.release()
+          else void effect.arrived.then(effect.release)
+        } else if (state === 'frozen mid-action') {
+          running = entry.run(opened)
+          if (entry.effect !== 'load') await effect.arrived
+          await freeze()
+          effect.release()
+        } else {
+          effect.release()
+          if (entry.effect !== 'load') void effect.arrived.then(effect.release)
+          else await loaded()
+          await onTab(url, 'await p.discardById(tab.id, 0)')
+        }
+        const started = performance.now()
+        const outcome = await (running ?? entry.run(opened)).then((r) => ({ ok: true, text: text(r) }), (e) => ({ ok: false, text: String(e) }))
+        const ms = Math.round(performance.now() - started)
+        if (want.resumes) {
+          assert.ok(outcome.ok, `${where}: ${outcome.text.slice(0, 300)}`)
+          assert.match(outcome.text, entry.want, `${where}: ${outcome.text.slice(0, 300)}`)
+          assert.match(await ev(), /freeze.*resume/, `${where}: the page was not frozen and resumed`)
+        } else {
+          assert.ok(!outcome.ok, `${where} should fail: ${outcome.text.slice(0, 300)}`)
+          assert.match(outcome.text, want.fails, `${where}: ${outcome.text.slice(0, 300)}`)
+        }
+        assert.ok(ms < want.maxMs, `${where} took ${ms}ms: ${outcome.text.slice(0, 200)}`)
+      } catch (error) {
+        failures.push(`${where}: ${error.message.replaceAll('\n', ' ⏎ ').slice(0, 600)} [page: ${await evOf()}]`)
+      } finally {
+        for (const what of ['load', 'click', 'fill']) holdOf(what).release()
+        if (page) await devtools.send('Target.detachFromTarget', { sessionId: page }).catch(() => {})
+        await closeTarget(opened).catch(() => {})
+      }
+    }
+    // Chrome never freezes a page with form input in progress.
+    const cells = Object.keys(states).flatMap((state) => Object.keys(entries).map((entry) => [state, entry]))
+      .filter(([state, entry]) => !(state === 'frozen mid-action' && entry === 'fill'))
+    try {
+      for (const [index, cell] of cells.entries()) await runCell(cell, index)
+    } finally {
+      await devtools.send('Target.closeTarget', { targetId: discardsTarget }).catch(() => {})
+      devtools.close()
+    }
+    assert.deepEqual(failures, [])
+  })
+  check('T: role/name targets and change reports chain a form without waits', async () => {
+    // Single-action tools default to the session's last target: another
+    // check's call on a shared session would move it.
+    const session = await connectClient()
+    const tool = toolOn(session)
     const opened = (await tool('browser.open', { url: `${rootUrl}/token-form` })).structuredContent
     const targetId = opened.targetId
     try {
@@ -1628,9 +1899,10 @@ try {
       assert.match(text(await tool('browser.act', { targetId, steps: [{ type: 'click', role: 'button', name: 'Submit post' }] })), /→ navigated to \S+\/slow-post/)
     } finally {
       await tool('browser.close', { targetId })
+      await session.close()
     }
   })
-  await check('F: scroll, hit acceptance, scope replacement and text cursor', async () => {
+  check('F: scroll, hit acceptance, scope replacement and text cursor', async () => {
     const opened = (await tool('browser.open', { url: `${rootUrl}/f-contract`, observe: false })).structuredContent
     const targetId = opened.targetId
     const act = async (steps, errorExpected) => text(await tool('browser.act', { targetId, steps }, errorExpected))
@@ -1668,7 +1940,7 @@ try {
       await tool('browser.close', { targetId })
     }
   })
-  await check('H2: open observe:false returns at dispatch; the first observe settles readiness', async () => {
+  check('H2: open observe:false returns at dispatch; the first observe settles readiness', async () => {
     let started = performance.now()
     const opened = JSON.parse(text(await tool('browser.open', { url: `${rootUrl}/h-slow`, observe: false })))
     const openMs = Math.round(performance.now() - started)
@@ -1698,7 +1970,7 @@ try {
     assert.equal((closed.structuredContent ?? JSON.parse(text(closed))).closed, true)
     return { openMs, observeMs, heldOpenMs, heldObserveMs }
   })
-  await check('S: a small, loaded page is ready at once; no length threshold to wait out', async () => {
+  check('S: a small, loaded page is ready at once; no length threshold to wait out', async () => {
     // open returns the first observation, and close:true on the last call
     // ends the target: open, read, close in two calls, not four. (Extract
     // timing for the same page is part of E.)
@@ -1725,7 +1997,7 @@ try {
       if (!closed) await tool('browser.close', { targetId })
     }
   })
-  await check('N: network capture returns the triggered request and its body in one call', async () => {
+  check('N: network capture returns the triggered request and its body in one call', async () => {
     const captured = await tool('browser.network.capture', {
       url: `${rootUrl}/blank?n=1`,
       code: "fetch('/net-echo?bro=live-network', {cache: 'no-store'}).then(r => r.json())",
@@ -1738,7 +2010,7 @@ try {
     assert.equal(result.requests[0].status, 200)
     assert.equal(JSON.parse(result.requests[0].body).bro, 'live-network')
   })
-  await check('B: extract without a url reads an existing tab in place and leaves it open', async () => {
+  check('B: extract without a url reads an existing tab in place and leaves it open', async () => {
     const opened = await openTarget(`${rootUrl}/g-long`, false)
     try {
       const inPlace = (await tool('browser.extract', { tabId: opened.tabId })).structuredContent
@@ -1751,7 +2023,7 @@ try {
       await closeTarget(opened)
     }
   })
-  await check('W: an owned tab groups in its own window while a popup has focus', async () => {
+  check('W: an owned tab groups in its own window while a popup has focus', { exclusive: true }, async () => {
     const opener = (await tool('browser.open', { url: `${rootUrl}/popup-opener`, observe: false })).structuredContent
     try {
       await tool('browser.click', { targetId: opener.targetId, role: 'button', name: 'Open popup' })
@@ -1762,7 +2034,7 @@ try {
       await tool('browser.close', { targetId: opener.targetId })
     }
   })
-  await check('E: every read path waits for the content a page is loading, and reads only rendered text', async () => {
+  check('E: every read path waits for the content a page is loading, and reads only rendered text', { long: true }, async () => {
     // One table of page shapes, each read through extract, batch extract and
     // open → first observe, in background tabs. A shape states the content a
     // reader must get and the text it must never get; `extracted` is what
@@ -1834,7 +2106,7 @@ try {
     assert.deepEqual(failures, [])
     return timings
   })
-  await check('G: truncation footer lists scoped refs; ceilings', async () => {
+  check('G: truncation footer lists scoped refs; ceilings', async () => {
     const opened = (await tool('browser.open', { url: `${rootUrl}/g-long`, observe: false })).structuredContent
     const targetId = opened.targetId
     try {
@@ -1857,7 +2129,7 @@ try {
       await tool('browser.close', { targetId })
     }
   })
-  await check('H1: act wait returns when its condition holds; a timeout continues', async () => {
+  check('H1: act wait returns when its condition holds; a timeout continues', async () => {
     const opened = (await tool('browser.open', { url: `${rootUrl}/h-delayed`, observe: false })).structuredContent
     const targetId = opened.targetId
     try {
@@ -1897,7 +2169,7 @@ try {
       await tool('browser.close', { targetId })
     }
   })
-  await check('WATCH: a watch pushes late, re-rendered, navigated, background and transient changes and a closed tab within a second, reports a timeout, stays quiet on a churning page, and follows a cross-site iframe chat, through the MCP read, the CLI stream and the wait step', async () => {
+  check('WATCH: a watch pushes late, re-rendered, navigated, background and transient changes and a closed tab within a second, reports a timeout, stays quiet on a churning page, and follows a cross-site iframe chat, through the MCP read, the CLI stream and the wait step', { long: true }, async () => {
     // Every shape through every entry point. Each run opens its own
     // background tab; the wait step watches the page's text.
     // budgetMs bounds the time from the change to its report: a second, plus
@@ -1989,7 +2261,7 @@ try {
             events = run.lines
             reason = run.lines.at(-1)?.reason
             const wantCode = shape.want === 'met' ? 0 : 1
-            if (run.code !== wantCode) throw new Error(`exit ${run.code}, want ${wantCode}: ${run.err}`)
+            if (run.code !== wantCode) throw new Error(`exit ${run.code}, want ${wantCode}: ${run.err} ${JSON.stringify(run.lines)}`)
           } else {
             // The wait step gives no signal when it has started, so the page
             // is released at once (its changes tolerate an early release) and
@@ -2114,7 +2386,11 @@ try {
     assert.deepEqual(failures, [])
     return timings
   })
-  await check('G: observe rereads once when the document changes mid-read', async () => {
+  // Exclusive for what it does to the others: each read of its 20000-row tree
+  // holds the extension worker for seconds. Calls beside it stall: a wait
+  // step's probe in H1 got no answer within its 5 s bound, and R's 1.5 s
+  // requests settled at 6-7 s, past R's latency bounds.
+  check('G: observe rereads once when the document changes mid-read', { exclusive: true }, async () => {
     const opened = (await tool('browser.open', { url: `${rootUrl}/g-churn`, observe: false })).structuredContent
     const targetId = opened.targetId
     try {
@@ -2141,7 +2417,7 @@ try {
       await tool('browser.close', { targetId })
     }
   })
-  await check(correctionCheck, async () => {
+  check(correctionCheck, async () => {
     try {
       const escaped = await tool('navigate', { tabId: internalTabId, url: rootUrl + '/redirect' })
       assert.ok(text(escaped).includes(rootUrl + '/blank'))
@@ -2171,7 +2447,7 @@ try {
     }
   })
 
-  await check('batch flow evaluates only after the intended document is ready', async () => {
+  check('batch flow evaluates only after the intended document is ready', async () => {
     const batch = JSON.parse(text(await tool('browser.batch.flow', {
       urls: [`${rootUrl}/blank`, `${rootUrl}/scroll`], concurrency: 2,
       steps: [{ type: 'evaluate', code: 'document.title' }],
@@ -2181,11 +2457,9 @@ try {
     assert.match(JSON.stringify(batch.results[0].results), /Benchmark ready/)
     assert.match(JSON.stringify(batch.results[1].results), /Scroll contract/)
   })
-  await closeTarget(flow)
-  resetFixture = undefined
   // Last: it closes every remaining tab. Chrome unloads the profile, and with it
   // the extension worker and its alarms, once the last window closes.
-  await check('Z: closing every tab keeps a window, so the extension stays connected', async () => {
+  check('Z: closing every tab keeps a window, so the extension stays connected', { exclusive: true, last: true }, async () => {
     const listed = text(await tool('tabs_context', { all: true }))
     const ids = [...listed.matchAll(/^ {2}[ *] \[(\d+)\]/gm)].map((m) => Number(m[1]))
     assert.ok(ids.length > 0, `the window must list its tabs: ${listed}`)
@@ -2199,9 +2473,10 @@ try {
     assert.match(remaining, /Tabs \(1\):\n {2}[ *] \[\d+\] chrome:\/\/newtab\//,
       `only a New Tab page should keep the last window open: ${remaining}`)
   })
+  const timing = await runChecks()
   await writeFile(
     resolve(output, 'results.json'),
-    JSON.stringify({ checks, pass: checks.every((c) => c.pass) }, null, 2),
+    JSON.stringify({ checks, pass: checks.every((c) => c.pass), ...timing }, null, 2),
   )
   console.log(`RESULTS ${resolve(output, 'results.json')}`)
   if (checks.some((c) => !c.pass)) process.exitCode = 1

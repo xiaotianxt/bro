@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+// render-state.ts owns resuming frozen tabs (tested there); here the page always runs.
+vi.mock('../render-state.js', () => ({ inLivePage: (injection: chrome.scripting.ScriptInjection<unknown[], unknown>) => chrome.scripting.executeScript(injection), sinceResumed: () => Infinity }))
 vi.mock('../dialogs.js', () => ({ takeDialogs: () => [] }))
 
 // CDP events by name; emit() delivers one as Chrome would.

@@ -88,6 +88,24 @@
   frames first. Attach sees only frames that have loaded, so a menu drawn at
   load or on the last focus could still be loading and commit mid-input,
   closing the session.
+- Acts and reads resume a tab Chrome froze. Chrome freezes background tabs
+  once it holds more than a few, and a frozen page runs no injected script
+  until Chrome unfreezes it, often a minute later: an act on such a tab hung
+  until the bridge's 30 s timeout. bro now resumes the tab before an act,
+  observe, extract or wait step and again if Chrome freezes it mid-call, does
+  not count time spent frozen as the page settling, and fails within seconds
+  with the reason when a tab is discarded or does not resume. The freeze
+  listener is armed before the tab's state is read: Chrome can report a
+  freeze ahead of the reply to a read made just before it, and that freeze
+  was resumed by nobody, so a change report came back 5 to 8 s late, when
+  Chrome unfroze the tab by itself. `browser.watch` still only observes and
+  reports a frozen tab as an event.
+- `make check` runs its parts at once and prints each part's output as one
+  block. `make live-refs` runs the checks that need the whole browser one at
+  a time and the rest four at a time on one MCP session
+  (`LIVE_CONCURRENCY`); `CHECKS` takes several name substrings joined by
+  `|`. `make live-refs-repeat N=3` runs N whole suites at once and reports
+  the passes per check.
 
 ## 2.0.0
 

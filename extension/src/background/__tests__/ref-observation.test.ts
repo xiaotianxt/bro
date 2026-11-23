@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({ frames: vi.fn(), send: vi.fn() }))
 vi.mock('../frames.js', () => ({ getBrowserFrames: mocks.frames, sendToFrame: mocks.send }))
+// render-state.ts owns resuming frozen tabs (tested there); here the page always runs.
+vi.mock('../render-state.js', () => ({ inLivePage: (injection: chrome.scripting.ScriptInjection<unknown[], unknown>) => chrome.scripting.executeScript(injection), sinceResumed: () => Infinity }))
 vi.mock('../cdp.js', () => ({ cdpSession: {} }))
 vi.mock('../input.js', () => ({ withInput: vi.fn() }))
 vi.mock('../scroll.js', () => ({ scrollAndObserve: vi.fn() }))

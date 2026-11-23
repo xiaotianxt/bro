@@ -5,7 +5,7 @@ import { CDP_COMMAND_TIMEOUT_MS, CdpCommandTimeout, cdpSession } from '../cdp.js
 import { armDialogs } from '../dialogs.js'
 import { getBrowserFrames, sendToFrame } from '../frames.js'
 import { isRendering } from '../render-pump.js'
-import { stalledState, unresponsive } from '../render-state.js'
+import { keepLive, sinceResumed, stalledState, unresponsive } from '../render-state.js'
 import { registerTool } from '../tool-registry.js'
 import { readAXPage, findAX, refTool, waitAX, actElement } from './accessibility.js'
 
@@ -516,6 +516,8 @@ async function executeExtractPage(
   let failures = 0
   for (;;) {
     try {
+      // CDP reads a frozen page, whose content then never arrives: resume it.
+      await keepLive(tabId)
       result = await executeInPage(tabId, pageExtractSnapshot, [{ maxChars, maxLinks }])
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -538,6 +540,8 @@ async function executeExtractPage(
         : text.length >= requiredChars
     const ready =
       signature === lastSignature &&
+      // Text that sat still while the page was frozen was not settling.
+      sinceResumed(tabId) >= quietMs &&
       rendered &&
       readiness.documentReadyState !== 'loading' &&
       !result.shell &&

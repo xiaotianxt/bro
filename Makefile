@@ -1,4 +1,4 @@
-.PHONY: build extension pi-extension e2e live-refs check release
+.PHONY: build extension pi-extension version-check lint unit e2e live-extension live-refs live-refs-repeat check release
 
 # Override for an isolated validation build without changing a loaded extension.
 EXTENSION_OUT_DIR ?= dist
@@ -21,23 +21,39 @@ pi-extension:
 e2e: build
 	BRO_BIN="$(BRO)" go test -count=1 ./e2e/...
 
-# Real-browser ref contracts in an isolated profile (about 70 s for all).
-# While iterating, run one: make live-refs CHECKS="T:" (about 15 s).
-LIVE_EXTENSION_DIR ?= $(CURDIR)/bin/live-extension
-live-refs: build
-	pnpm --filter @bro/shared build
-	pnpm --filter @bro/extension build --outDir "$(LIVE_EXTENSION_DIR)"
-	node scripts/live-refs.mjs --extension "$(LIVE_EXTENSION_DIR)" --chrome "$(CHROME_BIN)" --bro "$(BRO)" $(if $(CHECKS),--checks "$(CHECKS)")
-
-check: build
+version-check:
 	pnpm version:check
-	test -z "$$(gofmt -l cmd internal e2e)"
+
+lint:
+	@unformatted="$$(gofmt -l cmd internal e2e)"; [ -z "$$unformatted" ] || { echo "gofmt needed:"; echo "$$unformatted"; exit 1; }
 	go vet ./...
 	go tool staticcheck ./...
+
+unit:
 	go test -count=1 ./internal/...
-	BRO_BIN="$(BRO)" go test -count=1 ./e2e/...
-	$(MAKE) extension
-	$(MAKE) pi-extension
+
+# Real-browser ref contracts in an isolated profile. Exclusive checks run
+# alone, the rest LIVE_CONCURRENCY (default 4) at a time on one MCP session.
+# While iterating, run one: make live-refs CHECKS="T:" (about 15 s).
+LIVE_EXTENSION_DIR ?= $(CURDIR)/bin/live-extension
+LIVE_FLAGS = --extension "$(LIVE_EXTENSION_DIR)" --chrome "$(CHROME_BIN)" --bro "$(BRO)" $(if $(CHECKS),--checks "$(CHECKS)") $(if $(LIVE_CONCURRENCY),--concurrency $(LIVE_CONCURRENCY))
+live-extension: build
+	pnpm --filter @bro/shared build
+	pnpm --filter @bro/extension build --outDir "$(LIVE_EXTENSION_DIR)"
+
+live-refs: live-extension
+	node scripts/live-refs.mjs $(LIVE_FLAGS) $(if $(LIVE_PORT),--port $(LIVE_PORT))
+
+# N whole live suites at once, each with its own Chrome, profile, bro port and
+# output directory; prints pass counts per check. Same CHECKS filter.
+N ?= 3
+live-refs-repeat: live-extension
+	node scripts/live-repeat.mjs --runs $(N) $(LIVE_FLAGS)
+
+# The parts share nothing but the built binary, so they run at once; each
+# part's output prints as one block (scripts/parallel-make.sh).
+check: build
+	@MAKE="$(MAKE)" scripts/parallel-make.sh version-check lint unit e2e extension pi-extension
 
 release:
 	scripts/release.sh

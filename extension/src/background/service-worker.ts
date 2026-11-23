@@ -9,6 +9,7 @@ import { ALARM_KEEPALIVE, ALARM_WS_RECONNECT } from './bridge-client.js'
 import { ActiveRequestTracker } from './request-tracker.js'
 import { restoreUserScripts } from '../userscripts.js'
 import { restoreRenderPump } from './render-pump.js'
+import { keepLive } from './render-state.js'
 // Register all tools (side-effect imports — each module calls registerTool)
 import './tools/computer.js'
 import './tools/navigation.js'
@@ -128,6 +129,15 @@ void bridgeClient.connect().catch((error: unknown) => {
   console.error('[ServiceWorker] Initial connection failed:', error)
 })
 
+// Tools that act on or read a page. Chrome may have frozen a background tab
+// since bro last touched it; these resume it first (render-state.ts). Watch
+// probes, tab and profile tools only observe or never touch the page.
+const PAGE_TOOLS = new Set([
+  'read_page', 'find', 'get_page_text', 'extract_page', 'form_input', 'frames_list', 'javascript_tool',
+  'click_element', 'scroll_element', 'fill_element', 'get_element_info', 'wait_for_element', 'act_element',
+  'file_upload', 'computer', '__bro_login_inspect', '__bro_login_fill',
+])
+
 // Handle incoming messages from the MCP server.
 bridgeClient.onMessage(async (msg) => {
   // Agent explicitly signals it's done — hide indicators for specified tabs immediately.
@@ -176,6 +186,7 @@ bridgeClient.onMessage(async (msg) => {
     }
 
     if (resolvedTabId !== undefined) takeDialogs(resolvedTabId)
+    if (resolvedTabId !== undefined && PAGE_TOOLS.has(tool)) await keepLive(resolvedTabId)
     const handled = await dispatchTool(tool, resolvedTabId ?? 0, args)
     // Tools that report changes (act_element) have taken their dialogs already.
     const dialogs = resolvedTabId === undefined ? [] : takeDialogs(resolvedTabId)

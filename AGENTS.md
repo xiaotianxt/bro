@@ -36,3 +36,24 @@ all of them once before handoff:
 ```bash
 make live-refs CHROME_BIN=/path/to/chromium CHECKS="T:"
 ```
+
+`make check` runs its parts at once and prints each part's output as one
+block. `CHECKS` takes a name substring or several joined by `|`
+(`CHECKS="R:|WATCH:"`). Checks marked `exclusive` in `scripts/live-refs.mjs`
+run alone; the rest run `LIVE_CONCURRENCY` (default 4) at a time on one MCP
+session, which is real agent usage. Mark a check exclusive only when it
+activates or closes tabs, takes window focus, asserts which tab is active,
+or loads the extension so heavily that other calls stall; a check that fails
+only under concurrency is a finding to explain, not a reason to serialize it.
+Chrome freezes background tabs once it holds more than about six, so a
+concurrent suite freezes bro's targets the way an agent's many tabs do; `FROZEN:`
+freezes them on purpose through DevTools and discards them through
+`chrome://discards`, which the suite enables in its profile.
+
+To confirm a flake, run N whole suites at once (each has its own Chrome,
+profile, bro port and output directory) and read the passes per check. Heavy
+runs go to the mini; give each session its own `BRO_REMOTE_DIR`:
+
+```bash
+BRO_REMOTE_DIR=dev/bro-remote-mine scripts/remote.sh make live-refs-repeat N=3 CHROME_BIN=/Applications/Helium.app/Contents/MacOS/Helium
+```

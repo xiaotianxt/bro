@@ -31,7 +31,7 @@
 import type { ToolResult } from '@bro/shared'
 import { bridgeClient } from './bridge-client.js'
 import { getBrowserFrames, sendToFrame, type BrowserFrame } from './frames.js'
-import { stalledState } from './render-state.js'
+import { inLivePage, keepLive, stalledState } from './render-state.js'
 import { describeNode, refNode, resolveNamed, withRef } from './tools/accessibility.js'
 import { registerTool } from './tool-registry.js'
 
@@ -92,6 +92,9 @@ interface ProbeCommand {
   target: WatchTarget
   condition: WatchCondition
   op: 'probe' | 'stop'
+  // An act's wait step: its tab is resumed like any act's. A watch only
+  // observes, and reports a frozen tab as an event.
+  live?: boolean
 }
 
 const pinEvent = (watchId: string) => `__bro_watch_pin_${watchId}`
@@ -310,8 +313,10 @@ function latch(cmd: ProbeCommand, limits: { records: number; snippet: number; te
 const LIMITS = { records: 50, snippet: 160, text: 4000, items: 200, costFactor: 4 }
 
 function inPage(tabId: number, frameId: number, cmd: ProbeCommand) {
-  return chrome.scripting
-    .executeScript({ target: { tabId, frameIds: [frameId] }, world: 'ISOLATED', func: latch, args: [cmd, LIMITS, PUSH] })
+  const injection: chrome.scripting.ScriptInjection<[ProbeCommand, typeof LIMITS, string], ReturnType<typeof latch>> = {
+    target: { tabId, frameIds: [frameId] }, world: 'ISOLATED', func: latch, args: [cmd, LIMITS, PUSH],
+  }
+  return (cmd.live ? inLivePage(injection) : chrome.scripting.executeScript(injection))
     .then(([frame]) => frame?.result as ReturnType<typeof latch> | undefined)
     .catch((error: unknown) => {
       if (frameId !== 0 && /No frame with id/i.test(String(error)))
@@ -393,6 +398,7 @@ async function pin(tabId: number, watchId: string, ref: string): Promise<void> {
 export async function probe(tabId: number, cmd: ProbeCommand & { resolve?: boolean }): Promise<ProbeResult> {
   let stalled: Awaited<ReturnType<typeof stalledState>>
   try {
+    if (cmd.live) await keepLive(tabId)
     stalled = await stalledState(tabId)
   } catch (error) {
     if (/No tab with id/i.test(String(error))) return { tab: 'closed' }
