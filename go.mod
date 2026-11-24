@@ -3,7 +3,7 @@ module github.com/xiaotianxt/bro
 go 1.27.3
 
 require (
-	github.com/coder/websocket v1.8.14
+	github.com/coder/websocket v1.8.15
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/pelletier/go-toml/v2 v2.4.3
 	golang.org/x/net v0.63.0
