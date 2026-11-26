@@ -17,7 +17,8 @@
   extension reloads itself when the version on disk changes. Before, the folder
   setup showed could be Homebrew's versioned `Cellar` path, which the next
   upgrade deleted. An extension loaded the old way keeps working until it is
-  replaced, which `bro setup` suggests. The new ID starts with empty storage:
+  replaced, which `bro setup` suggests. The Chrome Web Store copy, which has
+  its own ID, pairs the same way. The new ID starts with empty storage:
   copy user scripts from the old extension's Options page before removing it.
 - `bro mcp` serves MCP over stdio by relaying to the local service, so a client
   config needs only `bro mcp`, with no token. When the service restarts, it
@@ -26,6 +27,9 @@
 - `install.sh` installs bro without Homebrew on macOS and Linux to fixed paths
   (`~/.local/bin/bro`, `~/.local/share/bro/extension`), checks the release
   checksum, and runs `bro setup`.
+- A tool call made right after the extension connected could fail with "no
+  browser extension is connected": the server acknowledged the connection
+  before registering it.
 - macOS release binaries are signed with one self-signed certificate under a
   fixed designated requirement, so macOS keeps permissions across upgrades.
 - The extension drops the unused `activeTab`, `notifications`, `downloads` and

@@ -19,9 +19,13 @@ import (
 // Name is the native messaging host name the extension connects to.
 const Name = "com.xiaotianxt.bro"
 
-// ExtensionIDs may ask for the token. The unpacked build's ID is pinned by the
-// manifest key; a Chrome Web Store listing gets its own ID, added here.
-var ExtensionIDs = []string{"ibnjnpacbcpiodnhpgmnohhnhgpkmieg"}
+// ExtensionIDs may ask for the token: first the unpacked build, whose ID the
+// manifest key pins, then the Chrome Web Store listing, whose ID the store
+// assigns (store uploads cannot carry a key).
+var ExtensionIDs = []string{
+	"ibnjnpacbcpiodnhpgmnohhnhgpkmieg",
+	"egeefldabokambagodmbjnahnagobakb",
+}
 
 // maxMessage bounds a request; a pair request is a few bytes.
 const maxMessage = 1 << 20

@@ -66,8 +66,10 @@ Load that directory as an unpacked extension in a Chromium-family browser.
 ## Pairing and Updates
 
 The manifest `key` pins the extension ID to `ibnjnpacbcpiodnhpgmnohhnhgpkmieg`,
-whatever folder it loads from; the native host's `allowed_origins` admits only
-that ID (`internal/nativehost`). When no token is stored, or the server closed
+whatever folder it loads from. The Chrome Web Store copy has the store-assigned
+ID `egeefldabokambagodmbjnahnagobakb`, because store uploads cannot carry a key.
+The native host's `allowed_origins` admits only those two IDs
+(`internal/nativehost`). When no token is stored, or the server closed
 the last socket with a policy violation before acknowledging it, the bridge
 client sends `{"type":"pair"}` with `chrome.runtime.sendNativeMessage` and
 stores the token it gets. A browser without the host keeps the typed token.

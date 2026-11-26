@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -112,8 +113,12 @@ func TestInstallNativeHostRegistersOnlyInstalledBrowsers(t *testing.T) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		t.Fatal(err)
 	}
+	var want []string
+	for _, id := range nativehost.ExtensionIDs {
+		want = append(want, "chrome-extension://"+id+"/")
+	}
 	if m.Name != nativehost.Name || m.Path != "/opt/bro/bin/bro" || m.Type != "stdio" ||
-		len(m.AllowedOrigins) != 1 || m.AllowedOrigins[0] != "chrome-extension://"+nativehost.ExtensionIDs[0]+"/" {
+		!slices.Equal(m.AllowedOrigins, want) {
 		t.Fatalf("manifest = %+v", m)
 	}
 	if _, err := os.Stat(filepath.Join(appData, filepath.FromSlash(browsers[1].dataDir))); !os.IsNotExist(err) {
