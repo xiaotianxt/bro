@@ -67,7 +67,7 @@ Load that directory as an unpacked extension in a Chromium-family browser.
 
 The manifest `key` pins the extension ID to `ibnjnpacbcpiodnhpgmnohhnhgpkmieg`,
 whatever folder it loads from. The Chrome Web Store copy has the store-assigned
-ID `egeefldabokambagodmbjnahnagobakb`, because store uploads cannot carry a key.
+ID `gldmnpdbkkpmahhajekjcccmflfohaol`, because store uploads cannot carry a key.
 The native host's `allowed_origins` admits only those two IDs
 (`internal/nativehost`). When no token is stored, or the server closed
 the last socket with a policy violation before acknowledging it, the bridge

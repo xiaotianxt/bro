@@ -24,7 +24,7 @@ const Name = "com.xiaotianxt.bro"
 // assigns (store uploads cannot carry a key).
 var ExtensionIDs = []string{
 	"ibnjnpacbcpiodnhpgmnohhnhgpkmieg",
-	"egeefldabokambagodmbjnahnagobakb",
+	"gldmnpdbkkpmahhajekjcccmflfohaol",
 }
 
 // maxMessage bounds a request; a pair request is a few bytes.
