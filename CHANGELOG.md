@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased
+
+- `bro setup` installs everything in one command and can be rerun: it starts
+  the background service (Homebrew services, a launchd agent or a systemd user
+  unit, restarted when its version differs), installs the extension, configures
+  the MCP clients it finds (Codex, Claude Code, Claude Desktop, Cursor), opens
+  the extensions page and waits for the extension to connect. `bro setup codex`
+  and `bro setup browser` still work on their own.
+- The extension pairs itself: `bro setup` registers bro as a native messaging
+  host for every installed Chromium-family browser, and the extension asks it
+  for the local token instead of the user pasting it. It asks again when the
+  server refuses its token. A pasted token still works.
+- The extension's ID is pinned by a manifest key, and a packaged install loads
+  it from `~/.bro/extension`, which `bro serve` refreshes after an upgrade; the
+  extension reloads itself when the version on disk changes. Before, the folder
+  setup showed could be Homebrew's versioned `Cellar` path, which the next
+  upgrade deleted. An extension loaded the old way keeps working until it is
+  replaced, which `bro setup` suggests. The Chrome Web Store copy, which has
+  its own ID, pairs the same way. The new ID starts with empty storage:
+  copy user scripts from the old extension's Options page before removing it.
+- `bro mcp` serves MCP over stdio by relaying to the local service, so a client
+  config needs only `bro mcp`, with no token. When the service restarts, it
+  replays the client's handshake on a new session and retries, so the client
+  does not notice.
+- `install.sh` installs bro without Homebrew on macOS and Linux to fixed paths
+  (`~/.local/bin/bro`, `~/.local/share/bro/extension`), checks the release
+  checksum, and runs `bro setup`.
+- A tool call made right after the extension connected could fail with "no
+  browser extension is connected": the server acknowledged the connection
+  before registering it.
+- macOS release binaries are signed with one self-signed certificate under a
+  fixed designated requirement, so macOS keeps permissions across upgrades.
+- The extension drops the unused `activeTab`, `notifications`, `downloads` and
+  `offscreen` permissions and gains `nativeMessaging`; `PRIVACY.md` states what
+  it handles, for the Chrome Web Store listing.
+- `/health` reports the server version. The settings file is found through the
+  OS home directory, which fixes Windows, where `HOME` is usually unset.
+
 ## 2.2.0
 
 - Reading a large page's accessibility tree (such as a 20,000-row list) no

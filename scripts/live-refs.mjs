@@ -3,6 +3,7 @@
 // process; never reloads the user's installed extension or copies login state.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { once } from 'node:events'
 import { createServer } from 'node:http'
 import { mkdir, readFile, rm, writeFile, open, appendFile } from 'node:fs/promises'
@@ -868,6 +869,22 @@ try {
   // Chromium builds that hide debug pages show them with this preference.
   await mkdir(profile, { recursive: true, mode: 0o700 })
   await writeFile(resolve(profile, 'Local State'), JSON.stringify({ internal_only_uis_enabled: true }))
+  // The extension pairs itself through bro's native host, as after
+  // `bro setup`: Chrome looks for hosts in the profile's NativeMessagingHosts.
+  // The wrapper points the host at the isolated settings, not the user's.
+  const nativeHost = resolve(output, 'native-host.sh')
+  const shellQuote = (value) => `'${value.replaceAll("'", `'\\''`)}'`
+  await writeFile(nativeHost, `#!/bin/sh\nHOME=${shellQuote(brokerHome)} exec ${shellQuote(broBinary)} "$@"\n`, { mode: 0o755 })
+  await mkdir(resolve(profile, 'NativeMessagingHosts'), { recursive: true, mode: 0o700 })
+  // Chrome derives an extension's ID from its manifest key.
+  const { key } = JSON.parse(await readFile(resolve(extension, 'manifest.json'), 'utf8'))
+  assert.ok(key, 'the extension manifest must pin its ID with a key')
+  const extensionId = createHash('sha256').update(Buffer.from(key, 'base64')).digest('hex').slice(0, 32)
+    .replace(/[0-9a-f]/g, (c) => String.fromCharCode(97 + parseInt(c, 16)))
+  await writeFile(resolve(profile, 'NativeMessagingHosts', 'com.xiaotianxt.bro.json'), JSON.stringify({
+    name: 'com.xiaotianxt.bro', description: 'bro live-refs pairing', path: nativeHost, type: 'stdio',
+    allowed_origins: [`chrome-extension://${extensionId}/`],
+  }))
   // This disposable profile has no user login state. On macOS it must not
   // block on or access the user's real Safe Storage Keychain item.
   launch(chromeBinary, [
@@ -949,7 +966,8 @@ try {
   const configured = await cdp(
     'Runtime.evaluate',
     {
-      expression: `chrome.storage.sync.set({serverUrl:'ws://127.0.0.1:${port}/ws'}).then(()=>chrome.storage.local.set({token:${JSON.stringify(token)}}))`,
+      // No token: the extension must get it by pairing.
+      expression: `chrome.storage.sync.set({serverUrl:'ws://127.0.0.1:${port}/ws'})`,
       awaitPromise: true,
       returnByValue: true,
     },

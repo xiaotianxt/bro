@@ -4,6 +4,9 @@ const settings = vi.hoisted(() => ({
   loadServerUrl: vi.fn<() => Promise<string>>(),
   loadToken: vi.fn<() => Promise<string>>(),
   restrictLocalStorageAccess: vi.fn<() => Promise<void>>(),
+  pairToken: vi.fn<() => Promise<string>>(),
+  saveToken: vi.fn<(token: string) => Promise<void>>(),
+  reloadIfUpdatedOnDisk: vi.fn<() => Promise<boolean>>(),
 }))
 
 vi.mock('../../settings.js', () => ({
@@ -11,6 +14,9 @@ vi.mock('../../settings.js', () => ({
   loadToken: settings.loadToken,
   normalizeServerUrl: (value: string) => value,
   restrictLocalStorageAccess: settings.restrictLocalStorageAccess,
+  pairToken: settings.pairToken,
+  saveToken: settings.saveToken,
+  reloadIfUpdatedOnDisk: settings.reloadIfUpdatedOnDisk,
 }))
 
 import { ALARM_KEEPALIVE, BridgeClient } from '../bridge-client.js'
@@ -22,7 +28,7 @@ class FakeWebSocket {
   closed = false
   onopen: (() => void | Promise<void>) | null = null
   onmessage: ((event: { data: string }) => void) | null = null
-  onclose: (() => void) | null = null
+  onclose: ((event: { code: number }) => void) | null = null
   onerror: ((event: unknown) => void) | null = null
 
   constructor(readonly url: string) {
@@ -62,6 +68,9 @@ describe('BridgeClient connection state', () => {
     settings.loadServerUrl.mockReset().mockResolvedValue('ws://127.0.0.1:3500/ws')
     settings.loadToken.mockReset().mockResolvedValue('token')
     settings.restrictLocalStorageAccess.mockReset().mockResolvedValue()
+    settings.pairToken.mockReset().mockResolvedValue('')
+    settings.saveToken.mockReset().mockResolvedValue()
+    settings.reloadIfUpdatedOnDisk.mockReset().mockResolvedValue(false)
     vi.stubGlobal('WebSocket', FakeWebSocket)
     vi.stubGlobal('navigator', { userAgent: 'Chromium' })
     vi.stubGlobal('chrome', {
@@ -96,6 +105,69 @@ describe('BridgeClient connection state', () => {
     expect(client.isConnected).toBe(true)
   })
 
+  it('pairs through the native host when no token is stored', async () => {
+    settings.loadToken.mockResolvedValue('')
+    settings.pairToken.mockResolvedValue('paired-token')
+    const client = new BridgeClient()
+    await client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    await socket.open()
+
+    expect(settings.saveToken).toHaveBeenCalledWith('paired-token')
+    expect(JSON.parse(socket.sent[0]!)).toMatchObject({ type: 'connect', token: 'paired-token' })
+  })
+
+  it('keeps a stored token without asking the native host', async () => {
+    const client = new BridgeClient()
+    await client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    await socket.open()
+
+    expect(settings.pairToken).not.toHaveBeenCalled()
+    expect(JSON.parse(socket.sent[0]!)).toMatchObject({ token: 'token' })
+  })
+
+  it('pairs again after the server refuses the stored token', async () => {
+    settings.pairToken.mockResolvedValue('new-token')
+    const client = new BridgeClient()
+    await client.connect()
+    const first = FakeWebSocket.instances[0]!
+    await first.open()
+    first.onclose!({ code: 1008 })
+
+    await client.onAlarm(ALARM_KEEPALIVE)
+    const second = FakeWebSocket.instances[1]!
+    await second.open()
+
+    expect(settings.pairToken).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(second.sent[0]!)).toMatchObject({ token: 'new-token' })
+  })
+
+  it('does not re-pair when an authenticated connection drops', async () => {
+    const client = new BridgeClient()
+    await client.connect()
+    const first = FakeWebSocket.instances[0]!
+    await first.open()
+    first.message({ type: 'connected', sessionId: 'session' })
+    first.onclose!({ code: 1008 })
+
+    await client.onAlarm(ALARM_KEEPALIVE)
+    await FakeWebSocket.instances[1]!.open()
+
+    expect(settings.pairToken).not.toHaveBeenCalled()
+  })
+
+  it('checks for updated files once authenticated', async () => {
+    const client = new BridgeClient()
+    await client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    await socket.open()
+    expect(settings.reloadIfUpdatedOnDisk).not.toHaveBeenCalled()
+
+    socket.message({ type: 'connected', sessionId: 'session' })
+    expect(settings.reloadIfUpdatedOnDisk).toHaveBeenCalledTimes(1)
+  })
+
   it('ignores a stale socket close after replacement', async () => {
     const client = new BridgeClient()
     await client.connect()
@@ -110,7 +182,7 @@ describe('BridgeClient connection state', () => {
     await second.open()
     second.message({ type: 'connected', sessionId: 'second' })
 
-    staleClose()
+    staleClose({ code: 1000 })
     expect(client.isConnected).toBe(true)
   })
 

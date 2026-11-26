@@ -74,13 +74,19 @@ type Server struct {
 	Port int
 	Home string
 	logs *lockedBuffer
+	cmd  *exec.Cmd
 }
 
 func startServer(t *testing.T) *Server {
 	t.Helper()
 	home := t.TempDir()
 	writeSettings(t, home)
-	port := freePort(t)
+	return startServerAt(t, home, freePort(t))
+}
+
+// startServerAt starts bro on a given HOME and port, as a restart does.
+func startServerAt(t *testing.T, home string, port int) *Server {
+	t.Helper()
 	logs := &lockedBuffer{}
 	cmd := exec.Command(broBin, "serve", "--port", fmt.Sprint(port))
 	cmd.Env = append(os.Environ(), "HOME="+home, "NO_COLOR=1")
@@ -89,10 +95,9 @@ func startServer(t *testing.T) *Server {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start %s: %v", broBin, err)
 	}
-	s := &Server{Port: port, Home: home, logs: logs}
+	s := &Server{Port: port, Home: home, logs: logs, cmd: cmd}
 	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+		s.Stop()
 		out := logs.String()
 		if strings.Contains(out, testToken) {
 			t.Errorf("server output contains the bearer token")
@@ -114,6 +119,14 @@ func startServer(t *testing.T) *Server {
 			t.Fatalf("server never became healthy: %v\n%s", err, logs.String())
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// Stop kills the server process; repeated calls are harmless.
+func (s *Server) Stop() {
+	if s.cmd.ProcessState == nil {
+		_ = s.cmd.Process.Kill()
+		_ = s.cmd.Wait()
 	}
 }
 

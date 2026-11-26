@@ -17,7 +17,10 @@ import {
   loadServerUrl,
   loadToken,
   normalizeServerUrl,
+  pairToken,
+  reloadIfUpdatedOnDisk,
   restrictLocalStorageAccess,
+  saveToken,
 } from '../settings.js'
 
 // Alarm names
@@ -26,6 +29,9 @@ export const ALARM_WS_RECONNECT = 'ws-reconnect'
 
 // Keepalive alarm period in minutes (~6 seconds)
 const KEEPALIVE_PERIOD_MINUTES = 0.1
+
+// The server closes an unauthenticated socket with policy violation.
+const CLOSE_POLICY_VIOLATION = 1008
 
 type MessageHandler = (msg: ServerToExtensionMessage) => void
 
@@ -43,6 +49,9 @@ export class BridgeClient {
   private generation = 0
   // Cached server URL for reconnect attempts triggered by alarms
   private serverUrl: string | null = null
+  // Set when the server refused our token (its settings were recreated);
+  // the next attempt pairs again instead of resending it.
+  private tokenRejected = false
 
   get isConnected(): boolean {
     return this._isConnected
@@ -208,8 +217,17 @@ export class BridgeClient {
         // Get or create a per-window instanceId (survives SW restarts, unique per window)
         const instanceId = await this.getOrCreateInstanceId()
 
-        // Read the authentication token from storage
-        const token = await loadToken()
+        // Read the authentication token from storage; pair through bro's
+        // native host when there is none or the server refused it.
+        let token = await loadToken()
+        if (token === '' || this.tokenRejected) {
+          this.tokenRejected = false
+          const paired = await pairToken()
+          if (paired !== '' && paired !== token) {
+            await saveToken(paired)
+            token = paired
+          }
+        }
 
         // Query the active tab URL for identification
         let activeTabUrl = ''
@@ -302,6 +320,8 @@ export class BridgeClient {
       if (msg.type === 'connected') {
         this._isConnected = true
         console.log('[BridgeClient] Authenticated')
+        // bro restarts after an upgrade; this is when new files may be on disk.
+        void reloadIfUpdatedOnDisk()
       }
 
       // Handle ping internally — send pong immediately
@@ -322,8 +342,9 @@ export class BridgeClient {
       }
     }
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       if (this.ws !== ws || this.generation !== generation) return
+      if (!this._isConnected && event.code === CLOSE_POLICY_VIOLATION) this.tokenRejected = true
       this._isConnected = false
       this.ws = null
       if (!this.active) return

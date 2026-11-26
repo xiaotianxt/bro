@@ -51,19 +51,37 @@ The extension owns:
 
 ## Quick Start
 
-Install with Homebrew:
+Install with Homebrew, or with the install script on any Mac or Linux machine:
 
 ```bash
-brew install xiaotianxt/tap/bro
-brew services start bro
-bro setup codex
-bro setup browser
+brew install xiaotianxt/tap/bro && bro setup
 ```
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/xiaotianxt/bro/main/install.sh | sh
+```
+
+`bro setup` does the rest and can be run again at any time:
+
+1. Starts bro in the background (Homebrew services, a launchd agent on macOS,
+   or a systemd user unit on Linux); run after an upgrade, it restarts the
+   service on the new version.
+2. Copies the extension to `~/.bro/extension` and registers bro with every
+   installed Chromium-family browser, so the extension pairs itself: there is
+   no token to paste.
+3. Points the MCP clients it finds at bro: Codex, Claude Code, Claude Desktop
+   and Cursor (`--clients` picks some, `--clients none` skips this).
+4. Opens the extensions page and waits until the extension connects.
+
+The one manual step is loading the extension, once: turn on Developer mode in
+the extensions page and drag the `extension` folder that setup shows onto it.
+Upgrades rewrite that folder in place and the extension reloads into the new
+version by itself.
 
 For native bro tools in Pi, install the bro-owned adapter and reload Pi:
 
 ```bash
-pi install git:github.com/xiaotianxt/bro@v2.2.0
+pi install git:github.com/xiaotianxt/bro@v2.3.0
 ```
 
 Install the optional Codex/agent skill for bro-specific browser workflows:
@@ -78,17 +96,7 @@ After the npm package is published, the equivalent command is:
 npx -y @xiaotianxt/skills bro-browser
 ```
 
-The service runs `bro serve` locally and exposes MCP at
-`http://127.0.0.1:3500/mcp`. `bro setup codex` updates
-`~/.codex/config.toml` to connect Codex to that local MCP endpoint with the
-bearer token from `~/.bro/settings.json`. Restart Codex after running it.
-
-`bro setup browser` copies the token to your clipboard, opens the browser
-extension page, and reveals the unpacked extension directory. In the browser,
-enable Developer mode, choose Load unpacked, select the shown directory, then
-open bro Options and paste the token.
-
-Use `brew services restart bro` after upgrading.
+The service exposes MCP at `http://127.0.0.1:3500/mcp`.
 
 For source development:
 
@@ -119,24 +127,30 @@ pnpm --filter @bro/extension test
 pnpm --filter @bro/extension build
 ```
 
-For source checkouts, pass the local extension directory explicitly:
+For source checkouts, pass the local extension directory explicitly; it is
+loaded in place instead of copied. Use a built binary, since the browser's
+native host keeps pointing at it:
 
 ```bash
-go run ./cmd/bro setup browser --extension-dir extension/dist
+make build && bin/bro setup browser --extension-dir extension/dist
 ```
 
 ## MCP Configuration
 
-Run bro as a local service, then point your MCP client at the HTTP endpoint with
-the local bearer token from `~/.bro/settings.json`.
+`bro setup` configures the clients it finds. To add bro to another client,
+use one of two forms; both reach the one long-lived bro service.
 
-For Codex, prefer the setup command:
+A client that launches a command runs `bro mcp`, which relays stdio to the
+service and reads the token itself, so the config holds no secret. It also
+survives a service restart without the client noticing:
 
-```bash
-bro setup codex
+```json
+{ "mcpServers": { "bro": { "command": "/opt/homebrew/bin/bro", "args": ["mcp"] } } }
 ```
 
-It writes a `bro` MCP server entry like this:
+A client that speaks Streamable HTTP connects to `http://127.0.0.1:3500/mcp`
+with the token from `~/.bro/settings.json` as an `Authorization: Bearer ...`
+header. `bro setup codex` writes this form for Codex:
 
 ```toml
 [mcp_servers.bro]
@@ -145,17 +159,8 @@ url = "http://127.0.0.1:3500/mcp"
 Authorization = "Bearer <token from ~/.bro/settings.json>"
 ```
 
-The setup command does not print the token. If you configure another MCP client
-manually, send the same token as an `Authorization: Bearer ...` header.
-
-Codex also supports `bearer_token_env_var`, but `bro setup codex` uses a static
-local header so the configuration does not depend on a particular shell startup
-file.
-
-The MCP client should connect to this endpoint. It should not spawn the server
-per request; keep `bro serve` running through Homebrew services or another
-local process supervisor. Do not commit browser output, cookies, signed URLs, or
-tokens.
+Setup never prints the token. Do not commit browser output, cookies, signed
+URLs, or tokens.
 
 ### Pi
 
@@ -192,28 +197,29 @@ passkey/iframe limitations.
 
 ## Browser Extension
 
-Homebrew installs the unpacked bro extension under `share/bro/extension`.
+`bro setup` (or just its browser step, `bro setup browser`) copies the
+packaged extension to `~/.bro/extension`, registers bro as the extension's
+native messaging host, opens `chrome://extensions/` and selects the folder in
+the file manager. Chromium-family browsers require a user gesture to load an
+unpacked extension, once:
 
-```bash
-bro setup browser
-```
+1. Turn on Developer mode.
+2. Drag the selected `extension` folder onto the page (or choose Load unpacked
+   and paste the folder path setup put on the clipboard).
 
-The command:
+The extension's ID is pinned by its manifest key, so the native host can admit
+only it. On first connect the extension asks the host for the local token; when
+the server later refuses a token (its settings were recreated) it asks again.
+If pairing is unavailable, for instance in a browser setup did not find, paste
+the token from `~/.bro/settings.json` into bro Options, or run
+`bro setup browser --copy-token`.
 
-- finds the installed extension directory
-- copies the local bro token to the clipboard when the OS clipboard tool is
-  available
-- opens `chrome://extensions/` when possible
-- reveals the extension directory in the file manager when possible
-
-Chromium-family browsers still require a user gesture to load unpacked
-extensions. In the browser:
-
-1. Enable Developer mode.
-2. Choose Load unpacked.
-3. Select the extension directory printed by `bro setup browser`.
-4. Open bro Options.
-5. Paste the copied token and save.
+When bro starts it refreshes `~/.bro/extension` from the packaged copy, and the
+extension reloads itself when it finds a newer version on disk. An extension
+loaded from an older bro (from Homebrew's `Cellar` folder, with a pasted token)
+keeps working; `bro setup` reports it so it can be removed once the new one
+connects. Its user scripts belong to its old extension ID and do not move:
+copy each from the old Options page into the new one before removing it.
 
 The extension accepts only loopback `ws://` server URLs. Its token is stored
 locally in the extension profile and is not synced between browsers. A token
@@ -340,6 +346,19 @@ binary for the current macOS or Linux architecture (a HEAD build runs
 exposes `brew services start bro`. Releases also include an npm-compatible
 tarball for the Pi adapter; the tagged Git repository is directly
 installable as a Pi package.
+
+Each archive carries the extension beside the binary, which the install
+script uses; `SHA256SUMS` lists every asset. `bro-extension-store-<tag>.zip` is
+the same extension without its manifest key, for uploading to the Chrome Web
+Store.
+
+macOS binaries are signed with one self-signed certificate, so macOS sees every
+release as the same program and keeps the permissions a user granted (an ad-hoc
+signature changes with every build). The certificate does not satisfy
+Gatekeeper, which only checks quarantined downloads; Homebrew and the install
+script do not quarantine. Create the certificate once with
+`scripts/macos-signing-cert.sh` and store it as the `MACOS_SIGNING_P12_BASE64`
+and `MACOS_SIGNING_P12_PASSWORD` Actions secrets; a release without them fails.
 
 Maintainers release from a clean `main` checkout with
 `scripts/release.sh --version <version>`. The script runs the checks, creates and

@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
+
+	"github.com/xiaotianxt/bro/internal/settings"
 )
 
 // CodexReport is the result of `bro setup codex`.
@@ -21,12 +23,18 @@ type CodexReport struct {
 	RestartRequired bool   `json:"restartRequired"`
 }
 
-// BrowserReport is the result of `bro setup browser`.
+// BrowserReport is the result of preparing the browser extension.
 type BrowserReport struct {
-	ExtensionDir         string `json:"extensionDir"`
-	TokenCopied          bool   `json:"tokenCopied"`
-	ExtensionPageOpened  bool   `json:"extensionPageOpened"`
-	ExtensionDirRevealed bool   `json:"extensionDirRevealed"`
+	// ExtensionDir is the folder the browser loads: ~/.bro/extension for a
+	// packaged install, or the --extension-dir given.
+	ExtensionDir     string           `json:"extensionDir"`
+	ExtensionUpdated bool             `json:"extensionUpdated"`
+	NativeHost       NativeHostReport `json:"nativeHost"`
+	TokenCopied      bool             `json:"tokenCopied"`
+	PathCopied       bool             `json:"pathCopied"`
+	// The two below are set by OpenExtensionSetup.
+	ExtensionPageOpened  bool `json:"extensionPageOpened"`
+	ExtensionDirRevealed bool `json:"extensionDirRevealed"`
 }
 
 // DefaultCodexConfigPath is $CODEX_HOME/config.toml or ~/.codex/config.toml.
@@ -198,19 +206,78 @@ func verifyCodexConfig(text, serverURL, authorization string) error {
 	return nil
 }
 
-// Browser copies the token, opens the extensions page and reveals the
-// unpacked extension so the user can load it.
-func Browser(token, extensionDir, browser string, open bool) (BrowserReport, error) {
-	dir, err := resolveExtensionDir(extensionDir)
+// PrepareBrowser puts the extension where the browser can keep loading it and
+// registers the native host that hands the extension its token. A packaged
+// extension is copied to ~/.bro/extension, which outlives upgrades; an
+// explicit directory (a source checkout) is loaded in place. The clipboard
+// gets the folder path, or the token with copyToken for an extension that
+// cannot pair through the native host.
+func PrepareBrowser(token, explicitDir string, copyToken bool) (BrowserReport, error) {
+	var report BrowserReport
+	src, err := resolveExtensionDir(explicitDir)
 	if err != nil {
-		return BrowserReport{}, err
+		return report, err
 	}
-	report := BrowserReport{ExtensionDir: dir, TokenCopied: copyToClipboard(token)}
-	if open {
-		report.ExtensionPageOpened = openExtensionsPage(browser)
-		report.ExtensionDirRevealed = reveal(dir)
+	report.ExtensionDir = src
+	if explicitDir == "" {
+		if report.ExtensionDir, err = ExtensionHome(); err != nil {
+			return report, err
+		}
+		if report.ExtensionUpdated, err = InstallExtension(src, report.ExtensionDir); err != nil {
+			return report, err
+		}
+	}
+	exe, err := StableExecutable()
+	if err != nil {
+		return report, err
+	}
+	appData, err := AppDataDir()
+	if err != nil {
+		return report, err
+	}
+	if report.NativeHost, err = InstallNativeHost(exe, appData); err != nil {
+		return report, err
+	}
+	if copyToken {
+		report.TokenCopied = copyToClipboard(token)
+	} else {
+		report.PathCopied = copyToClipboard(report.ExtensionDir)
 	}
 	return report, nil
+}
+
+// ExtensionHome is ~/.bro/extension, the folder a packaged install loads.
+func ExtensionHome() (string, error) {
+	dir, err := settings.Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "extension"), nil
+}
+
+// SyncInstalledExtension refreshes ~/.bro/extension from the extension
+// packaged with this binary, if the user installed one there. It reports
+// whether files changed; a running extension picks them up when it reloads.
+func SyncInstalledExtension() (bool, error) {
+	dst, err := ExtensionHome()
+	if err != nil {
+		return false, err
+	}
+	if !validExtensionDir(dst) {
+		return false, nil
+	}
+	src, ok := PackagedExtensionDir()
+	if !ok {
+		return false, nil
+	}
+	return InstallExtension(src, dst)
+}
+
+// OpenExtensionSetup opens the browser's extensions page and shows the
+// extension folder, for loading it unpacked.
+func OpenExtensionSetup(report *BrowserReport, browser string) {
+	report.ExtensionPageOpened = openExtensionsPage(browser)
+	report.ExtensionDirRevealed = reveal(report.ExtensionDir)
 }
 
 func validExtensionDir(path string) bool {
@@ -225,23 +292,46 @@ func resolveExtensionDir(explicit string) (string, error) {
 		}
 		return explicit, nil
 	}
+	if dir, ok := PackagedExtensionDir(); ok {
+		return dir, nil
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		if dir := filepath.Join(cwd, "extension", "dist"); validExtensionDir(dir) {
+			return dir, nil
+		}
+	}
+	return "", errors.New("bro extension directory not found; install bro with Homebrew or the install script, or pass --extension-dir")
+}
+
+// PackagedExtensionDir is the extension shipped with this bro binary:
+// $BRO_EXTENSION_DIR, share/bro/extension beside a Homebrew or prefix
+// install, or extension/ beside an unpacked release archive.
+func PackagedExtensionDir() (string, bool) {
 	var candidates []string
 	if env := os.Getenv("BRO_EXTENSION_DIR"); env != "" {
 		candidates = append(candidates, env)
 	}
 	if exe, err := os.Executable(); err == nil {
-		candidates = append(candidates, filepath.Join(filepath.Dir(filepath.Dir(exe)), "share", "bro", "extension"))
-	}
-	if cwd, err := os.Getwd(); err == nil {
-		candidates = append(candidates, filepath.Join(cwd, "extension", "dist"))
+		for _, e := range []string{exe, resolvedPath(exe)} {
+			dir := filepath.Dir(e)
+			candidates = append(candidates, filepath.Join(filepath.Dir(dir), "share", "bro", "extension"), filepath.Join(dir, "extension"))
+		}
 	}
 	candidates = append(candidates, "/opt/homebrew/share/bro/extension", "/usr/local/share/bro/extension", "/home/linuxbrew/.linuxbrew/share/bro/extension")
 	for _, c := range candidates {
 		if validExtensionDir(c) {
-			return c, nil
+			return c, true
 		}
 	}
-	return "", errors.New("bro extension directory not found; install bro with Homebrew or pass --extension-dir")
+	return "", false
+}
+
+func resolvedPath(exe string) string {
+	resolved, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		return exe
+	}
+	return resolved
 }
 
 func succeeds(name string, args ...string) bool {
@@ -293,14 +383,15 @@ func openExtensionsPage(browser string) bool {
 	}
 }
 
+// reveal selects the folder itself, so it can be dragged onto the
+// extensions page.
 func reveal(dir string) bool {
-	manifest := filepath.Join(dir, "manifest.json")
 	switch runtime.GOOS {
 	case "darwin":
-		return succeeds("open", "-R", manifest)
+		return succeeds("open", "-R", dir)
 	case "windows":
-		return succeeds("explorer", "/select,", manifest)
+		return succeeds("explorer", "/select,", dir)
 	default:
-		return succeeds("xdg-open", dir)
+		return succeeds("xdg-open", filepath.Dir(dir))
 	}
 }

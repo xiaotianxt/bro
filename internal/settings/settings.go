@@ -23,13 +23,22 @@ type file struct {
 	Token string `json:"token"`
 }
 
-// DefaultPath is $HOME/.bro/settings.json.
-func DefaultPath() (string, error) {
-	home := os.Getenv("HOME")
-	if home == "" {
-		return "", errors.New("HOME is not set")
+// Dir is ~/.bro, which holds the settings file and bro's installed files.
+func Dir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
 	}
-	return filepath.Join(home, ".bro", "settings.json"), nil
+	return filepath.Join(home, ".bro"), nil
+}
+
+// DefaultPath is ~/.bro/settings.json.
+func DefaultPath() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "settings.json"), nil
 }
 
 // Load reads existing settings without creating or changing anything.

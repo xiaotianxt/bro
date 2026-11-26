@@ -297,12 +297,14 @@ func (b *Bridge) Serve(ws *websocket.Conn, token string, authTimeout time.Durati
 	}
 
 	browserID, sessionID := connect.InstanceID, ids.UUID()
+	// Register before acknowledging: a peer may dispatch as soon as it reads
+	// "connected", and must find this connection.
+	b.register(connect, sessionID, ws)
+	defer b.unregister(browserID, sessionID)
 	if err := send(ws, map[string]string{"type": "connected", "sessionId": sessionID}); err != nil {
 		_ = ws.CloseNow()
 		return
 	}
-	b.register(connect, sessionID, ws)
-	defer b.unregister(browserID, sessionID)
 
 	// A connection that dies without a close frame never ends the read loop on
 	// its own, and the extension reconnects only once its socket closes.
