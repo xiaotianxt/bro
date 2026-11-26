@@ -53,15 +53,33 @@ pnpm --filter @bro/extension test
 pnpm --filter @bro/extension build
 ```
 
-For Homebrew installs, `bro setup browser` reveals the installed extension
-directory and copies the token to the clipboard. For source checkouts, run:
+For packaged installs, `bro setup` copies the extension to `~/.bro/extension`
+and registers the native messaging host `com.xiaotianxt.bro` that hands the
+extension its token. For source checkouts, load the build in place:
 
 ```bash
-go run ./cmd/bro setup browser --extension-dir extension/dist
+make build && bin/bro setup browser --extension-dir extension/dist
 ```
 
-Load that directory as an unpacked extension in a Chromium-family browser. Open
-the extension options page and paste the token.
+Load that directory as an unpacked extension in a Chromium-family browser.
+
+## Pairing and Updates
+
+The manifest `key` pins the extension ID to `ibnjnpacbcpiodnhpgmnohhnhgpkmieg`,
+whatever folder it loads from; the native host's `allowed_origins` admits only
+that ID (`internal/nativehost`). When no token is stored, or the server closed
+the last socket with a policy violation before acknowledging it, the bridge
+client sends `{"type":"pair"}` with `chrome.runtime.sendNativeMessage` and
+stores the token it gets. A browser without the host keeps the typed token.
+
+After each authenticated connect the extension compares its running version
+with `manifest.json` on disk and reloads when they differ. `bro serve`
+refreshes `~/.bro/extension` from the packaged copy at start, so an upgrade
+followed by a service restart moves the extension to the new version.
+
+The Chrome Web Store rejects a `key` in uploads and assigns the listing its own
+ID. The release's `bro-extension-store-<tag>.zip` drops the key; a listing's ID
+must be added to `nativehost.ExtensionIDs` for its installs to pair.
 
 ## Attribution
 

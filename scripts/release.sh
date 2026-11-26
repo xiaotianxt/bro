@@ -401,6 +401,14 @@ path.write_text(f'''class Bro < Formula
     end
   end
 
+  def caveats
+    <<~EOS
+      Finish setting up bro (background service, browser extension, MCP clients):
+        bro setup
+      Run it again after upgrading; it restarts the service on the new version.
+    EOS
+  end
+
   service do
     run [opt_bin/"bro", "serve"]
     keep_alive true

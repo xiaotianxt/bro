@@ -55,7 +55,7 @@ func Handler(cfg Config, b *bridge.Bridge) http.Handler {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, map[string]any{"status": "ok", "extensionCount": b.ExtensionCount()})
+		writeJSON(w, map[string]any{"status": "ok", "version": cfg.Version, "extensionCount": b.ExtensionCount()})
 	})
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, b.Status())
