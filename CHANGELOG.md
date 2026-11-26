@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.3.0
 
 - `bro setup` installs everything in one command and can be rerun: it starts
   the background service (Homebrew services, a launchd agent or a systemd user
