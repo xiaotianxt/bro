@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.3.1
+
+- `tabs_context` with `all: true` lists the tabs of every window, tagged
+  `anchor`, `incognito`, `focused` or the window type, each with its own active
+  tab marked. Before, it listed only the anchor tab's window, so tabs in other
+  windows, incognito ones included, were invisible. The anchor window comes
+  first and keeps the `Active tab` line.
+- Clicks no longer slow down when many bro tabs sit in the background: the
+  render pump captures at most two background tabs at a time instead of all of
+  them at once, which had made a click wait up to a second for its frame.
+- Overlapping screenshots of one tab no longer leave its page shrunk to half
+  size; captures of a tab run one at a time.
+
 ## 2.3.0
 
 - `bro setup` installs everything in one command and can be rerun: it starts
