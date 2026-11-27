@@ -3,7 +3,7 @@
   "minimum_chrome_version": "125",
   "name": "bro",
   "description": "Lets AI agents on your computer use this browser through the local bro server. Nothing is sent off your machine.",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnZB3JQCaDEKWVWUVexOS407BKVi2OK1dfHxwbm9X2gC8FrumF4UC1o7FZ1IsRL6uV6Bjid+JAeRo1XIOx+MrtMQQ2C2sOrbSiq0u9+DkSGmPmawaw12KNPqzbH7r52Ri3kVftn6CIQhNXG6H2Wd9EiZeS22Hf1xQzc2zpEUJ1UolhEPqR62NSSZDaM0NE2hU+sHQsA0v0GkRA3F4GWqWZrLbRuptDnntWiLSrBvqLfyAMmjBiGkaPkSUi5HxB1rN1B6xnK9hOHbh9zg8Zl5ocNJ2k54+j1a2xr50wd/toYiGcazyjTmJyWedcXEHfzcvuNiMPNAod1h6eCgspxywTwIDAQAB",
   "background": {
     "service_worker": "service-worker.js",
