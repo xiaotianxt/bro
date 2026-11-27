@@ -1930,6 +1930,27 @@ try {
       await tool('browser.close', { targetId: opener.targetId })
     }
   })
+  // Opening a window takes focus and changes which window is current.
+  check('WIN: tabs_context all lists the tabs of every window, anchor window first', { exclusive: true }, async () => {
+    const url = `${rootUrl}/blank?window=${Date.now()}`
+    const devtools = await browserSession()
+    const { targetId } = await devtools.send('Target.createTarget', { url, newWindow: true, background: true })
+    try {
+      const listed = await waitUntil(async () => {
+        const tabs = text(await tool('tabs_context', { all: true }))
+        return tabs.includes(url) && tabs
+      }, 'tab in a second window')
+      const windows = listed.split(/^(?=Window \d+)/m).slice(1)
+      assert.ok(windows.length >= 2, `every window must be listed: ${listed}`)
+      assert.match(windows[0], /^Window \d+ \(anchor/, `the anchor window must come first: ${listed}`)
+      const own = windows.find((w) => w.includes(url))
+      assert.notEqual(own, windows[0], `the new tab must be listed under its own window: ${listed}`)
+      assert.match(own, /^Tabs \(1\):\n {2}\* \[\d+\] /m, `a window marks its own active tab: ${listed}`)
+    } finally {
+      await devtools.send('Target.closeTarget', { targetId }).catch(() => {})
+      devtools.close()
+    }
+  })
   check('E: every read path waits for the content a page is loading, and reads only rendered text', { long: true }, async () => {
     // One table of page shapes, read concurrently across extract, multi-URL
     // batch extract, and open → first observe, plus open+close:true, unreachable

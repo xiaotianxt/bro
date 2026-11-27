@@ -1427,6 +1427,7 @@
       "additionalProperties": false,
       "properties": {
         "all": {
+          "description": "List the tabs of every window, incognito windows included when the extension is allowed there.",
           "type": "boolean"
         },
         "browserId": {

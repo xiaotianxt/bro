@@ -480,21 +480,38 @@ async function executeTabsContext(_tabId: number, rawArgs: unknown): Promise<Too
     }
   }
 
-  const windowId = anchorTab.windowId
-  const activeTabId = await getActiveTabIdForWindow(windowId)
-
   if (args.all) {
-    // Show all tabs in the anchor tab's window, not whatever window the user
-    // happens to have focused now.
-    const allTabs = windowId !== undefined
-      ? await chrome.tabs.query({ windowId })
-      : await chrome.tabs.query({ currentWindow: true })
-    const text = [browserIdLine, buildTabListText(allTabs, activeTabId, undefined)].filter(Boolean).join('\n')
+    // Every window the extension can see, incognito ones included when Chrome
+    // allows the extension there. Window membership and active flags all come
+    // from this one snapshot: the anchor tab only names a tab, and its window is
+    // wherever the snapshot holds it, so a tab moved, activated or closed since
+    // the anchor lookup cannot make the header disagree with the list. A closed
+    // anchor tab leaves no anchor window. The anchor window comes first and
+    // keeps the "Active tab" line callers already read.
+    const windows = await chrome.windows.getAll({ populate: true })
+    const anchorWindow = windows.find((w) => w.tabs?.some((t) => t.id === anchorTab.id))
+    windows.sort((a, b) => Number(b === anchorWindow) - Number(a === anchorWindow))
+    const lines = [browserIdLine]
+    const anchorActive = anchorWindow?.tabs?.find((t) => t.active)
+    if (anchorActive) lines.push(`Active tab: ${anchorActive.url ?? '(no URL)'} (ID: ${anchorActive.id ?? 'unknown'})`)
+    for (const win of windows) {
+      const tags = [
+        win === anchorWindow ? 'anchor' : '',
+        win.incognito ? 'incognito' : '',
+        win.focused ? 'focused' : '',
+        win.type !== 'normal' ? win.type : '',
+      ].filter(Boolean)
+      const tabs = win.tabs ?? []
+      lines.push(`Window ${win.id}${tags.length ? ` (${tags.join(', ')})` : ''}:`, `Tabs (${tabs.length}):`)
+      for (const tab of tabs) lines.push(`  ${tab.active ? '*' : ' '} [${tab.id ?? 'unknown'}] ${tab.url ?? '(no URL)'}`)
+    }
+    const text = lines.filter(Boolean).join('\n')
     return {
       content: [{ type: 'text', text }],
     }
   }
 
+  const activeTabId = await getActiveTabIdForWindow(anchorTab.windowId)
   const groupId = anchorTab.groupId // -1 means no group
 
   let groupName: string | undefined
