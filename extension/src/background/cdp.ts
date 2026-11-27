@@ -40,6 +40,9 @@ export class CDPSession {
 
   private readonly detachCallbacks = new Set<DetachCallback>()
 
+  // The capture in flight for each tab, and those queued behind it.
+  private readonly captures = new Map<number, Promise<void>>()
+
   // Tabs where another extension's frame rejected or closed a session. Tab IDs
   // are not reused within a browser session; the set lives with the worker.
   private readonly foreignFrameTabs = new Set<number>()
@@ -206,7 +209,27 @@ export class CDPSession {
    */
   async send<T>(tabId: number, method: string, params?: object, timeoutMs?: number): Promise<T> {
     await this.ensure(tabId)
+    if (method === 'Page.captureScreenshot') return this.captureInTurn<T>(tabId, params, timeoutMs)
     return this.sendAttached<T>(tabId, method, params, undefined, timeoutMs)
+  }
+
+  /**
+   * One Page.captureScreenshot per tab at a time. Chrome takes a clipped
+   * capture by emulating a smaller viewport while it runs; a capture that
+   * starts meanwhile saves that emulated viewport as the one to restore, and
+   * when it ends last the page stays shrunk (half its size at scale 0.5, and
+   * half again the next time). The render pump, an input's composited frame
+   * and the screenshot tools all capture, so the turn is taken here.
+   */
+  private captureInTurn<T>(tabId: number, params?: object, timeoutMs?: number): Promise<T> {
+    const previous = this.captures.get(tabId) ?? Promise.resolve()
+    const capture = previous.then(() => this.sendAttached<T>(tabId, 'Page.captureScreenshot', params, undefined, timeoutMs))
+    const done = capture.then(() => {}, () => {})
+    this.captures.set(tabId, done)
+    void done.then(() => {
+      if (this.captures.get(tabId) === done) this.captures.delete(tabId)
+    })
+    return capture
   }
 
   async sendToSession<T>(tabId: number, sessionId: string | undefined, method: string, params?: object, timeoutMs?: number): Promise<T> {

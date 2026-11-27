@@ -64,4 +64,53 @@ describe('render pump', () => {
       .filter(([, method]) => method === 'Page.captureScreenshot')
     expect(captures).toHaveLength(1)
   })
+
+  // Regression: with a dozen hidden tabs every tab captured at once, the
+  // captures took 150-280 ms each instead of 60, and a click in any tab waited
+  // behind them for its own frame: change reports settled a second late.
+  it('captures two tabs at a time, in the order they came due', async () => {
+    const { keepRendering } = await import('../render-pump.js')
+    const replies = new Map<number, () => void>()
+    vi.mocked(chrome.debugger.sendCommand).mockImplementation(async (target, method) =>
+      method === 'Page.captureScreenshot'
+        ? new Promise<object>((resolve) => replies.set(target.tabId!, () => resolve({})))
+        : {})
+    const captured = () =>
+      vi.mocked(chrome.debugger.sendCommand).mock.calls
+        .filter(([, method]) => method === 'Page.captureScreenshot')
+        .map(([target]) => target.tabId)
+
+    for (const tabId of [1, 2, 3, 4, 5]) keepRendering(tabId)
+    await vi.advanceTimersByTimeAsync(300)
+    expect(captured()).toEqual([1, 2])
+    replies.get(1)!()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(captured()).toEqual([1, 2, 3])
+    // Tab 1 is due again at the next tick, behind the tabs still waiting.
+    await vi.advanceTimersByTimeAsync(300)
+    for (const tabId of [2, 3, 4]) {
+      replies.get(tabId)!()
+      await vi.advanceTimersByTimeAsync(0)
+    }
+    expect(captured()).toEqual([1, 2, 3, 4, 5, 1])
+  })
+
+  it('a capture stuck on a busy renderer gives its turn to the next tab', async () => {
+    const { keepRendering } = await import('../render-pump.js')
+    vi.mocked(chrome.debugger.sendCommand).mockImplementation(async (_target, method) =>
+      method === 'Page.captureScreenshot' ? new Promise(() => {}) : {})
+    const captured = () =>
+      vi.mocked(chrome.debugger.sendCommand).mock.calls
+        .filter(([, method]) => method === 'Page.captureScreenshot')
+        .map(([target]) => target.tabId)
+
+    for (const tabId of [1, 2, 3, 4, 5]) keepRendering(tabId)
+    await vi.advanceTimersByTimeAsync(300)
+    expect(captured()).toEqual([1, 2])
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(captured()).toEqual([1, 2, 3, 4])
+    // Each stuck tab still has its one capture in flight and gets no second.
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(captured()).toEqual([1, 2, 3, 4, 5])
+  })
 })

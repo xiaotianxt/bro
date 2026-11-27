@@ -168,6 +168,46 @@ describe('CDP attachment lifecycle', () => {
     }
   })
 
+  // Regression: a pump capture that began during a scaled screenshot left the
+  // page at half its viewport, and at a quarter after the next one.
+  it('sends one capture per tab at a time, in order, whoever asks', async () => {
+    const { cdpSession } = await import('../cdp.js')
+    const replies: (() => void)[] = []
+    vi.mocked(chrome.debugger.sendCommand).mockImplementation(async (_target, method) =>
+      method === 'Page.captureScreenshot' ? new Promise<object>((resolve) => replies.push(() => resolve({}))) : {})
+    const sent = () =>
+      vi.mocked(chrome.debugger.sendCommand).mock.calls
+        .filter(([, method]) => method === 'Page.captureScreenshot')
+        .map(([target, , params]) => `${target.tabId}:${(params as { quality: number }).quality}`)
+    const settle = () => new Promise((resolve) => setTimeout(resolve))
+
+    const first = cdpSession.send(7, 'Page.captureScreenshot', { quality: 1 })
+    const second = cdpSession.send(7, 'Page.captureScreenshot', { quality: 2 })
+    const other = cdpSession.send(8, 'Page.captureScreenshot', { quality: 3 })
+    await settle()
+    expect(sent()).toEqual(['7:1', '8:3'])
+    replies[0]!()
+    await first
+    await settle()
+    expect(sent()).toEqual(['7:1', '8:3', '7:2'])
+    replies[1]!()
+    replies[2]!()
+    await Promise.all([second, other])
+  })
+
+  it('sends the next capture after one that failed', async () => {
+    const { cdpSession } = await import('../cdp.js')
+    let captures = 0
+    vi.mocked(chrome.debugger.sendCommand).mockImplementation(async (_target, method) => {
+      if (method === 'Page.captureScreenshot' && ++captures === 1) throw new Error('Unable to capture screenshot')
+      return { data: 'ok' }
+    })
+    const failed = cdpSession.send(7, 'Page.captureScreenshot')
+    const next = cdpSession.send(7, 'Page.captureScreenshot')
+    await expect(failed).rejects.toThrow(/Unable to capture screenshot/)
+    await expect(next).resolves.toEqual({ data: 'ok' })
+  })
+
   it('notifies frame owners and never replays a command after attachment loss', async () => {
     const { cdpSession } = await import('../cdp.js')
     const invalidate = vi.fn()

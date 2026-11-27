@@ -1554,6 +1554,12 @@ try {
       }))))
       assert.deepEqual(probe.size, probe.viewport)
       assert.ok(probe.b > 200 && probe.r < 60, `expected the scrolled blue band: ${JSON.stringify(probe)}`)
+      // Chrome shrinks the viewport while a scaled capture runs, and a capture
+      // that starts meanwhile restores the shrunk one: overlapping captures of
+      // a tab (an agent's own, or the render pump's) must leave the page as it was.
+      await Promise.all(Array.from({ length: 6 }, () => tool('computer', { tabId, action: 'screenshot' })))
+      const after = JSON.parse(JSON.parse(text(await tool('javascript_tool', { tabId, code: 'JSON.stringify([innerWidth, innerHeight])' }))))
+      assert.deepEqual(after, probe.viewport, 'concurrent screenshots changed the viewport')
       return { dpr: probe.dpr, base64Bytes: image.data.length }
     } finally {
       await closeTarget(opened)

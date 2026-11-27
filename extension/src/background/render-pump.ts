@@ -6,6 +6,13 @@
 // an active tab in an occluded window, at a rate that serves lazy loading, not
 // animation.
 //
+// Chrome draws every tab's forced frame through one shared path, so captures
+// in flight at once slow each other and everything else that waits for a
+// frame: an action's own composited frame and the input it dispatches. The
+// pump is background work and takes at most MAX_CAPTURES turns on that path,
+// handed out oldest first; with more hidden tabs each tab gets frames less
+// often, and an action still takes what it takes with one tab open.
+//
 // The tab set lives in session storage so a restarted service worker resumes
 // pumping tabs that are still open.
 
@@ -15,8 +22,22 @@ import { renderState } from './render-state.js'
 const PUMP_MS = 250
 const STORAGE_KEY = 'render_pump_tabs'
 
+// Measured with 12 to 15 hidden tabs under four concurrent agents: unbounded,
+// 3 to 9 captures were in flight at 150-280 ms each and a click took 250-1200
+// ms to dispatch; at 2 a capture takes about 60 ms and a click 150-300 ms, for
+// the same captures per second. At 1 the pump draws about half as many frames.
+const MAX_CAPTURES = 2
+// A capture this late waits on its own renderer (a multi-second AX read, a
+// busy main thread), not on the shared path. It gives its turn back so busy
+// tabs cannot stop the pump for the others.
+const LATE_MS = 1_000
+
 const tabs = new Set<number>()
+// A tab is in here from its tick until its capture replied, whether it is
+// reading render state, waiting for a turn, capturing, or late.
 const inFlight = new Set<number>()
+let capturing = 0
+const waiting: (() => void)[] = []
 let timer: ReturnType<typeof setInterval> | undefined
 let listening = false
 
@@ -68,6 +89,22 @@ function tick(): void {
   }
 }
 
+/** Resolves once the caller may capture, with the function that gives the turn back. */
+function captureTurn(): Promise<() => void> {
+  const take = () => {
+    capturing++
+    let held = true
+    return () => {
+      if (!held) return
+      held = false
+      capturing--
+      waiting.shift()?.()
+    }
+  }
+  if (capturing < MAX_CAPTURES) return Promise.resolve(take())
+  return new Promise((resolve) => waiting.push(() => resolve(take())))
+}
+
 async function pump(tabId: number): Promise<void> {
   let tab: chrome.tabs.Tab
   try {
@@ -85,12 +122,20 @@ async function pump(tabId: number): Promise<void> {
     if ((await renderState(tabId)) !== 'hidden') return
     // No clip: a clipped capture resizes the viewport while it runs, which
     // races hit tests of concurrent clicks. inFlight leaves at most one
-    // waiting capture per tab, and a detach rejects it.
-    await cdpSession.send(
-      tabId,
-      'Page.captureScreenshot',
-      { format: 'jpeg', quality: 1, optimizeForSpeed: true },
-    )
+    // waiting capture per tab, and a detach rejects it. cdp.ts sends it after
+    // any capture already running in the tab.
+    const giveBack = await captureTurn()
+    const late = setTimeout(giveBack, LATE_MS)
+    try {
+      await cdpSession.send(
+        tabId,
+        'Page.captureScreenshot',
+        { format: 'jpeg', quality: 1, optimizeForSpeed: true },
+      )
+    } finally {
+      clearTimeout(late)
+      giveBack()
+    }
   } catch (error) {
     // Navigation and closing race the pump; the next tick retries.
     console.debug(`[RenderPump] tab ${tabId}:`, error)
